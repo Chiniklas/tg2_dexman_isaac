@@ -1,0 +1,20 @@
+Key spots to adapt in dextrah_lab/tasks/dextrah_kuka_inspirehand/dextrah_kuka_inspirehand_env.py for Inspirehand:
+
+Fabric class: Replace KukaAllegroPoseFabric with an Inspirehand-aware fabric (or create one). Update import at top and the instantiation in _setup_geometric_fabrics (KukaAllegroPoseFabric(...)) plus any fabric-specific methods used (e.g., set_features, num_joints, action layout).
+
+PCA/action dimension: Current code assumes Allegro’s 5D hand PCA (pca_dim = 5, action space 11 = 6 pose + 5 PCA). Recalculate PCA dimension for Inspirehand (fewer DOFs) and adjust:
+
+self.cfg.num_actions in __init__
+pca_dim and related buffers (hand_pca_targets)
+Any uses of self.cfg.num_actions, self.inputs, and reward/observation builders that unpack actions.
+Start joint vectors: Update self.robot_start_joint_pos and self.curled_q in __init__ to the Inspirehand joint order/count (matches KUKA_INSPIREHAND_CFG joint list). Also adjust any reshaping or indexing that assumes Allegro’s DOF count.
+
+Actuated joints mapping: The fabric’s num_joints and ordering must align with self.actuated_dof_indices and self.robot.joint_names. Verify the fabric expects the same ordering and length (Inspirehand has fewer finger joints than Allegro).
+
+Robot URDF lookup: robot_dir_name/robot_name are hardcoded to "kuka_allegro" (around where get_robot_urdf_path is called). Change to "kuka_inspirehand" so fabric/world utilities pull the right URDF if used.
+
+Observation/feature builders: Any code that slices or concatenates finger features assuming Allegro’s finger count (e.g., PCA vectors, hand body lists, joint indices) needs to match Inspirehand DOFs/body names. Search for fixed sizes (5 PCA, 24 joints, etc.) and update.
+
+Constants/config: If any constants elsewhere (e.g., in dextrah_kuka_inspirehand_constants.py) encode Allegro-specific counts, update them to the Inspirehand DOF count and action/obs dimensions.
+
+In short: swap the fabric class/import, resize action/PCA dims, update start/target joint vectors and URDF names, and audit any hardcoded Allegro sizes or names so everything matches the Inspirehand DOF layout.
