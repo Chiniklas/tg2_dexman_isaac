@@ -127,7 +127,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10. #10.0
     fabric_decimation = 2 # number of fabric steps per physics step
     num_sim_steps_to_render=2 # renders every 4 sim steps, so 60 Hz
-    num_actions = 11 # 6 palm pose + 5 PCA
+    num_actions = 19 # 1:1 joint position targets for 7 arm + 12 hand DOF
     success_timeout = 2.
     # num_observations = 94
     distillation = False
@@ -197,11 +197,12 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     ]
     
     hand_body_names = [
-        "palm_link",
-        "index_biotac_tip",
-        "middle_biotac_tip",
-        "ring_biotac_tip",
-        "thumb_biotac_tip",
+        "palm",
+        "index_tip",
+        "middle_tip",
+        "ring_tip",
+        "little_tip",
+        "thumb_tip",
     ]
 
 
@@ -340,9 +341,10 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     # with the above robot_joint_friction EventTerm above.
     starting_robot_dof_friction_coefficients = [
         1., 1., 1., 1., 1., 1., 1., # arm joints
-        0.01, 0.01, 0.01, 0.01, # index finger joints
-        0.01, 0.01, 0.01, 0.01, # middle finger joints
-        0.01, 0.01, 0.01, 0.01, # ring finger joints
+        0.01, 0.01,  # index finger joints
+        0.01, 0.01,  # middle finger joints
+        0.01, 0.01,  # ring finger joints
+        0.01, 0.01,  # little finger joints
         0.01, 0.01, 0.01, 0.01, # thumb finger joints
     ]
 

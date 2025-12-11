@@ -644,6 +644,20 @@
     </collision>
   </link>
 
+  <joint name="index_tip_fixed" type="fixed">
+    <origin xyz="0.005 0.035 0.002" rpy="0 0 0" />
+    <parent link="index_link_1" />
+    <child link="index_tip" />
+  </joint>
+
+  <link name="index_tip">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-6" />
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9" />
+    </inertial>
+  </link>
+
 <!-- middle finger -->
 
   <joint
@@ -761,6 +775,20 @@
           filename="./meshes/middle_link_1.STL" />
       </geometry>
     </collision>
+  </link>
+
+  <joint name="middle_tip_fixed" type="fixed">
+    <origin xyz="0.005 0.035 0.002" rpy="0 0 0" />
+    <parent link="middle_link_1" />
+    <child link="middle_tip" />
+  </joint>
+
+  <link name="middle_tip">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-6" />
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9" />
+    </inertial>
   </link>
   
  <!-- ring finger -->
@@ -881,6 +909,20 @@
     </collision>
   </link>
 
+  <joint name="ring_tip_fixed" type="fixed">
+    <origin xyz="0.005 0.035 0.002" rpy="0 0 0" />
+    <parent link="ring_link_1" />
+    <child link="ring_tip" />
+  </joint>
+
+  <link name="ring_tip">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-6" />
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9" />
+    </inertial>
+  </link>
+
 <!-- little finger -->
   <joint name="little_joint_0" type="revolute">
   <!-- The joint origin defines the transform from parent link to joint frame -->
@@ -996,6 +1038,20 @@
           filename="./meshes/little_link_1.STL" />
       </geometry>
     </collision>
+  </link>
+
+  <joint name="little_tip_fixed" type="fixed">
+    <origin xyz="0.005 0.035 0.003" rpy="0 0 0" />
+    <parent link="little_link_1" />
+    <child link="little_tip" />
+  </joint>
+
+  <link name="little_tip">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-6" />
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9" />
+    </inertial>
   </link>
  
   <!-- thumb -->
@@ -1231,5 +1287,19 @@
           filename="./meshes/thumb_link_3.STL" />
       </geometry>
     </collision>
+  </link>
+
+  <joint name="thumb_tip_fixed" type="fixed">
+    <origin xyz="-0.01 0.015 0.005" rpy="0 0 0" />
+    <parent link="thumb_link_3" />
+    <child link="thumb_tip" />
+  </joint>
+
+  <link name="thumb_tip">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-6" />
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9" />
+    </inertial>
   </link>
 </robot>

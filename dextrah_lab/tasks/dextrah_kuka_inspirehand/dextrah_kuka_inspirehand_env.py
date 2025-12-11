@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import os
 
-import functools
-
 import numpy as np
 import torch
 from colorsys import hsv_to_rgb
@@ -41,6 +39,10 @@ from .dextrah_kuka_inspirehand_utils import (
     compute_absolute_action,
     to_torch
 )
+
+# ADR imports
+from .dextrah_adr import DextrahADR
+
 from .dextrah_kuka_inspirehand_constants import (
     NUM_XYZ,
     NUM_RPY,
@@ -55,17 +57,6 @@ from .dextrah_kuka_inspirehand_constants import (
 #    TABLE_LENGTH_Z,
 )
 
-# ADR imports
-from .dextrah_adr import DextrahADR
-
-# Fabrics imports
-from fabrics_sim.fabrics.kuka_allegro_pose_fabric import KukaAllegroPoseFabric
-from fabrics_sim.integrator.integrators import DisplacementIntegrator
-from fabrics_sim.utils.utils import initialize_warp, capture_fabric
-from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
-from fabrics_sim.utils.path_utils import get_robot_urdf_path
-from fabrics_sim.taskmaps.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
-
 class DextrahKukaInspirehandEnv(DirectRLEnv):
     cfg: DextrahKukaInspirehandEnvCfg
 
@@ -73,9 +64,9 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_robot_dofs = self.robot.num_joints
-        self.cfg.num_actions = 11
+        # self.cfg.num_actions = 19
+        # self.num_actions = self.cfg.num_actions
 
-        self.num_actions = self.cfg.num_actions
         self.num_observations = (
             self.cfg.num_student_observations if self.cfg.distillation
             else self.cfg.num_teacher_observations
@@ -85,6 +76,16 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.simulate_stereo = self.use_camera and self.cfg.simulate_stereo
         self.stereo_baseline = self.cfg.stereo_baseline
 
+        # list of actuated joints
+        self.actuated_dof_indices = list()
+        for joint_name in cfg.actuated_joint_names:
+            self.actuated_dof_indices.append(self.robot.joint_names.index(joint_name))
+
+        # actions are 1:1 with actuated joints
+        self.cfg.num_actions = len(self.actuated_dof_indices)
+        self.num_actions = self.cfg.num_actions
+        self.actions = torch.zeros(self.num_envs, self.num_actions, device=self.device)
+
         # buffers for position targets
         self.robot_dof_targets =\
             torch.zeros((self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device)
@@ -92,17 +93,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             torch.zeros((self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device)
         self.dof_vel_targets =\
             torch.zeros((self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device)
-
-        # Dynamically calculate upper and lower pose action limits
-        if self.cfg.max_pose_angle <= 0:
-            raise ValueError('Max pose angle must be positive')
-        self.PALM_POSE_MINS = PALM_POSE_MINS_FUNC(self.cfg.max_pose_angle)
-        self.PALM_POSE_MAXS = PALM_POSE_MAXS_FUNC(self.cfg.max_pose_angle)
-
-        # list of actuated joints
-        self.actuated_dof_indices = list()
-        for joint_name in cfg.actuated_joint_names:
-            self.actuated_dof_indices.append(self.robot.joint_names.index(joint_name))
 
         # finger bodies
         self.hand_bodies = list()
@@ -113,7 +103,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # joint limits
         joint_pos_limits = self.robot.root_physx_view.get_dof_limits().to(self.device)
-        # NOTE: this arranges the limits to be in the same joint order as fabrics
         self.robot_dof_lower_limits = joint_pos_limits[..., 0][:, self.actuated_dof_indices]
         self.robot_dof_upper_limits = joint_pos_limits[..., 1][:, self.actuated_dof_indices]
 
@@ -124,11 +113,12 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # Nominal reset states for the robot
         self.robot_start_joint_pos =\
-            torch.tensor([-0.85, -0.0,  0.76,  1.25, -1.76, 0.90, 0.64,
-                          0.0,  0.3,  0.3,  0.3,
-                          0.0,  0.3,  0.3,  0.3,
-                          0.0,  0.3,  0.3,  0.3,
-                          1.5,  0.60147215,  0.33795027,  0.60845138], device=self.device)
+            torch.tensor([-0.85, -0.0,  0.76,  1.25, -1.76, 0.90, 0.64, # arm
+                          0.0,  0.3, # index finger
+                          0.0,  0.3, # middle finger
+                          0.0,  0.3, # ring finger
+                          0.0,  0.3, # little finger
+                          1.5,  0.60147215,  0.33795027,  0.60845138], device=self.device) # thumb
         self.robot_start_joint_pos =\
             self.robot_start_joint_pos.repeat(self.num_envs, 1).contiguous()
         # Start with zero initial velocities and accelerations
@@ -138,8 +128,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Nominal finger curled config
         self.curled_q =\
             torch.tensor([0.0,  0.,  0.,  0., # NOTE: used to be 0.3 for last 3 joints
-                          0.0,  0.,  0.,  0.,
-                          0.0,  0.,  0.,  0.,
+                          0.0,  0.3, # index finger
+                          0.0,  0.3, # middle finger
+                          0.0,  0.3, # ring finger
+                          0.0,  0.3, # little finger
                           1.5,  0.60147215,  0.33795027,  0.60845138], device=self.device)
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
@@ -158,8 +150,9 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # The global minimum adr increment across all GPUs. initialized to the starting adr
         self.global_min_adr_increment = self.local_adr_increment.clone()
 
-        # Set up fabrics with cuda graph and everything
-        self._setup_geometric_fabrics()
+        # PD action buffers
+        self.joint_position_targets = torch.clone(self.robot_start_joint_pos)
+        self.joint_velocity_targets = torch.zeros_like(self.robot_start_joint_vel)
 
         # Preallocate some reward related signals
         self.hand_to_object_pos_error = torch.ones(self.num_envs, device=self.device) 
@@ -195,8 +188,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.robot_joint_vel_noise_width = torch.zeros(self.num_envs, 1, device=self.device)
 
         # For querying 3D points on hand
-        robot_dir_name = "kuka_allegro"
-        robot_name = "kuka_allegro"
+        robot_dir_name = "kuka_inspirehand"
+        robot_name = "kuka_inspirehand"
+
+        # TODO: this is a fabric based forward kinematics helper
+        # TODO: it should be possible to switch to isaacsim property readings
         self.urdf_path = get_robot_urdf_path(robot_dir_name, robot_name)
         self.hand_points_taskmap = RobotFrameOriginsTaskMap(self.urdf_path, self.cfg.hand_body_names,
                                                             self.num_envs, self.device)
@@ -301,93 +297,22 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         num_unique_objects = self.find_num_unique_objects(self.cfg.objects_dir)
 
-        self.cfg.num_student_observations = 159
-        self.cfg.num_teacher_observations = 167 + num_unique_objects
+        # Hardcode observation sizes (base + num_unique_objects), similar to upstream pattern
+        # num_actuated = 19, num_hand_bodies = 6 -> student obs = 96
+        self.cfg.num_student_observations = 96
+        # Teacher: base 104 plus num_unique_objects
+        self.cfg.num_teacher_observations = 104 + num_unique_objects
         if self.cfg.distillation:
             self.cfg.num_observations = self.cfg.num_student_observations
         else:
             self.cfg.num_observations = self.cfg.num_teacher_observations
-        self.cfg.num_states = 214 + num_unique_objects
+        # Critic: base 150 plus num_unique_objects
+        self.cfg.num_states = 150 + num_unique_objects
 
         self.cfg.state_space = self.cfg.num_states
         self.cfg.observation_space = self.cfg.num_observations
         self.cfg.action_space = self.cfg.num_actions
 
-    def _setup_geometric_fabrics(self) -> None:
-        # Set the warp cache directory based on device int
-        warp_cache_dir = self.device[-1]
-        initialize_warp(warp_cache_dir)
-
-        # This creates a world model that book keeps all the meshes
-        # in the world, their pose, name, etc.
-        print('Creating fabrics world-------------------------------')
-        world_filename = 'kuka_allegro_boxes'
-        max_objects_per_env = 20
-        self.world_model = WorldMeshesModel(batch_size=self.num_envs,
-                                            max_objects_per_env=max_objects_per_env,
-                                            device=self.device,
-                                            world_filename=world_filename)
-
-        # This reports back handles to the meshes which is consumed
-        # by the fabric for collision avoidance
-        self.object_ids, self.object_indicator = self.world_model.get_object_ids()
-
-        # Control rate and time settings
-        #self.timestep = self.sim.get_physics_dt()
-        self.timestep = self.cfg.fabrics_dt
-
-        # Create Kuka-Allegro fabric palm pose and finger PCA action spaces
-        self.kuka_allegro_fabric =\
-            KukaAllegroPoseFabric(self.num_envs, self.device, self.timestep, graph_capturable=True)
-        num_joints = self.kuka_allegro_fabric.num_joints
-                    
-        # Create integrator for the fabric dynamics.
-        self.kuka_allegro_integrator = DisplacementIntegrator(self.kuka_allegro_fabric)
-
-        # Pre-allocate fabrics states
-        self.fabric_q = self.robot_start_joint_pos.clone().contiguous() 
-        # Start with zero initial velocities and accelerations
-        self.fabric_qd = torch.zeros(self.num_envs, num_joints, device=self.device)
-        self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
-
-        # Pre-allocate target tensors
-        pca_dim = 5
-        self.hand_pca_targets = torch.zeros(self.num_envs, pca_dim, device=self.device)
-        # Palm target is (origin, Euler ZYX)
-        pose_dim = 6
-        self.palm_pose_targets = torch.zeros(self.num_envs, pose_dim, device=self.device)
-
-        # Fabric cspace damping gain
-        self.fabric_damping_gain =\
-            self.dextrah_adr.get_custom_param_value("fabric_damping", "gain") *\
-            torch.ones(self.num_envs, 1, device=self.device)
-
-        # Graph capture if enabled
-        # NOTE: elements of inputs must be in the same order as expected in the set_features function
-        # of the fabric
-        if self.cfg.use_cuda_graph:
-            # Establish inputs
-            self.inputs = [self.hand_pca_targets, self.palm_pose_targets, "euler_zyx", # actions in
-                           self.fabric_q.detach(), self.fabric_qd.detach(), # fabric state
-                           self.object_ids, self.object_indicator, # world model
-                           self.fabric_damping_gain]
-            # Capture the forward pass of evaluating the fabric given the inputs and integrating one step
-            # in time
-            self.g, self.fabric_q_new, self.fabric_qd_new, self.fabric_qdd_new =\
-                capture_fabric(self.kuka_allegro_fabric,
-                               self.fabric_q,
-                               self.fabric_qd,
-                               self.fabric_qdd,
-                               self.timestep,
-                               self.kuka_allegro_integrator,
-                               self.inputs,
-                               self.device)
-
-        # Preallocate tensors for fabrics state meant to go into obs buffer
-        self.fabric_q_for_obs = torch.clone(self.fabric_q)
-        self.fabric_qd_for_obs = torch.clone(self.fabric_qd)
-        self.fabric_qdd_for_obs = torch.clone(self.fabric_qdd)
-    
     def _set_pos_marker(self, pos):
         pos = pos + self.scene.env_origins
         self.pred_pos_markers.visualize(pos, self.object_rot)
@@ -634,44 +559,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         self.actions = actions.clone()
 
-        # Update the palm pose and pca targets based on agent actions
+        # Map actions to joint position/velocity targets
         self.compute_actions(self.actions)
-
-        # Update fabric cspace damping gain based on ADR
-        fabric_damping_gain = self.dextrah_adr.get_custom_param_value("fabric_damping", "gain") *\
-            torch.ones(self.num_envs, 1, device=self.device)
-        self.fabric_damping_gain.copy_(fabric_damping_gain)
-
-        # Evaluate fabric without cuda graph
-        if not self.cfg.use_cuda_graph:
-            self.inputs = [self.hand_pca_targets, self.palm_pose_targets, "euler_zyx", # actions in
-                           self.fabric_q.detach(), self.fabric_qd.detach(), # fabric state
-                           self.object_ids, self.object_indicator, # world model
-                           self.fabric_damping_gain]
-            self.kuka_allegro_fabric.set_features(*self.inputs)
-            for i in range(self.cfg.fabric_decimation):
-                self.fabric_q, self.fabric_qd, self.fabric_qdd = self.kuka_allegro_integrator.step(
-                    self.fabric_q.detach(), self.fabric_qd.detach(), self.fabric_qdd.detach(), self.timestep
-                    )
-        else:
-            # Replay through the fabric graph with the latest action inputs
-            for i in range(self.cfg.fabric_decimation):
-                # Evaluate the fabric via graph replay
-                self.g.replay()
-
-                # Update the fabric states
-                self.fabric_q.copy_(self.fabric_q_new)
-                self.fabric_qd.copy_(self.fabric_qd_new)
-                self.fabric_qdd.copy_(self.fabric_qdd_new)
 
         # Add F/T wrench to object
         self.apply_object_wrench()
 
     def _apply_action(self) -> None:
-        # Set fabric states to position and velocity targets
-        self.dof_pos_targets[:, self.actuated_dof_indices] = torch.clone(self.fabric_q)
-        self.dof_vel_targets[:, self.actuated_dof_indices] = torch.clone(self.fabric_qd)
-
         # Set position target
         self.robot.set_joint_position_target(
             self.dof_pos_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
@@ -901,8 +795,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # Determine if the object is out of reach by checking XYZ position
-        # XY should be within certain limits on the table to be within
-        # the allowable work volume as set by fabrics
+        # XY should be within certain limits on the table to stay in the workspace
 
         # If Z is too low, then it has probably fallen off
         object_outside_upper_x = self.object_pos[:,0] > (self.cfg.x_center + self.cfg.x_width / 2.)
@@ -1005,15 +898,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             env_ids=env_ids, joint_ids=self.actuated_dof_indices)
         self.robot.set_joint_velocity_target(dof_vel[:, self.actuated_dof_indices],
             env_ids=env_ids, joint_ids=self.actuated_dof_indices)
-
-        # Set the fabric state to the reset position and vel
-        self.fabric_start_pos = self.fabric_q.clone()
-        self.fabric_start_pos[env_ids, :] = dof_pos[:, self.actuated_dof_indices].clone()
-        self.fabric_start_vel = self.fabric_qd.clone()
-        self.fabric_start_vel[env_ids, :] = dof_vel[:, self.actuated_dof_indices].clone()
-
-        self.fabric_q.copy_(self.fabric_start_pos)
-        self.fabric_qd.copy_(self.fabric_start_vel)
 
         # Poll robot and object data
         self._compute_intermediate_values()
@@ -1331,7 +1215,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Robot fingertip and palm velocity. 6D
         self.hand_vel = self.robot.data.body_vel_w[:, self.hand_bodies]
 
-        # Noisy hand point position and velocity as calculated from fabric taskmap
+        # Noisy hand point position and velocity from hand taskmap
         self.hand_pos_noisy, hand_points_jac = self.hand_points_taskmap(self.robot_dof_pos_noisy, None)
         self.hand_vel_noisy = torch.bmm(hand_points_jac, self.robot_dof_vel_noisy.unsqueeze(2)).squeeze(2)
         self.hand_vel_noisy *= self.dextrah_adr.get_custom_param_value(
@@ -1372,21 +1256,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.table_pos = self.table.data.root_pos_w - self.scene.env_origins
         self.table_pos_z = self.table_pos[:, 2]
 
-        # Update fabric data
-        self.fabric_q_for_obs.copy_(self.fabric_q)
-        self.fabric_qd_for_obs.copy_(
-            self.fabric_qd * self.dextrah_adr.get_custom_param_value(
-                "observation_annealing"
-                ,"coefficient"
-            )
-        )
-        self.fabric_qdd_for_obs.copy_(
-            self.fabric_qdd * self.dextrah_adr.get_custom_param_value(
-                "observation_annealing"
-                ,"coefficient"
-            )
-        )
-
     def compute_intermediate_reward_values(self):
         # Calculate distance between object and its goal position
         self.object_to_object_goal_pos_error =\
@@ -1412,29 +1281,16 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
     def compute_actions(self, actions: torch.Tensor) -> None: #torch.Tensor:
         assert_equals(actions.shape, (self.num_envs, self.cfg.num_actions))
 
-        # Slice out the actions for the palm and the hand
-        palm_actions = actions[:, : (NUM_XYZ + NUM_RPY)]
-        hand_actions = actions[
-            :, (NUM_XYZ + NUM_RPY) : (NUM_HAND_PCA + NUM_XYZ + NUM_RPY)
-        ]
-
-        # In-place update to palm pose targets
-        self.palm_pose_targets.copy_(
-            compute_absolute_action(
-                raw_actions=palm_actions,
-                lower_limits=self.palm_pose_lower_limits,
-                upper_limits=self.palm_pose_upper_limits,
-            )
+        # Scale actions to joint limits and set PD targets
+        joint_targets = compute_absolute_action(
+            raw_actions=actions,
+            lower_limits=self.robot_dof_lower_limits[0],
+            upper_limits=self.robot_dof_upper_limits[0],
         )
 
-        # In-place update to hand PCA targets
-        self.hand_pca_targets.copy_(
-            compute_absolute_action(
-                raw_actions=hand_actions,
-                lower_limits=self.hand_pca_lower_limits,
-                upper_limits=self.hand_pca_upper_limits,
-            )
-        )
+        self.joint_position_targets[:, self.actuated_dof_indices] = joint_targets
+        self.dof_pos_targets[:, self.actuated_dof_indices] = joint_targets
+        self.dof_vel_targets[:, self.actuated_dof_indices] = self.joint_velocity_targets
 
     def compute_student_policy_observations(self):
         obs = torch.cat(
@@ -1448,10 +1304,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.object_goal, # 76:79
                 # last action
                 self.actions, # 79:90
-                # fabric states
-                self.fabric_q_for_obs, # 90:113
-                self.fabric_qd_for_obs, # 113:136
-                self.fabric_qdd_for_obs, # 136:159
             ),
             dim=-1,
         )
@@ -1480,10 +1332,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.object_scale,
                 # last action
                 self.actions,
-                # fabric states
-                self.fabric_q_for_obs,
-                self.fabric_qd_for_obs,
-                self.fabric_qdd_for_obs,
             ),
             dim=-1,
         )
@@ -1512,10 +1360,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.object_scale,
                 # last action
                 self.actions,
-                # fabric states
-                self.fabric_q.clone(),
-                self.fabric_qd.clone(),
-                self.fabric_qdd.clone(),
                 # dr values for robot
                 # TODO: should scale dof stiffness and damping if you want them.
                 # NOTE: probably don't need them because dynamic response for robot
@@ -1596,26 +1440,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Write wrench data to sim
         self.object.write_data_to_sim()
 
-    @property
-    @functools.lru_cache()
-    def hand_pca_lower_limits(self) -> torch.Tensor:
-        return to_torch(HAND_PCA_MINS, device=self.device)
-
-    @property
-    @functools.lru_cache()
-    def hand_pca_upper_limits(self) -> torch.Tensor:
-        return to_torch(HAND_PCA_MAXS, device=self.device)
-
-    @property
-    @functools.lru_cache()
-    def palm_pose_lower_limits(self) -> torch.Tensor:
-        return to_torch(self.PALM_POSE_MINS, device=self.device)
-
-    @property
-    @functools.lru_cache()
-    def palm_pose_upper_limits(self) -> torch.Tensor:
-        return to_torch(self.PALM_POSE_MAXS, device=self.device)
-
 @torch.jit.script
 def compute_rewards(
     reset_buf: torch.Tensor,
@@ -1642,7 +1466,7 @@ def compute_rewards(
     object_to_goal_reward =\
         object_to_goal_weight * torch.exp(object_to_goal_sharpness * object_to_object_goal_pos_error)
 
-    # Regularizer on hand joints via the fabric state towards a nominally curled config
+    # Regularizer on hand joints towards a nominally curled config
     # I brought this in because the fingers seem to curl in a lot to play with the object
     # A good strategy is to approach the object with wider set fingers and then encase the object
     # flexing inwards
