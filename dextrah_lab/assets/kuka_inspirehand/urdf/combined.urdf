@@ -455,9 +455,36 @@
     <!-- <origin xyz="0.5 0.5 0.5" rpy="-1.5707963 0 0" /> -->
     <origin xyz="0.0 0.0 0.0" rpy="-1.5707963 0 0" />
     <parent link="iiwa7_link_7"/>
-    <child link="palm"/>
+    <child link="inspirehand_mount"/>
   </joint>
   
+  <link name="inspirehand_mount">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.05" />
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <!-- TODO: add mount mesh if available -->
+      <geometry>
+        <box size="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="inspirehand_mount_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0" />
+    <parent link="inspirehand_mount" />
+    <child link="palm" />
+  </joint>
+
   <link
     name="palm">
     <inertial>
@@ -506,8 +533,8 @@
     <origin
       xyz="0.00028533 -0.1366 -0.027269"
       rpy="-0.034907 0 3.1416" />
-    <parent link="palm" />
-    <child link="Link3" />
+  <parent link="palm" />
+  <child link="index_link_0" />
     <axis xyz="0 0 1" />
     <limit
       lower="-2"
@@ -517,7 +544,7 @@
   </joint>
 
   <link
-    name="Link3">
+    name="index_link_0">
     <inertial>
       <origin
         xyz="0.0031774 0.017383 0.00090008"
@@ -538,7 +565,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link3.STL" />
+          filename="./meshes/index_link_0.STL" />
       </geometry>
       <material
         name="">
@@ -552,7 +579,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link3.STL" />
+          filename="./meshes/index_link_0.STL" />
       </geometry>
     </collision>
   </link>
@@ -563,10 +590,10 @@
     <origin
       xyz="0.0070171 0.037468 -0.00215"
       rpy="0 0 0" />
-    <parent
-      link="Link3" />
-    <child
-      link="Link4" />
+  <parent
+      link="index_link_0" />
+  <child
+      link="index_link_1" />
     <axis
       xyz="0 0 1" />
     <limit
@@ -577,7 +604,7 @@
   </joint>
 
   <link
-    name="Link4">
+    name="index_link_1">
     <inertial>
       <origin
         xyz="-0.0019697 0.019589 0.00305"
@@ -598,7 +625,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link4.STL" />
+          filename="./meshes/index_link_1.STL" />
       </geometry>
       <material
         name="">
@@ -612,7 +639,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link4.STL" />
+          filename="./meshes/index_link_1.STL" />
       </geometry>
     </collision>
   </link>
@@ -626,7 +653,7 @@
       xyz="0.00028533 -0.1371 -0.00795"
       rpy="0 0 3.1416" />
     <parent link="palm" />
-    <child link="Link13" />
+    <child link="middle_link_0" />
     <axis xyz="0 0 1" />
     <limit
       lower="-2"
@@ -636,7 +663,7 @@
   </joint>
 
   <link
-    name="Link13">
+    name="middle_link_0">
     <inertial>
       <origin
         xyz="0.0030737 0.017402 0.00090013"
@@ -657,7 +684,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link13.STL" />
+          filename="./meshes/middle_link_0.STL" />
       </geometry>
       <material
         name="">
@@ -671,7 +698,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link13.STL" />
+          filename="./meshes/middle_link_0.STL" />
       </geometry>
     </collision>
   </link>
@@ -683,9 +710,9 @@
       xyz="0.0067937 0.037509 -0.00215"
       rpy="0 0 0" />
     <parent
-      link="Link13" />
+      link="middle_link_0" />
     <child
-      link="Link14" />
+      link="middle_link_1" />
     <axis
       xyz="0 0 -1" />
     <limit
@@ -696,7 +723,7 @@
   </joint>
 
   <link
-    name="Link14">
+    name="middle_link_1">
     <inertial>
       <origin
         xyz="-0.001921 0.020796 0.00305"
@@ -717,7 +744,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link14.STL" />
+          filename="./meshes/middle_link_1.STL" />
       </geometry>
       <material
         name="">
@@ -731,7 +758,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link14.STL" />
+          filename="./meshes/middle_link_1.STL" />
       </geometry>
     </collision>
   </link>
@@ -744,7 +771,7 @@
       xyz="0.00028533 -0.13681 0.0112844"
       rpy="0.05236 0 -3.1416" />
     <parent link="palm" />
-    <child link="Link23" />
+    <child link="ring_link_0" />
     <axis xyz="0 0 1" />
     <limit
       lower="-2"
@@ -754,7 +781,7 @@
   </joint>
 
   <link
-    name="Link23">
+    name="ring_link_0">
     <inertial>
       <origin
         xyz="0.0030737 0.017402 0.00090015"
@@ -775,7 +802,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link23.STL" />
+          filename="./meshes/ring_link_0.STL" />
       </geometry>
       <material
         name="">
@@ -789,7 +816,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link23.STL" />
+          filename="./meshes/ring_link_0.STL" />
       </geometry>
     </collision>
   </link>
@@ -801,9 +828,9 @@
       xyz="0.0067937 0.037509 -0.00215"
       rpy="0 0 0" />
     <parent
-      link="Link23" />
+      link="ring_link_0" />
     <child
-      link="Link24" />
+      link="ring_link_1" />
     <axis
       xyz="0 0 1" />
     <limit
@@ -814,7 +841,7 @@
   </joint>
 
   <link
-    name="Link24">
+    name="ring_link_1">
     <inertial>
       <origin
         xyz="-0.0021753 0.019567 0.00305"
@@ -835,7 +862,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link24.STL" />
+          filename="./meshes/ring_link_1.STL" />
       </geometry>
       <material
         name="">
@@ -849,19 +876,19 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link24.STL" />
+          filename="./meshes/ring_link_1.STL" />
       </geometry>
     </collision>
   </link>
 
 <!-- little finger -->
   <joint name="little_joint_0" type="revolute">
-    <!-- The joint origin defines the transform from parent link to joint frame -->
-    <origin xyz="0.00028533 -0.13551 0.030477" rpy="0.10472 0 -3.1416"/>
+  <!-- The joint origin defines the transform from parent link to joint frame -->
+  <origin xyz="0.00028533 -0.13551 0.030477" rpy="0.10472 0 -3.1416"/>
 
-    <!-- Parent and child links -->
-    <parent link="palm"/>
-    <child link="Link33"/>
+  <!-- Parent and child links -->
+  <parent link="palm"/>
+  <child link="little_link_0"/>
 
     <!-- Axis of rotation (in joint frame) -->
     <axis xyz="0 0 1"/>
@@ -871,7 +898,7 @@
   </joint>
 
   <link
-    name="Link33">
+    name="little_link_0">
     <inertial>
       <origin
         xyz="0.0030737 0.017402 0.00090014"
@@ -892,7 +919,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link33.STL" />
+          filename="./meshes/little_link_0.STL" />
       </geometry>
       <material
         name="">
@@ -906,7 +933,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link33.STL" />
+          filename="./meshes/little_link_0.STL" />
       </geometry>
     </collision>
   </link>
@@ -918,9 +945,9 @@
       xyz="0.0067937 0.037509 -0.00215"
       rpy="0 0 0" />
     <parent
-      link="Link33" />
+      link="little_link_0" />
     <child
-      link="Link34" />
+      link="little_link_1" />
     <axis
       xyz="0 0 -1" />
     <limit
@@ -931,7 +958,7 @@
   </joint>
 
   <link
-    name="Link34">
+    name="little_link_1">
     <inertial>
       <origin
         xyz="-0.0024748 0.016203 0.0030531"
@@ -952,7 +979,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link34.STL" />
+          filename="./meshes/little_link_1.STL" />
       </geometry>
       <material
         name="">
@@ -966,7 +993,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link34.STL" />
+          filename="./meshes/little_link_1.STL" />
       </geometry>
     </collision>
   </link>
@@ -980,7 +1007,7 @@
 
   <!-- Parent and child links -->
   <parent link="palm"/>
-  <child link="Link43"/>
+  <child link="thumb_link_0"/>
 
   <!-- Axis of rotation -->
   <axis xyz="0 0 -1"/>
@@ -990,7 +1017,7 @@
 </joint>
 
   <link
-    name="Link43">
+    name="thumb_link_0">
     <inertial>
       <origin
         xyz="-0.0078715 0.0065154 0.00388"
@@ -1011,7 +1038,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link43.STL" />
+          filename="./meshes/thumb_link_0.STL" />
       </geometry>
       <material
         name="">
@@ -1025,7 +1052,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link43.STL" />
+          filename="./meshes/thumb_link_0.STL" />
       </geometry>
     </collision>
   </link>
@@ -1037,9 +1064,9 @@
       xyz="-0.012782 0.013348 0.0022"
       rpy="1.5708 0 2.8587" />
     <parent
-      link="Link43" />
+      link="thumb_link_0" />
     <child
-      link="Link44" />
+      link="thumb_link_1" />
     <axis
       xyz="0 0 -1" />
     <limit
@@ -1050,7 +1077,7 @@
   </joint>
 
   <link
-    name="Link44">
+    name="thumb_link_1">
     <inertial>
       <origin
         xyz="0.021932 0.012785 -0.0047886"
@@ -1071,7 +1098,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link44.STL" />
+          filename="./meshes/thumb_link_1.STL" />
       </geometry>
       <material
         name="">
@@ -1085,7 +1112,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link44.STL" />
+          filename="./meshes/thumb_link_1.STL" />
       </geometry>
     </collision>
   </link>
@@ -1095,8 +1122,8 @@
   <origin xyz="0.05507 0.025553 -0.00355" rpy="-3.1416 0 -3.1416"/>
 
   <!-- Parent and child links -->
-  <parent link="Link44"/>
-  <child link="Link47"/>
+  <parent link="thumb_link_1"/>
+  <child link="thumb_link_2"/>
 
   <!-- Axis of rotation (in joint frame) -->
   <axis xyz="0 0 -1"/>
@@ -1106,7 +1133,7 @@
 </joint>
 
   <link
-    name="Link47">
+    name="thumb_link_2">
     <inertial>
       <origin
         xyz="-0.0060688 0.011295 0.00099972"
@@ -1127,7 +1154,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link47.STL" />
+          filename="./meshes/thumb_link_2.STL" />
       </geometry>
       <material
         name="">
@@ -1141,7 +1168,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link47.STL" />
+          filename="./meshes/thumb_link_2.STL" />
       </geometry>
     </collision>
   </link>
@@ -1153,9 +1180,9 @@
       xyz="-0.016763 0.023079 -0.00255"
       rpy="0 0 0" />
     <parent
-      link="Link47" />
+      link="thumb_link_2" />
     <child
-      link="Link48" />
+      link="thumb_link_3" />
     <axis
       xyz="0 0 -1" />
     <limit
@@ -1166,7 +1193,7 @@
   </joint>
 
   <link
-    name="Link48">
+    name="thumb_link_3">
     <inertial>
       <origin
         xyz="-0.0092888 0.0049529 0.0035533"
@@ -1187,7 +1214,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link48.STL" />
+          filename="./meshes/thumb_link_3.STL" />
       </geometry>
       <material
         name="">
@@ -1201,7 +1228,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="./meshes/Link48.STL" />
+          filename="./meshes/thumb_link_3.STL" />
       </geometry>
     </collision>
   </link>
