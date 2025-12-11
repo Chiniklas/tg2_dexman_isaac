@@ -16,3 +16,5 @@ table_textures/
 curated_table_textures/
 eval_results/
 dextrah_lab/assets/
+reference/
+dextrah_lab/stored_policies/
