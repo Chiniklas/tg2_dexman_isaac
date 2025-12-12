@@ -309,7 +309,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=2., replicate_physics=False)
 
     # reward weights
-    hand_to_object_weight = 1.
+    # hand_to_object_weight = 1.
+    hand_to_object_weight = 5.
     hand_to_object_sharpness = 10.
     object_to_goal_weight = 5.
     in_success_region_at_rest_weight = 10.

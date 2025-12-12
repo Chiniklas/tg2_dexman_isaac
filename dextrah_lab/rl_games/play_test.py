@@ -59,7 +59,7 @@ from isaaclab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, pa
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
 import dextrah_lab.tasks.dextrah_kuka_allegro.gym_setup
-
+import dextrah_lab.tasks.dextrah_kuka_inspirehand.gym_setup
 
 def _prepare_single_object_dir(base_objects_dir: str, object_name: str) -> str:
     """Create a single-object view while preserving the original one-hot length.

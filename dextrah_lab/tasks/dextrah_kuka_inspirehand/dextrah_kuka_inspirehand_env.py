@@ -57,6 +57,10 @@ from .dextrah_kuka_inspirehand_constants import (
 #    TABLE_LENGTH_Z,
 )
 
+# this is for calculating the forward kinematics on the hand points
+from fabrics_sim.utils.path_utils import get_robot_urdf_path
+from fabrics_sim.taskmaps.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
+
 class DextrahKukaInspirehandEnv(DirectRLEnv):
     cfg: DextrahKukaInspirehandEnvCfg
 
@@ -118,7 +122,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                           0.0,  0.3, # middle finger
                           0.0,  0.3, # ring finger
                           0.0,  0.3, # little finger
-                          1.5,  0.60147215,  0.33795027,  0.60845138], device=self.device) # thumb
+                          1.0,  0.3,  0.3,  0.6], device=self.device) # thumb
         self.robot_start_joint_pos =\
             self.robot_start_joint_pos.repeat(self.num_envs, 1).contiguous()
         # Start with zero initial velocities and accelerations
@@ -126,13 +130,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             torch.zeros(self.num_envs, self.num_robot_dofs, device=self.device)
 
         # Nominal finger curled config
+        # Only the finger joints (index, middle, ring, little, thumb) – matches robot_dof_pos[:, 7:]
         self.curled_q =\
-            torch.tensor([0.0,  0.,  0.,  0., # NOTE: used to be 0.3 for last 3 joints
-                          0.0,  0.3, # index finger
-                          0.0,  0.3, # middle finger
-                          0.0,  0.3, # ring finger
-                          0.0,  0.3, # little finger
-                          1.5,  0.60147215,  0.33795027,  0.60845138], device=self.device)
+            torch.tensor([0.0,  0.0,  # index finger
+                          0.0,  0.0,  # middle finger
+                          0.0,  0.0,  # ring finger
+                          0.0,  0.0,  # little finger
+                          1.0,  0.3,  0.3,  0.6], device=self.device)
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
         # Set up ADR
@@ -188,12 +192,14 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.robot_joint_vel_noise_width = torch.zeros(self.num_envs, 1, device=self.device)
 
         # For querying 3D points on hand
-        robot_dir_name = "kuka_inspirehand"
-        robot_name = "kuka_inspirehand"
-
-        # TODO: this is a fabric based forward kinematics helper
-        # TODO: it should be possible to switch to isaacsim property readings
-        self.urdf_path = get_robot_urdf_path(robot_dir_name, robot_name)
+        # robot_dir_name = "kuka_inspirehand"
+        # robot_name = "kuka_inspirehand"
+        # self.urdf_path = get_robot_urdf_path(robot_dir_name, robot_name)
+        
+        # this is a fabric based forward kinematics helper
+        # the purpose is to use forward kinematics to generate a noisy fingertip and palm position and vel
+        # the noisy pos and vel will be compared with pure pos and vel
+        self.urdf_path = "/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/kuka_inspirehand/urdf/kuka_inspirehand_test.urdf"
         self.hand_points_taskmap = RobotFrameOriginsTaskMap(self.urdf_path, self.cfg.hand_body_names,
                                                             self.num_envs, self.device)
 

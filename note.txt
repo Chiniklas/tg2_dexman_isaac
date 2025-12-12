@@ -7,7 +7,6 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
   train.py \
     --task=Dextrah-Kuka-Allegro \
     --seed -1 \
-    --distributed \
     --num_envs 4 \
     agent.params.config.minibatch_size=64 \
     agent.params.config.central_value_config.minibatch_size=64 \
@@ -114,3 +113,15 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
     env.adr_custom_cfg_dict.reward_weights.finger_curl_reg="[-0.01, -0.01]" \
     env.adr_custom_cfg_dict.reward_weights.lift_weight="[5.0, 0.0]" \
     env.use_cuda_graph=False
+  
+# test trained teacher policy
+cd dextrah_lab/rl_games
+python play_test.py \
+  --task Dextrah-Kuka-Inspirehand \
+  --num_envs 1 \
+  --objects_dir visdex_objects \
+  --max_pose_angle 45 \
+  --checkpoint /home/chizhang/projects/DEXTRAH/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2025-12-12_11-49-37/nn/last_dextrah_lstm_ep_20000_rew_-46.002758.pth
+
+## TODO: training is difficult if I don't implement palm pose instructions
+# the upstream allegro task uses fabric controller to ensure the palm is always facing the object 
