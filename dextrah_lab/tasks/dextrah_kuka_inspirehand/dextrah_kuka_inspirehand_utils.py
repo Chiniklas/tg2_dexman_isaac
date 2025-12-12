@@ -48,3 +48,36 @@ def compute_absolute_action(
 @torch.jit.script
 def tensor_clamp(t, min_t, max_t):
     return torch.max(torch.min(t, max_t), min_t)
+
+def quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
+    """Convert quaternion (w, x, y, z) to rotation matrix."""
+    w, x, y, z = q.unbind(-1)
+    ww = w * w
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    wx = w * x
+    wy = w * y
+    wz = w * z
+    xy = x * y
+    xz = x * z
+    yz = y * z
+
+    m00 = ww + xx - yy - zz
+    m01 = 2 * (xy - wz)
+    m02 = 2 * (xz + wy)
+    m10 = 2 * (xy + wz)
+    m11 = ww - xx + yy - zz
+    m12 = 2 * (yz - wx)
+    m20 = 2 * (xz - wy)
+    m21 = 2 * (yz + wx)
+    m22 = ww - xx - yy + zz
+
+    return torch.stack(
+        (
+            torch.stack((m00, m01, m02), dim=-1),
+            torch.stack((m10, m11, m12), dim=-1),
+            torch.stack((m20, m21, m22), dim=-1),
+        ),
+        dim=-2,
+    )

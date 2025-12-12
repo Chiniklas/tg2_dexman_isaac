@@ -37,7 +37,8 @@ from .dextrah_kuka_inspirehand_utils import (
     assert_equals,
     scale,
     compute_absolute_action,
-    to_torch
+    to_torch,
+    quat_to_rotmat
 )
 
 # ADR imports
@@ -60,6 +61,11 @@ from .dextrah_kuka_inspirehand_constants import (
 # this is for calculating the forward kinematics on the hand points
 from fabrics_sim.utils.path_utils import get_robot_urdf_path
 from fabrics_sim.taskmaps.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
+
+## TODO:
+# define a palm direction vector
+# add a palm direction penalty
+# keep the palm to be always facing down
 
 class DextrahKukaInspirehandEnv(DirectRLEnv):
     cfg: DextrahKukaInspirehandEnvCfg
@@ -104,6 +110,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             self.hand_bodies.append(self.robot.body_names.index(body_name))
         self.hand_bodies.sort()
         self.num_hand_bodies = len(self.hand_bodies)
+
+        # Palm body index and local axis used to compute a live palm direction vector.
+        self.palm_body_idx = self.robot.body_names.index("palm")
+        self._palm_local_axis = torch.tensor([0.0, 0.0, 1.0], device=self.device)
+        self.palm_direction_vec = torch.zeros(self.num_envs, 3, device=self.device)
 
         # joint limits
         joint_pos_limits = self.robot.root_physx_view.get_dof_limits().to(self.device)
@@ -759,7 +770,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             hand_to_object_reward,
             object_to_goal_reward,
             finger_curl_reg,
-            lift_reward
+            lift_reward,
+            palm_direction_alignment_reward
         ) = compute_rewards(
                 self.reset_buf,
                 self.in_success_region,
@@ -775,7 +787,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.dextrah_adr.get_custom_param_value("reward_weights", "object_to_goal_sharpness"),
                 self.dextrah_adr.get_custom_param_value("reward_weights", "finger_curl_reg"),
                 self.dextrah_adr.get_custom_param_value("reward_weights", "lift_weight"),
-                self.cfg.lift_sharpness
+                self.cfg.lift_sharpness,
+                0.0,  # placeholder palm direction alignment weight
+                self.palm_direction_vec,  # placeholder current palm direction
+                torch.zeros_like(self.palm_direction_vec),  # placeholder target direction
             )
 
         # Add reward signals to tensorboard
@@ -785,7 +800,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.extras["lift_reward"] = lift_reward.mean()
 
         total_reward = hand_to_object_reward + object_to_goal_reward +\
-                       finger_curl_reg + lift_reward
+                       finger_curl_reg + lift_reward + palm_direction_alignment_reward
 
         # Log other information
         self.extras["num_adr_increases"] = self.dextrah_adr.num_increments()
@@ -1261,6 +1276,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Compute table data
         self.table_pos = self.table.data.root_pos_w - self.scene.env_origins
         self.table_pos_z = self.table_pos[:, 2]
+        # Update palm direction (world-frame) from current palm orientation
+        palm_rot = quat_to_rotmat(self.robot.data.body_rot_w[:, self.palm_body_idx])
+        self.palm_direction_vec = torch.bmm(
+            palm_rot, self._palm_local_axis.expand(self.num_envs, 3, 1)
+        ).squeeze(-1)
 
     def compute_intermediate_reward_values(self):
         # Calculate distance between object and its goal position
@@ -1462,7 +1482,10 @@ def compute_rewards(
     object_to_goal_sharpness: float,
     finger_curl_reg_weight: float,
     lift_weight: float,
-    lift_sharpness: float
+    lift_sharpness: float,
+    palm_alignment_weight: float,
+    palm_dir: torch.Tensor,
+    palm_dir_target: torch.Tensor,
 ):
 
     # Reward for moving fingertip and palm points closer to object centroid point
@@ -1483,7 +1506,12 @@ def compute_rewards(
     # Reward for lifting object off table and towards object goal
     lift_reward = lift_weight * torch.exp(-lift_sharpness * object_vertical_error)
 
-    return hand_to_object_reward, object_to_goal_reward, finger_curl_reg, lift_reward
+    # Placeholder palm direction alignment reward: encourages alignment between palm_dir and palm_dir_target
+    # Currently zeroed by weight; to activate, set palm_alignment_weight>0 and provide a target direction.
+    cos_sim = torch.sum(palm_dir * palm_dir_target, dim=-1)
+    palm_dir_align_reward = palm_alignment_weight * cos_sim
+
+    return hand_to_object_reward, object_to_goal_reward, finger_curl_reg, lift_reward, palm_dir_align_reward
     
 @torch.jit.script
 def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
