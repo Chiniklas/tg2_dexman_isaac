@@ -182,15 +182,16 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         "iiwa7_joint_5",
         "iiwa7_joint_6",
         "iiwa7_joint_7",
+        # order below matches USD joint ordering
         "index_joint_0",
-        "index_joint_1",
-        "middle_joint_0",
-        "middle_joint_1",
-        "ring_joint_0",
-        "ring_joint_1",
         "little_joint_0",
-        "little_joint_1",
+        "middle_joint_0",
+        "ring_joint_0",
         "thumb_joint_0",
+        "index_joint_1",
+        "little_joint_1",
+        "middle_joint_1",
+        "ring_joint_1",
         "thumb_joint_1",
         "thumb_joint_2",
         "thumb_joint_3",
@@ -313,8 +314,10 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     hand_to_object_weight = 5.
     hand_to_object_sharpness = 10.
     object_to_goal_weight = 5.
+    # object_to_goal_weight = 0.
     in_success_region_at_rest_weight = 10.
     lift_sharpness = 8.5
+    palm_direction_alignment_weight = 5.0
 
     # Goal reaching parameters
     object_goal_tol = 0.1 # m
@@ -419,6 +422,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         },
         "reward_weights": {
             "finger_curl_reg": (-0.01, -0.005),
+            # "finger_curl_reg": (-0.1, -0.05),
             "object_to_goal_sharpness": (-15., -20.),
             "lift_weight": (5., 0.)
         },
