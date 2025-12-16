@@ -107,7 +107,7 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
     agent.params.config.learning_rate=0.0001 \
     agent.params.config.horizon_length=16 \
     agent.params.config.mini_epochs=4 \
-    agent.params.config.multi_gpu=True \
+    agent.params.config.multi_gpu=False \
     agent.wandb_activate=False \
     env.success_for_adr=0.4 \
     env.objects_dir=visdex_objects \

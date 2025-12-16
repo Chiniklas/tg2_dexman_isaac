@@ -23,12 +23,14 @@ from isaaclab.assets.articulation import ArticulationCfg
 
 module_path = os.path.dirname(__file__)
 root_path = os.path.dirname(module_path)
-# Update the USD path to point to the Inspirehand USD (expected under assets/kuka_inspirehand).
-kuka_inspirehand_usd_path = os.path.join(root_path, "kuka_inspirehand/kuka_inspirehand.usd")
+# Update the USD path to point to the Inspirehand USD file
+# kuka_inspirehand_usd_path = os.path.join(root_path, "kuka_inspirehand_test.usd")
+kuka_inspirehand_usd_path = "/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand_test.usd"
 KUKA_INSPIREHAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=kuka_inspirehand_usd_path,
-        activate_contact_sensors=False,
+        # activate_contact_sensors=True,
+        activate_contact_sensors = False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,
             retain_accelerations=True,
@@ -70,33 +72,33 @@ KUKA_INSPIREHAND_CFG = ArticulationCfg(
                               "thumb_joint_(0|1|2|3)"],
             effort_limit_sim={
                 "iiwa7_joint_(1|2|3|4|5|6|7)": 300.,
-                "index_joint_(0|1)": 0.5,
-                "middle_joint_(0|1)": 0.5,
-                "ring_joint_(0|1)": 0.5,
-                "little_joint_(0|1)": 0.5,
-                "thumb_joint_(0|1|2|3)": 0.5,
+                "index_joint_(0|1)": 2, # default 0.5
+                "middle_joint_(0|1)": 2,
+                "ring_joint_(0|1)": 2,
+                "little_joint_(0|1)": 2,
+                "thumb_joint_(0|1|2|3)": 2,
             },
             stiffness={
                 "iiwa7_joint_(1|2|3|4)": 300.,
                 "iiwa7_joint_5": 100.,
                 "iiwa7_joint_6": 50.,
                 "iiwa7_joint_7": 25.,
-                "index_joint_(0|1)": 3.0,
-                "middle_joint_(0|1)": 3.0,
-                "ring_joint_(0|1)": 3.0,
-                "little_joint_(0|1)":3.0,
-                "thumb_joint_(0|1|2|3)": 3.0,
+                "index_joint_(0|1)": 10.0, #default 3 
+                "middle_joint_(0|1)": 10.0,
+                "ring_joint_(0|1)": 10.0,
+                "little_joint_(0|1)":10.0,
+                "thumb_joint_(0|1|2|3)": 10.0,
             },
             damping={
                 "iiwa7_joint_(1|2|3|4)": 45.,
                 "iiwa7_joint_5": 20.,
                 "iiwa7_joint_6": 15.,
                 "iiwa7_joint_7": 15.,
-                "index_joint_(0|1)": 0.1,
-                "middle_joint_(0|1)": 0.1,
-                "ring_joint_(0|1)": 0.1,
-                "little_joint_(0|1)": 0.1,
-                "thumb_joint_(0|1|2|3)": 0.1,
+                "index_joint_(0|1)": 0.5, # default 0.1
+                "middle_joint_(0|1)": 0.5,
+                "ring_joint_(0|1)": 0.5,
+                "little_joint_(0|1)": 0.5,
+                "thumb_joint_(0|1|2|3)": 0.5,
             },
         ),
     },

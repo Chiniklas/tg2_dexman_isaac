@@ -26,7 +26,7 @@ import omni.usd
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv
-from isaaclab.sensors import TiledCamera
+from isaaclab.sensors import TiledCamera, ContactSensor
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
@@ -115,6 +115,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             self.hand_bodies.append(self.robot.body_names.index(body_name))
         self.hand_bodies.sort()
         self.num_hand_bodies = len(self.hand_bodies)
+        # arm bodies (everything not in hand_bodies)
+        self.arm_bodies = [i for i, name in enumerate(self.robot.body_names) if i not in self.hand_bodies]
 
         # Palm body index and local axis used to compute a live palm direction vector.
         self.palm_body_idx = self.robot.body_names.index("palm")
@@ -128,6 +130,18 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         joint_pos_limits = self.robot.root_physx_view.get_dof_limits().to(self.device)
         self.robot_dof_lower_limits = joint_pos_limits[..., 0][:, self.actuated_dof_indices]
         self.robot_dof_upper_limits = joint_pos_limits[..., 1][:, self.actuated_dof_indices]
+        # Debug print joint limits for actuated joints
+        joint_limits = list(
+            zip(
+                self.cfg.actuated_joint_names,
+                self.robot_dof_lower_limits[0].detach().cpu().tolist(),
+                self.robot_dof_upper_limits[0].detach().cpu().tolist(),
+            )
+        )
+        print("[DEBUG] Actuated joint limits (lower, upper):")
+        for name, lo, hi in joint_limits:
+            print(f"  {name}: {lo:.4f}, {hi:.4f}")
+        input("debugging joint limits")
 
         # Setting the target position for the object
         # TODO: need to make these goals dynamic, sampled at the start of the rollout
@@ -137,17 +151,17 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Nominal reset states for the robot
         self.robot_start_joint_pos =\
             torch.tensor([-0.85, -0.0,  0.76,  1.25, -1.76, 0.90, 0.64, # arm
-                          0.0,  # index_joint_0
-                          0.0,  # little_joint_0
-                          0.0,  # middle_joint_0
-                          0.0,  # ring_joint_0
-                          1.0,  # thumb_joint_0
-                          0.3,  # index_joint_1
-                          0.3,  # little_joint_1
-                          0.3,  # middle_joint_1
-                          0.3,  # ring_joint_1
-                          0.3,  # thumb_joint_1
-                          0.3,  # thumb_joint_2
+                          0.55,  # index_joint_0
+                          0.55,  # little_joint_0
+                          0.55,  # middle_joint_0
+                          0.55,  # ring_joint_0
+                          0.3,  # thumb_joint_0
+                          0.85,  # index_joint_1
+                          0.85,  # little_joint_1
+                          0.85,  # middle_joint_1
+                          0.85,  # ring_joint_1
+                          0.25,  # thumb_joint_1
+                          0.25,  # thumb_joint_2
                           0.6], device=self.device) # thumb_joint_3
         self.robot_start_joint_pos =\
             self.robot_start_joint_pos.repeat(self.num_envs, 1).contiguous()
@@ -158,17 +172,17 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Nominal finger curled config
         # Only the finger joints (index, little, middle, ring, thumb) – matches robot_dof_pos[:, 7:]
         self.curled_q =\
-            torch.tensor([0.0,  # index_joint_0
-                          0.0,  # little_joint_0
-                          0.0,  # middle_joint_0
-                          0.0,  # ring_joint_0
-                          1.0,  # thumb_joint_0
-                          0.05,  # index_joint_1
-                          0.05,  # little_joint_1
-                          0.05,  # middle_joint_1
-                          0.05,  # ring_joint_1
-                          0.3,  # thumb_joint_1
-                          0.3,  # thumb_joint_2
+            torch.tensor([0.55,  # index_joint_0
+                          0.55,  # little_joint_0
+                          0.55,  # middle_joint_0
+                          0.55,  # ring_joint_0
+                          0.3,  # thumb_joint_0
+                          0.85,  # index_joint_1
+                          0.85,  # little_joint_1
+                          0.85,  # middle_joint_1
+                          0.85,  # ring_joint_1
+                          0.25,  # thumb_joint_1
+                          0.25,  # thumb_joint_2
                           0.6], device=self.device)
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
@@ -303,6 +317,14 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.right_pos = torch.zeros(self.num_envs, 3).to(self.device)
         self.right_rot = torch.zeros(self.num_envs, 4).to(self.device)
 
+        # # Contact reporting
+        # num_bodies = len(self.robot.body_names)
+        # self.contact_forces = torch.zeros(self.num_envs, num_bodies, 3, device=self.device)
+        # self.contact_mask = torch.zeros(self.num_envs, num_bodies, device=self.device, dtype=torch.bool)
+        # self.arm_in_contact_with_table = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        # self._contact_force_warned = False
+        # self._contact_debug_printed = False
+
 
         # Set the starting default joint friction coefficients
         friction_coeff = torch.tensor(self.cfg.starting_robot_dof_friction_coefficients,
@@ -363,9 +385,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.gt_pos_markers.visualize(pos, self.object_rot)
 
     def _setup_scene(self):
-        # add robot, objects
+        # add robot, objects 
         # TODO: add goal objects?
         self.robot = Articulation(self.cfg.robot_cfg)
+        
         self.table = RigidObject(self.cfg.table_cfg)
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -375,6 +398,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # add articultion to scene - we must register to scene to randomize with EventManager
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["table"] = self.table
+        
+        # add contact sensor
+        # self.contact_sensor = ContactSensor(self.cfg.contact_sensor)
+        # self.scene.sensors["contact_sensor"] = self.contact_sensor
+        
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -812,8 +840,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.dextrah_adr.get_custom_param_value("reward_weights", "finger_curl_reg"),
                 self.dextrah_adr.get_custom_param_value("reward_weights", "lift_weight"),
                 self.cfg.lift_sharpness,
-                self.cfg.palm_direction_alignment_weight,  # placeholder palm direction alignment weight
-                self.palm_direction_vec,  # placeholder current palm direction
+                self.cfg.palm_direction_alignment_weight,  
+                self.palm_direction_vec,  
                 self._palm_dir_target_world.expand_as(self.palm_direction_vec),  # world -Z target
             )
 
@@ -853,11 +881,28 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         z_height_cutoff = 0.2
         object_too_low = self.object_pos[:,2] < z_height_cutoff
 
+        # Hand termination: keep palm origin inside a box above the table surface
+        palm_pos = self.robot.data.body_pos_w[:, self.palm_body_idx] - self.scene.env_origins
+        palm_x_out = (palm_pos[:, 0] > (self.cfg.x_center + self.cfg.x_width / 2.)) | \
+                     (palm_pos[:, 0] < (self.cfg.x_center - self.cfg.x_width / 2.))
+        palm_y_out = (palm_pos[:, 1] > (self.cfg.y_center + self.cfg.y_width / 2.)) | \
+                     (palm_pos[:, 1] < (self.cfg.y_center - self.cfg.y_width / 2.))
+        # Constrain palm height to remain between the table surface and a band above it
+        palm_z_out = (palm_pos[:, 2] < self.table_pos_z) | (palm_pos[:, 2] > (self.table_pos_z + 1.0))
+        hand_too_far = palm_x_out | palm_y_out | palm_z_out
+
+        # Hand termination: any palm/fingertip point closer than 2 cm to table surface
+        hand_min_z = self.hand_pos[..., 2].min(dim=1).values
+        clearance_thresh = self.table_pos_z + 0.02  # 2 cm above table
+        hand_too_close = hand_min_z < clearance_thresh
+
         out_of_reach = object_outside_upper_x | \
                        object_outside_lower_x | \
                        object_outside_upper_y | \
                        object_outside_lower_y | \
-                       object_too_low
+                       object_too_low | \
+                       hand_too_far | \
+                       hand_too_close
 
         # Terminate rollout if maximum episode length reached
         if self.cfg.distillation:
@@ -1269,6 +1314,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             ,"coefficient"
         )
 
+        # Compute table data (per-step)
+        self.table_pos = self.table.data.root_pos_w - self.scene.env_origins
+        self.table_pos_z = self.table_pos[:, 2]
+
         # Query the finger forces
         self.hand_forces =\
             self.robot.root_physx_view.get_link_incoming_joint_force()[:, self.hand_bodies]
@@ -1277,6 +1326,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Query the measured torque on the joints
         self.measured_joint_torque =\
             self.robot.root_physx_view.get_dof_projected_joint_forces()
+        # Contact forces/mask for all robot bodies (commented out)
+        # self.contact_forces.zero_()
+        # self.contact_mask.zero_()
+        # self.arm_in_contact_with_table.zero_()
+        # if not self._contact_debug_printed:
+        #     print("[DEBUG] contact reporting disabled; forces/mask zeroed.")
+        #     self._contact_debug_printed = True
 
         # Data from objects------------------------
         # Object translational position, 3D
@@ -1298,9 +1354,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Object full velocity, 6D
         self.object_vel = self.object.data.root_vel_w
 
-        # Compute table data
-        self.table_pos = self.table.data.root_pos_w - self.scene.env_origins
-        self.table_pos_z = self.table_pos[:, 2]
         # Update palm direction (world-frame) from current palm orientation
         palm_rot = quat_to_rotmat(self.robot.data.body_quat_w[:, self.palm_body_idx])
         self.palm_direction_vec = torch.bmm(

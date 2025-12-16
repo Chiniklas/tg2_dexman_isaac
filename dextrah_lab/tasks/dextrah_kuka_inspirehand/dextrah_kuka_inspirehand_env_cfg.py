@@ -22,7 +22,7 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import TiledCameraCfg
+from isaaclab.sensors import TiledCameraCfg, ContactSensorCfg
 from isaaclab.sim import PhysxCfg, SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils import configclass
@@ -286,6 +286,14 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         [0., 0., 1.]
     ]
 
+    # # Contact sensor on the robot to fetch per-link contact forces
+    # contact_sensor: ContactSensorCfg = ContactSensorCfg(
+    #     prim_path="/World/envs/env_.*/Robot/iiwa7_link_7",
+    #     update_period=0.0,
+    #     history_length=1,
+    #     debug_vis=True,
+    # )
+
     pred_pos_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/pos_marker",
         markers={
@@ -311,13 +319,13 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
 
     # reward weights
     # hand_to_object_weight = 1.
-    hand_to_object_weight = 5.
+    hand_to_object_weight = 10.
     hand_to_object_sharpness = 10.
     object_to_goal_weight = 5.
     # object_to_goal_weight = 0.
     in_success_region_at_rest_weight = 10.
     lift_sharpness = 8.5
-    palm_direction_alignment_weight = 5.0
+    palm_direction_alignment_weight = 1.0
 
     # Goal reaching parameters
     object_goal_tol = 0.1 # m
@@ -421,8 +429,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
             "robot_joint_vel_bias": (0.0, 0.08), # rad
         },
         "reward_weights": {
-            "finger_curl_reg": (-0.01, -0.005),
-            # "finger_curl_reg": (-0.1, -0.05),
+            # "finger_curl_reg": (-0.01, -0.005),
+            "finger_curl_reg": (-0.1, -0.05),
             "object_to_goal_sharpness": (-15., -20.),
             "lift_weight": (5., 0.)
         },
