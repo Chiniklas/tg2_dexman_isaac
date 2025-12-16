@@ -399,9 +399,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["table"] = self.table
         
-        # add contact sensor
-        # self.contact_sensor = ContactSensor(self.cfg.contact_sensor)
-        # self.scene.sensors["contact_sensor"] = self.contact_sensor
+        # add contact sensors
+        self.object_contact_sensor = ContactSensor(self.cfg.object_contact_sensor)
+        self.table_contact_sensor = ContactSensor(self.cfg.table_contact_sensor)
+        self.scene.sensors["object_contact_sensor"] = self.object_contact_sensor
+        self.scene.sensors["table_contact_sensor"] = self.table_contact_sensor
         
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -618,7 +620,33 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.object = RigidObject(multi_object_cfg)
         self.scene.rigid_objects["object"] = self.object
 
+    def _print_contact_debug(self, sensor, tag: str) -> None:
+        """Helper to print env/contact pairs (link vs filter target)."""
+        data = sensor.data
+        if data is None or data.force_matrix_w is None:
+            print(f"[CONTACT DEBUG][{tag}] no force_matrix_w available")
+            return
+        body_names = getattr(sensor, "body_names", [])
+        filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
+        fm = data.force_matrix_w
+        nz = (fm.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
+        if len(nz) == 0:
+            print(f"[CONTACT DEBUG][{tag}] no active contacts")
+            return
+        pairs = []
+        for env_idx, body_idx, filter_idx in nz.tolist():
+            body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
+            filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
+            pairs.append((env_idx, body_name, filter_name))
+        print(f"[CONTACT DEBUG][{tag}] active contacts (env, link, target): {pairs}")
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        # Debug: print contact forces each step if sensors exist
+        if hasattr(self, "object_contact_sensor"):
+            self._print_contact_debug(self.object_contact_sensor, "object")
+        if hasattr(self, "table_contact_sensor"):
+            self._print_contact_debug(self.table_contact_sensor, "table")
+
         # Find the current global minimum adr increment
         local_adr_increment = self.local_adr_increment.clone()
         # Query for the global minimum adr increment across all GPUs

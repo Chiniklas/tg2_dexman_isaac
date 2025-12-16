@@ -286,13 +286,28 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         [0., 0., 1.]
     ]
 
-    # # Contact sensor on the robot to fetch per-link contact forces
-    # contact_sensor: ContactSensorCfg = ContactSensorCfg(
-    #     prim_path="/World/envs/env_.*/Robot/iiwa7_link_7",
-    #     update_period=0.0,
-    #     history_length=1,
-    #     debug_vis=True,
-    # )
+    # Contact sensor on all robot links to fetch per-link contact forces
+    object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/.*",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/object",
+        ],
+    )
+
+    table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/.*",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/table",
+        ],
+    )
 
     pred_pos_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/pos_marker",
