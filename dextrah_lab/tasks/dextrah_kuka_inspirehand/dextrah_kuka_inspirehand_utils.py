@@ -8,6 +8,9 @@
 # its affiliates is strictly prohibited.
 
 # Imports
+from typing import Optional
+
+import omni.usd
 import torch
 
 def assert_equals(a, b) -> None:
@@ -81,3 +84,47 @@ def quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
         ),
         dim=-2,
     )
+
+
+def print_contact_debug(sensor, tag: str) -> None:
+    """Helper to print env/contact pairs (link vs filter target)."""
+    data = sensor.data
+    if data is None or data.force_matrix_w is None:
+        return
+    body_names = getattr(sensor, "body_names", [])
+    filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
+    fm = data.force_matrix_w
+    nz = (fm.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
+    if len(nz) == 0:
+        return
+    pairs = []
+    for env_idx, body_idx, filter_idx in nz.tolist():
+        body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
+        filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
+        pairs.append((env_idx, body_name, filter_name))
+    print(f"contact pairs: {pairs}")
+
+
+def print_prim_tree_once(env, root_path: str = "/World/envs/env_0", max_depth: Optional[int] = None) -> None:
+    if getattr(env, "_prim_tree_printed", False):
+        return
+    env._prim_tree_printed = True
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        print("[PRIM TREE] stage unavailable")
+        return
+    root_prim = stage.GetPrimAtPath(root_path)
+    if not root_prim.IsValid():
+        print(f"[PRIM TREE] invalid root prim: {root_path}")
+        return
+    print(f"[PRIM TREE] root: {root_path}")
+
+    def _recurse(prim, depth: int) -> None:
+        indent = "  " * depth
+        print(f"{indent}{prim.GetPath()} ({prim.GetTypeName()})")
+        if max_depth is not None and depth >= max_depth:
+            return
+        for child in prim.GetChildren():
+            _recurse(child, depth + 1)
+
+    _recurse(root_prim, 0)

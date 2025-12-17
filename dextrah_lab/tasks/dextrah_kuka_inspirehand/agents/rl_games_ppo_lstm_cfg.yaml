@@ -71,7 +71,7 @@ params:
     kl_threshold: 0.013
     score_to_win: 100000
     max_epochs: 20000
-    save_best_after: 100
+    save_best_after: 1000
     save_frequency: 200
     print_stats: True
     grad_norm: 1.0

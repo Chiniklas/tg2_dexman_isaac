@@ -26,7 +26,7 @@ import omni.usd
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv
-from isaaclab.sensors import TiledCamera, ContactSensor
+from isaaclab.sensors import TiledCamera, ContactSensor, ContactSensorCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate
@@ -38,7 +38,8 @@ from .dextrah_kuka_inspirehand_utils import (
     scale,
     compute_absolute_action,
     to_torch,
-    quat_to_rotmat
+    quat_to_rotmat,
+    print_prim_tree_once,
 )
 
 # ADR imports
@@ -74,6 +75,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_robot_dofs = self.robot.num_joints
+        self.arm_table_contact_pairs = []
+        self.arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.hand_object_contact_pairs = []
+        self.table_contact_sensors = []
+        self.table_contact_links = []
+        self.table_link_in_contact = None
+        self._contact_shape_printed = False
 
         self.num_observations = (
             self.cfg.num_student_observations if self.cfg.distillation
@@ -136,10 +144,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.robot_dof_upper_limits[0].detach().cpu().tolist(),
             )
         )
-        print("[DEBUG] Actuated joint limits (lower, upper):")
-        for name, lo, hi in joint_limits:
-            print(f"  {name}: {lo:.4f}, {hi:.4f}")
-        input("debugging joint limits")
+        # print("[DEBUG] Actuated joint limits (lower, upper):")
+        # for name, lo, hi in joint_limits:
+        #     print(f"  {name}: {lo:.4f}, {hi:.4f}")
+        # input("debugging joint limits")
 
         # Setting the target position for the object
         # TODO: need to make these goals dynamic, sampled at the start of the rollout
@@ -392,11 +400,25 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.scene.rigid_objects["table"] = self.table
         
         # add contact sensors
-        self.object_contact_sensor = ContactSensor(self.cfg.object_contact_sensor)
-        self.table_contact_sensor = ContactSensor(self.cfg.table_contact_sensor)
-        self.scene.sensors["object_contact_sensor"] = self.object_contact_sensor
-        self.scene.sensors["table_contact_sensor"] = self.table_contact_sensor
-        
+        self.object_contact_sensors = ContactSensor(self.cfg.object_contact_sensor)
+        self.scene.sensors["object_contact_sensor"] = self.object_contact_sensors
+        self.table_contact_sensors = []
+        self.table_contact_links = []
+        table_contact_cfgs = [
+            ("iiwa7_link_1", self.cfg.iiwa7_link_1_table_contact_sensor),
+            ("iiwa7_link_2", self.cfg.iiwa7_link_2_table_contact_sensor),
+            ("iiwa7_link_3", self.cfg.iiwa7_link_3_table_contact_sensor),
+            ("iiwa7_link_4", self.cfg.iiwa7_link_4_table_contact_sensor),
+            ("iiwa7_link_5", self.cfg.iiwa7_link_5_table_contact_sensor),
+            ("iiwa7_link_6", self.cfg.iiwa7_link_6_table_contact_sensor),
+            ("iiwa7_link_7", self.cfg.iiwa7_link_7_table_contact_sensor),
+        ]
+        for link_name, sensor_cfg in table_contact_cfgs:
+            sensor = ContactSensor(sensor_cfg)
+            self.scene.sensors[f"table_contact_sensor_{link_name}"] = sensor
+            self.table_contact_sensors.append(sensor)
+            self.table_contact_links.append(link_name)
+
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -612,33 +634,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.object = RigidObject(multi_object_cfg)
         self.scene.rigid_objects["object"] = self.object
 
-    def _print_contact_debug(self, sensor, tag: str) -> None:
-        """Helper to print env/contact pairs (link vs filter target)."""
-        data = sensor.data
-        if data is None or data.force_matrix_w is None:
-            print(f"[CONTACT DEBUG][{tag}] no force_matrix_w available")
-            return
-        body_names = getattr(sensor, "body_names", [])
-        filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
-        fm = data.force_matrix_w
-        nz = (fm.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
-        if len(nz) == 0:
-            print(f"[CONTACT DEBUG][{tag}] no active contacts")
-            return
-        pairs = []
-        for env_idx, body_idx, filter_idx in nz.tolist():
-            body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
-            filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
-            pairs.append((env_idx, body_name, filter_name))
-        print(f"[CONTACT DEBUG][{tag}] active contacts (env, link, target): {pairs}")
-
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # Debug: print contact forces each step if sensors exist
-        if hasattr(self, "object_contact_sensor"):
-            self._print_contact_debug(self.object_contact_sensor, "object")
-        if hasattr(self, "table_contact_sensor"):
-            self._print_contact_debug(self.table_contact_sensor, "table")
-
+        # print_prim_tree_once(self)
         # Find the current global minimum adr increment
         local_adr_increment = self.local_adr_increment.clone()
         # Query for the global minimum adr increment across all GPUs
@@ -901,19 +898,23 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         z_height_cutoff = 0.2
         object_too_low = self.object_pos[:,2] < z_height_cutoff
 
+        table_half_x = self.cfg.table_size_x * 0.5
+        table_half_y = self.cfg.table_size_y * 0.5
+        table_top_z = self.table_pos_z + self.cfg.table_size_z * 0.5
+
         # Hand termination: keep palm origin inside a box above the table surface
         palm_pos = self.robot.data.body_pos_w[:, self.palm_body_idx] - self.scene.env_origins
-        palm_x_out = (palm_pos[:, 0] > (self.cfg.x_center + self.cfg.x_width / 2.)) | \
-                     (palm_pos[:, 0] < (self.cfg.x_center - self.cfg.x_width / 2.))
-        palm_y_out = (palm_pos[:, 1] > (self.cfg.y_center + self.cfg.y_width / 2.)) | \
-                     (palm_pos[:, 1] < (self.cfg.y_center - self.cfg.y_width / 2.))
+        palm_x_out = (palm_pos[:, 0] > (self.table_pos[:, 0] + table_half_x)) | \
+                     (palm_pos[:, 0] < (self.table_pos[:, 0] - table_half_x))
+        palm_y_out = (palm_pos[:, 1] > (self.table_pos[:, 1] + table_half_y)) | \
+                     (palm_pos[:, 1] < (self.table_pos[:, 1] - table_half_y))
         # Constrain palm height to remain between the table surface and a band above it
-        palm_z_out = (palm_pos[:, 2] < self.table_pos_z) | (palm_pos[:, 2] > (self.table_pos_z + 1.0))
+        palm_z_out = (palm_pos[:, 2] < table_top_z) | (palm_pos[:, 2] > (table_top_z + 1.0))
         hand_too_far = palm_x_out | palm_y_out | palm_z_out
 
         # Hand termination: any palm/fingertip point closer than 2 cm to table surface
         hand_min_z = self.hand_pos[..., 2].min(dim=1).values
-        clearance_thresh = self.table_pos_z + 0.02  # 2 cm above table
+        clearance_thresh = table_top_z + 0.02  # 2 cm above table
         hand_too_close = hand_min_z < clearance_thresh
 
         out_of_reach = object_outside_upper_x | \
@@ -922,7 +923,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                        object_outside_lower_y | \
                        object_too_low | \
                        hand_too_far | \
-                       hand_too_close
+                       hand_too_close | \
+                       self.arm_table_contact_mask
 
         # Terminate rollout if maximum episode length reached
         if self.cfg.distillation:
@@ -1346,6 +1348,48 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.table_pos = self.table.data.root_pos_w - self.scene.env_origins
         self.table_pos_z = self.table_pos[:, 2]
 
+        # Contact pair map: robot links vs table (per-link sensors)
+        self.arm_table_contact_pairs = []
+        self.arm_table_contact_mask.zero_()
+        num_links = len(self.table_contact_links)
+        if self.table_link_in_contact is None or self.table_link_in_contact.shape != (self.num_envs, num_links):
+            self.table_link_in_contact = torch.zeros(
+                self.num_envs, num_links, dtype=torch.bool, device=self.device
+            )
+        else:
+            self.table_link_in_contact.zero_()
+        if not self._contact_shape_printed:
+            self._contact_shape_printed = True
+            obj_data = self.object_contact_sensors.data
+            obj_net_shape = None if obj_data is None or obj_data.net_forces_w is None else obj_data.net_forces_w.shape
+            obj_mat_shape = None if obj_data is None or obj_data.force_matrix_w is None else obj_data.force_matrix_w.shape
+            print(f"[DEBUG] object_contact_sensor net_forces_w: {obj_net_shape}, force_matrix_w: {obj_mat_shape}")
+            for link_name, sensor in zip(self.table_contact_links, self.table_contact_sensors):
+                data = sensor.data
+                net_shape = None if data is None or data.net_forces_w is None else data.net_forces_w.shape
+                mat_shape = None if data is None or data.force_matrix_w is None else data.force_matrix_w.shape
+                print(f"[DEBUG] {link_name} table_contact_sensor net_forces_w: {net_shape}, force_matrix_w: {mat_shape}")
+        for link_idx, (link_name, sensor) in enumerate(zip(self.table_contact_links, self.table_contact_sensors)):
+            data = sensor.data
+            if data is None or data.force_matrix_w is None:
+                continue
+            fm = data.force_matrix_w
+            per_env_contact = (fm.abs().sum(-1) > 1e-4).any(dim=(1, 2))
+            self.table_link_in_contact[:, link_idx] = per_env_contact
+            nz = (fm.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
+            if len(nz) == 0:
+                continue
+            filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
+            for env_id, _, filter_idx in nz.tolist():
+                filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
+                self.arm_table_contact_pairs.append((env_id, link_name, filter_name))
+                self.arm_table_contact_mask[env_id] = True
+        if num_links > 0:
+            self.arm_table_contact_mask |= self.table_link_in_contact.any(dim=1)
+        if self.arm_table_contact_pairs:
+            print(f"contact pairs: {self.arm_table_contact_pairs}")
+        
+        
         # Query the finger forces
         self.hand_forces =\
             self.robot.root_physx_view.get_link_incoming_joint_force()[:, self.hand_bodies]

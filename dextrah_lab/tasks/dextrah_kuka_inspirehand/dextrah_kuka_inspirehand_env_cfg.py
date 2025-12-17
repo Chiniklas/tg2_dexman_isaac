@@ -230,6 +230,9 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
                  0.25 - 0.03 / 2),
             rot=(1.0, 0.0, 0.0, 0.0)),
     )
+    table_size_x = 0.725
+    table_size_y = 1.16
+    table_size_z = 0.03
 
     # camera pose in the real world
     # tf = np.array([
@@ -280,26 +283,92 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         [0., 0., 1.]
     ]
 
-    # Contact sensor on all robot links to fetch per-link contact forces
+    # Contact sensor on hand links to fetch per-link contact forces
     object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/.*",
+        prim_path="/World/envs/env_.*/Robot/palm",
         update_period=0.0,
         history_length=6,
         debug_vis=True,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/object",
+            "/World/envs/env_.*/object/.*/baseLink/collisions",
         ],
     )
 
-    table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/.*",
+    iiwa7_link_1_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/iiwa7_link_1",
         update_period=0.0,
         history_length=6,
         debug_vis=True,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table",
+            "/World/envs/env_.*/table/box/collisions",
+        ],
+    )
+
+    iiwa7_link_2_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/iiwa7_link_2",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/table/box/collisions",
+        ],
+    )
+
+    iiwa7_link_3_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/iiwa7_link_3",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/table/box/collisions",
+        ],
+    )
+
+    iiwa7_link_4_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/iiwa7_link_4",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/table/box/collisions",
+        ],
+    )
+
+    iiwa7_link_5_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/iiwa7_link_5",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/table/box/collisions",
+        ],
+    )
+
+    iiwa7_link_6_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/iiwa7_link_6",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/table/box/collisions",
+        ],
+    )
+
+    iiwa7_link_7_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/iiwa7_link_7",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=True,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/table/box/collisions",
         ],
     )
 
