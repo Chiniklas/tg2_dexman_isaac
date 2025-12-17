@@ -1348,47 +1348,42 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.table_pos = self.table.data.root_pos_w - self.scene.env_origins
         self.table_pos_z = self.table_pos[:, 2]
 
-        # Contact pair map: robot links vs table (per-link sensors)
-        self.arm_table_contact_pairs = []
-        self.arm_table_contact_mask.zero_()
-        num_links = len(self.table_contact_links)
-        if self.table_link_in_contact is None or self.table_link_in_contact.shape != (self.num_envs, num_links):
-            self.table_link_in_contact = torch.zeros(
-                self.num_envs, num_links, dtype=torch.bool, device=self.device
-            )
-        else:
-            self.table_link_in_contact.zero_()
-        if not self._contact_shape_printed:
-            self._contact_shape_printed = True
-            obj_data = self.object_contact_sensors.data
-            obj_net_shape = None if obj_data is None or obj_data.net_forces_w is None else obj_data.net_forces_w.shape
-            obj_mat_shape = None if obj_data is None or obj_data.force_matrix_w is None else obj_data.force_matrix_w.shape
-            print(f"[DEBUG] object_contact_sensor net_forces_w: {obj_net_shape}, force_matrix_w: {obj_mat_shape}")
-            for link_name, sensor in zip(self.table_contact_links, self.table_contact_sensors):
-                data = sensor.data
-                net_shape = None if data is None or data.net_forces_w is None else data.net_forces_w.shape
-                mat_shape = None if data is None or data.force_matrix_w is None else data.force_matrix_w.shape
-                print(f"[DEBUG] {link_name} table_contact_sensor net_forces_w: {net_shape}, force_matrix_w: {mat_shape}")
-        for link_idx, (link_name, sensor) in enumerate(zip(self.table_contact_links, self.table_contact_sensors)):
-            data = sensor.data
-            if data is None or data.force_matrix_w is None:
-                continue
-            fm = data.force_matrix_w
-            per_env_contact = (fm.abs().sum(-1) > 1e-4).any(dim=(1, 2))
-            self.table_link_in_contact[:, link_idx] = per_env_contact
-            nz = (fm.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
-            if len(nz) == 0:
-                continue
-            filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
-            for env_id, _, filter_idx in nz.tolist():
-                filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
-                self.arm_table_contact_pairs.append((env_id, link_name, filter_name))
-                self.arm_table_contact_mask[env_id] = True
-        if num_links > 0:
-            self.arm_table_contact_mask |= self.table_link_in_contact.any(dim=1)
-        if self.arm_table_contact_pairs:
-            print(f"contact pairs: {self.arm_table_contact_pairs}")
+        # # Contact pair map: robot links vs table (per-link sensors)
+        # sensor = self.scene.sensors["table_contact_sensor_iiwa7_link_6"]
+        # data = sensor.data
+        # if data is None or data.force_matrix_w is None:
+        #     print("contact pairs: none")
+        # else:
+        #     body_names = getattr(sensor, "body_names", [])
+        #     filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
+        #     nz = (data.force_matrix_w.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
+        #     if len(nz) == 0:
+        #         print("contact pairs: none")
+        #     else:
+        #         pairs = []
+        #         for env_idx, body_idx, filter_idx in nz.tolist():
+        #             body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
+        #             filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
+        #             pairs.append((env_idx, body_name, filter_name))
+        #         print("contact pairs:", pairs)
+
+        # for link_name, sensor in zip(self.table_contact_links, self.table_contact_sensors):
+        #     data = sensor.data
+        #     if data is None or data.force_matrix_w is None:
+        #         print("something is wrong")
+        #     body_names = getattr(sensor, "body_names", [])
+        #     filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
+        #     nz = (data.force_matrix_w.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
+        #     if len(nz) == 0:
+        #         print("contact pairs: none")
+        #     pairs = []
+        #     for env_idx, body_idx, filter_idx in nz.tolist():
+        #         body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
+        #         filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
+        #         pairs.append((env_idx, body_name, filter_name))
+        #     print(f"[{link_name}] contact pairs: {pairs}")
         
+        input()
         
         # Query the finger forces
         self.hand_forces =\

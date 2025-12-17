@@ -223,6 +223,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
             ),
+            scale=(1.0, 1.5, 50.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(-0.21 - 0.725 / 2,
@@ -302,7 +303,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         debug_vis=True,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table/box/collisions",
+            "/World/envs/env_.*/table/box/",
         ],
     )
 
@@ -346,7 +347,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         debug_vis=True,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table/box/collisions",
+            "/World/envs/env_.*/table/box",
         ],
     )
 

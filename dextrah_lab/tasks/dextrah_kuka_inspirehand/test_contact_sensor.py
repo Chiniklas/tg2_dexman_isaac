@@ -193,8 +193,8 @@ def main():
             if data is not None and data.net_forces_w is not None:
                 # print("-------------------------------")
                 # print("link sensor:", contact_sensor)
-                # print("force_matrix_w:", data.force_matrix_w)
-                # print("net_forces_w:", data.net_forces_w)
+                print("force_matrix_w:", data.force_matrix_w)
+                print("net_forces_w:", data.net_forces_w)
                 if data.force_matrix_w is not None:
                     body_names = getattr(contact_sensor, "body_names", [])
                     filters = contact_sensor.cfg.filter_prim_paths_expr
@@ -210,6 +210,7 @@ def main():
                             )
                             pairs.append((env_idx, body_name, filter_name))
                         print("contact pairs:", pairs)
+                input("debugging contact sensor")
 
     simulation_app.close()
 
