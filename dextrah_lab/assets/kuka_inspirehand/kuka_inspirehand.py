@@ -24,8 +24,8 @@ from isaaclab.assets.articulation import ArticulationCfg
 module_path = os.path.dirname(__file__)
 root_path = os.path.dirname(module_path)
 # Update the USD path to point to the Inspirehand USD file
-# kuka_inspirehand_usd_path = os.path.join(root_path, "kuka_inspirehand_test.usd")
-kuka_inspirehand_usd_path = "/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand_test.usd"
+# kuka_inspirehand_usd_path = os.path.join(root_path, "kuka_inspirehand.usd")
+kuka_inspirehand_usd_path = "/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand.usd"
 KUKA_INSPIREHAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=kuka_inspirehand_usd_path,
@@ -65,11 +65,11 @@ KUKA_INSPIREHAND_CFG = ArticulationCfg(
     actuators={
         "kuka_inspirehand_actuators": ImplicitActuatorCfg(
             joint_names_expr=["iiwa7_joint_(1|2|3|4|5|6|7)",
-                              "index_joint_(0|1)",
-                              "middle_joint_(0|1)",
-                              "ring_joint_(0|1)",
-                              "little_joint_(0|1)",
-                              "thumb_joint_(0|1|2|3)"],
+                              "index_joint_(0)",
+                              "middle_joint_(0)",
+                              "ring_joint_(0)",
+                              "little_joint_(0)",
+                              "thumb_joint_(0|1)"],
             effort_limit_sim={
                 "iiwa7_joint_(1|2|3|4|5|6|7)": 300.,
                 "index_joint_(0|1)": 2, # default 0.5

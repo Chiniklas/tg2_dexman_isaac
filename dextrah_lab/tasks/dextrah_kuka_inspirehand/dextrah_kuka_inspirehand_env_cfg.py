@@ -127,7 +127,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10. #10.0
     fabric_decimation = 2 # number of fabric steps per physics step
     num_sim_steps_to_render=2 # renders every 4 sim steps, so 60 Hz
-    num_actions = 19 # 1:1 joint position targets for 7 arm + 12 hand DOF
+    num_actions = 13 # 1:1 joint position targets for 7 arm + 6 hand DOF
     success_timeout = 2.
     # num_observations = 94
     distillation = False
@@ -188,13 +188,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         "middle_joint_0",
         "ring_joint_0",
         "thumb_joint_0",
-        "index_joint_1",
-        "little_joint_1",
-        "middle_joint_1",
-        "ring_joint_1",
         "thumb_joint_1",
-        "thumb_joint_2",
-        "thumb_joint_3",
     ]
     
     hand_body_names = [

@@ -74,8 +74,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_robot_dofs = self.robot.num_joints
-        # self.cfg.num_actions = 19
-        # self.num_actions = self.cfg.num_actions
 
         self.num_observations = (
             self.cfg.num_student_observations if self.cfg.distillation
@@ -170,20 +168,14 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             torch.zeros(self.num_envs, self.num_robot_dofs, device=self.device)
 
         # Nominal finger curled config
-        # Only the finger joints (index, little, middle, ring, thumb) – matches robot_dof_pos[:, 7:]
+        # Only the actuated finger joints – matches robot_dof_pos[:, 7:]
         self.curled_q =\
             torch.tensor([0.55,  # index_joint_0
                           0.55,  # little_joint_0
                           0.55,  # middle_joint_0
                           0.55,  # ring_joint_0
                           0.3,  # thumb_joint_0
-                          0.85,  # index_joint_1
-                          0.85,  # little_joint_1
-                          0.85,  # middle_joint_1
-                          0.85,  # ring_joint_1
-                          0.25,  # thumb_joint_1
-                          0.25,  # thumb_joint_2
-                          0.6], device=self.device)
+                          0.25], device=self.device)  # thumb_joint_1
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
         # Set up ADR
@@ -361,16 +353,16 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         num_unique_objects = self.find_num_unique_objects(self.cfg.objects_dir)
 
         # Hardcode observation sizes (base + num_unique_objects), similar to upstream pattern
-        # num_actuated = 19, num_hand_bodies = 6 -> student obs = 96
-        self.cfg.num_student_observations = 96
+        # num_actuated = 13, num_hand_bodies = 6 -> student obs = 96
+        self.cfg.num_student_observations = 78
         # Teacher: base 104 plus num_unique_objects
-        self.cfg.num_teacher_observations = 104 + num_unique_objects
+        self.cfg.num_teacher_observations = 86 + num_unique_objects
         if self.cfg.distillation:
             self.cfg.num_observations = self.cfg.num_student_observations
         else:
             self.cfg.num_observations = self.cfg.num_teacher_observations
         # Critic: base 150 plus num_unique_objects
-        self.cfg.num_states = 150 + num_unique_objects
+        self.cfg.num_states = 132 + num_unique_objects
 
         self.cfg.state_space = self.cfg.num_states
         self.cfg.observation_space = self.cfg.num_observations
@@ -996,19 +988,21 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         joint_pos_noise = self.dextrah_adr.get_custom_param_value("robot_spawn" ,"joint_pos_noise")
         joint_vel_noise = self.dextrah_adr.get_custom_param_value("robot_spawn" ,"joint_vel_noise")
 
-        joint_pos_deltas = 2. * (torch.rand_like(self.robot_start_joint_pos[env_ids]) - 0.5)
-        joint_vel_deltas = 2. * (torch.rand_like(self.robot_start_joint_vel[env_ids]) - 0.5)
+        num_actuated = len(self.actuated_dof_indices)
+        joint_pos_deltas = 2. * (torch.rand(num_ids, num_actuated, device=self.device) - 0.5)
+        joint_vel_deltas = 2. * (torch.rand(num_ids, num_actuated, device=self.device) - 0.5)
 
         # Calculate joint positions
-        dof_pos = joint_pos_noise * joint_pos_deltas
-        dof_pos[:, self.actuated_dof_indices] += self.robot_start_joint_pos[env_ids].clone()
+        dof_pos = self.robot_start_joint_pos[env_ids].clone()
+        dof_pos[:, self.actuated_dof_indices] += joint_pos_noise * joint_pos_deltas
+
         # Now clamp
         dof_pos[:, self.actuated_dof_indices] = torch.clamp(dof_pos[:, self.actuated_dof_indices],
                                                             min=self.robot_dof_lower_limits[0],
                                                             max=self.robot_dof_upper_limits[0])
 
-        dof_vel = joint_vel_noise * joint_vel_deltas
-        dof_vel[:, self.actuated_dof_indices] += self.robot_start_joint_vel[env_ids].clone()
+        dof_vel = self.robot_start_joint_vel[env_ids].clone()
+        dof_vel[:, self.actuated_dof_indices] += joint_vel_noise * joint_vel_deltas
 
         self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
         
@@ -1326,6 +1320,12 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             ,"coefficient"
         )
 
+        # Full-DOF tensors for taskmap kinematics
+        robot_dof_pos_noisy_full = self.robot.data.joint_pos.clone()
+        robot_dof_vel_noisy_full = self.robot.data.joint_vel.clone()
+        robot_dof_pos_noisy_full[:, self.actuated_dof_indices] = self.robot_dof_pos_noisy
+        robot_dof_vel_noisy_full[:, self.actuated_dof_indices] = self.robot_dof_vel_noisy
+
         # Robot fingertip and palm position. NOTE: currently not adding orientation
         self.hand_pos = self.robot.data.body_pos_w[:, self.hand_bodies]
         self.hand_pos -= self.scene.env_origins.repeat((1, self.num_hand_bodies
@@ -1335,8 +1335,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.hand_vel = self.robot.data.body_vel_w[:, self.hand_bodies]
 
         # Noisy hand point position and velocity from hand taskmap
-        self.hand_pos_noisy, hand_points_jac = self.hand_points_taskmap(self.robot_dof_pos_noisy, None)
-        self.hand_vel_noisy = torch.bmm(hand_points_jac, self.robot_dof_vel_noisy.unsqueeze(2)).squeeze(2)
+        self.hand_pos_noisy, hand_points_jac = self.hand_points_taskmap(robot_dof_pos_noisy_full, None)
+        self.hand_vel_noisy = torch.bmm(hand_points_jac, robot_dof_vel_noisy_full.unsqueeze(2)).squeeze(2)
         self.hand_vel_noisy *= self.dextrah_adr.get_custom_param_value(
             "observation_annealing"
             ,"coefficient"
@@ -1426,7 +1426,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         self.joint_position_targets[:, self.actuated_dof_indices] = joint_targets
         self.dof_pos_targets[:, self.actuated_dof_indices] = joint_targets
-        self.dof_vel_targets[:, self.actuated_dof_indices] = self.joint_velocity_targets
+        self.dof_vel_targets[:, self.actuated_dof_indices] =\
+            self.joint_velocity_targets[:, self.actuated_dof_indices]
 
     def compute_student_policy_observations(self):
         obs = torch.cat(
