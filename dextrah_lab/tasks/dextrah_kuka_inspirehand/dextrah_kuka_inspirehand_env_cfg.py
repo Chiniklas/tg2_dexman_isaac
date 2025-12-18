@@ -223,7 +223,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
             ),
-            scale=(1.0, 1.5, 50.0),
+            # scale=(1.0, 1.5, 50.0),
+            scale=(1.0, 1.0, 1.0),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(-0.21 - 0.725 / 2,
@@ -285,14 +286,66 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     ]
 
     # Contact sensor on hand links to fetch per-link contact forces
-    object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+    palm_object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/palm",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/object/.*/baseLink/collisions",
+            "/World/envs/env_.*/object/.*/baseLink/",
+        ],
+    )
+
+    index_object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/index_link_1",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=False,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/object/.*/baseLink/",
+        ],
+    )
+
+    middle_object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/middle_link_1",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=False,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/object/.*/baseLink/",
+        ],
+    )
+    ring_object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/ring_link_1",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=False,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/object/.*/baseLink/",
+        ],
+    )
+    little_object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/little_link_1",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=False,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/object/.*/baseLink/",
+        ],
+    )
+    thumb_object_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/thumb_link_3",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=False,
+        # Focus on contacts with the cube and table (add other objects as needed)
+        filter_prim_paths_expr=[
+            "/World/envs/env_.*/object/.*/baseLink/",
         ],
     )
 
@@ -300,7 +353,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/iiwa7_link_1",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
             "/World/envs/env_.*/table/box/",
@@ -311,10 +364,10 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/iiwa7_link_2",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table/box/collisions",
+            "/World/envs/env_.*/table/box/",
         ],
     )
 
@@ -322,10 +375,10 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/iiwa7_link_3",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table/box/collisions",
+            "/World/envs/env_.*/table/box/",
         ],
     )
 
@@ -333,10 +386,10 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/iiwa7_link_4",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table/box/collisions",
+            "/World/envs/env_.*/table/box/",
         ],
     )
 
@@ -344,7 +397,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/iiwa7_link_5",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
             "/World/envs/env_.*/table/box",
@@ -355,10 +408,10 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/iiwa7_link_6",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table/box/collisions",
+            "/World/envs/env_.*/table/box/",
         ],
     )
 
@@ -366,12 +419,23 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Robot/iiwa7_link_7",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         # Focus on contacts with the cube and table (add other objects as needed)
         filter_prim_paths_expr=[
-            "/World/envs/env_.*/table/box/collisions",
+            "/World/envs/env_.*/table/box/",
         ],
     )
+
+    # this does not work
+    # arm_table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+    #     prim_path="/World/envs/env_.*/Robot/.*",
+    #     update_period=0.0,
+    #     history_length=6,
+    #     debug_vis=True,
+    #     filter_prim_paths_expr=[
+    #         "/World/envs/env_.*/table/",
+    #     ],
+    # )
 
     pred_pos_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/pos_marker",
@@ -405,6 +469,12 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     in_success_region_at_rest_weight = 10.
     lift_sharpness = 8.5
     palm_direction_alignment_weight = 1.0
+    hand_object_contact_weight = 5.0
+    
+    joint_velocity_penalty_weight = 1e-4
+    hand_joint_velocity_penalty_scale = 5.0
+    action_rate_penalty_weight = 1e-4
+    hand_action_rate_penalty_scale = 5.0
 
     # Goal reaching parameters
     object_goal_tol = 0.1 # m
@@ -511,7 +581,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
             # "finger_curl_reg": (-0.01, -0.005),
             "finger_curl_reg": (-0.1, -0.05),
             "object_to_goal_sharpness": (-15., -20.),
-            "lift_weight": (5., 0.)
+            "lift_weight": (10., 0.) # default = (5,0)
         },
         "pd_targets": {
             "velocity_target_factor": (1., 0.)
@@ -525,7 +595,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     }
 
     # Action space related parameters
-    max_pose_angle = -1.
+    max_pose_angle = -1. # it is not used for now
 
     # depth randomization parameters
     img_aug_type = "rgb"

@@ -75,14 +75,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         self.num_robot_dofs = self.robot.num_joints
-        self.arm_table_contact_pairs = []
+        # Track whether any arm link is in contact with the table (per-env mask).
         self.arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.hand_object_contact_pairs = []
-        self.table_contact_sensors = []
-        self.table_contact_links = []
-        self.table_link_in_contact = None
-        self._contact_shape_printed = False
-
+        # Track hand-object contact counts per env.
+        self.object_contact_counts = torch.zeros(self.num_envs, device=self.device)
+        
         self.num_observations = (
             self.cfg.num_student_observations if self.cfg.distillation
             else self.cfg.num_teacher_observations
@@ -101,6 +98,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.cfg.num_actions = len(self.actuated_dof_indices)
         self.num_actions = self.cfg.num_actions
         self.actions = torch.zeros(self.num_envs, self.num_actions, device=self.device)
+        self.prev_actions = torch.zeros_like(self.actions)
+        self.action_delta = torch.zeros_like(self.actions)
 
         # Debug joint mapping to ensure orders align with USD
         print("[DEBUG] Robot joint order (USD):", self.robot.joint_names)
@@ -161,7 +160,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                           0.55,  # little_joint_0
                           0.55,  # middle_joint_0
                           0.55,  # ring_joint_0
-                          0.3,  # thumb_joint_0
+                          0.0,  # thumb_joint_0
                           0.85,  # index_joint_1
                           0.85,  # little_joint_1
                           0.85,  # middle_joint_1
@@ -182,7 +181,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                           0.55,  # little_joint_0
                           0.55,  # middle_joint_0
                           0.55,  # ring_joint_0
-                          0.3,  # thumb_joint_0
+                          0.0,  # thumb_joint_0
                           0.25], device=self.device)  # thumb_joint_1
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
@@ -317,15 +316,6 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.right_pos = torch.zeros(self.num_envs, 3).to(self.device)
         self.right_rot = torch.zeros(self.num_envs, 4).to(self.device)
 
-        # # Contact reporting
-        # num_bodies = len(self.robot.body_names)
-        # self.contact_forces = torch.zeros(self.num_envs, num_bodies, 3, device=self.device)
-        # self.contact_mask = torch.zeros(self.num_envs, num_bodies, device=self.device, dtype=torch.bool)
-        # self.arm_in_contact_with_table = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-        # self._contact_force_warned = False
-        # self._contact_debug_printed = False
-
-
         # Set the starting default joint friction coefficients
         friction_coeff = torch.tensor(self.cfg.starting_robot_dof_friction_coefficients,
                                       device=self.device)
@@ -399,9 +389,25 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["table"] = self.table
         
-        # add contact sensors
-        self.object_contact_sensors = ContactSensor(self.cfg.object_contact_sensor)
-        self.scene.sensors["object_contact_sensor"] = self.object_contact_sensors
+        ## add contact sensors
+        # object hand contact sensors
+        self.object_contact_sensors = []
+        self.object_contact_links = []
+        object_contact_cfgs = [
+            ("palm", self.cfg.palm_object_contact_sensor),
+            ("index_link_1", self.cfg.index_object_contact_sensor),
+            ("middle_link_1", self.cfg.middle_object_contact_sensor),
+            ("ring_link_1", self.cfg.ring_object_contact_sensor),
+            ("little_link_1", self.cfg.little_object_contact_sensor),
+            ("thumb_link_3", self.cfg.thumb_object_contact_sensor),
+        ]
+        for link_name, sensor_cfg in object_contact_cfgs:
+            sensor = ContactSensor(sensor_cfg)
+            self.scene.sensors[f"object_contact_sensor_{link_name}"] = sensor
+            self.object_contact_sensors.append(sensor)
+            self.object_contact_links.append(link_name)
+        
+        # table arm contact sensors
         self.table_contact_sensors = []
         self.table_contact_links = []
         table_contact_cfgs = [
@@ -418,6 +424,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             self.scene.sensors[f"table_contact_sensor_{link_name}"] = sensor
             self.table_contact_sensors.append(sensor)
             self.table_contact_links.append(link_name)
+        # print("current contact links = ", self.table_contact_links)
+        
 
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -572,9 +580,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                         max_angular_velocity=1000.0,
                         max_depenetration_velocity=1000.0,
                     ),
+                    # scale = (10,10,10),
                     scale=(self.object_scale[i],
                            self.object_scale[i],
-                           self.object_scale[i]),
+                           self.object_scale[i]), #default
+                    #=====================================
                     #scale=(self.object_scales[self.device_index],
                     #       self.object_scales[self.device_index],
                     #       self.object_scales[self.device_index]),
@@ -643,6 +653,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             dist.all_reduce(local_adr_increment, op=dist.ReduceOp.MIN)
         self.global_min_adr_increment = local_adr_increment
 
+        self.prev_actions = self.actions.clone()
         self.actions = actions.clone()
 
         # Map actions to joint position/velocity targets
@@ -840,7 +851,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             object_to_goal_reward,
             finger_curl_reg,
             lift_reward,
-            palm_direction_alignment_reward
+            palm_direction_alignment_reward,
+            contact_reward,
+            joint_vel_penalty,
+            action_rate_penalty,
         ) = compute_rewards(
                 self.reset_buf,
                 self.in_success_region,
@@ -860,6 +874,14 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.cfg.palm_direction_alignment_weight,  
                 self.palm_direction_vec,  
                 self._palm_dir_target_world.expand_as(self.palm_direction_vec),  # world -Z target
+                self.object_contact_counts,
+                self.cfg.hand_object_contact_weight,
+                self.robot_dof_vel,
+                self.cfg.joint_velocity_penalty_weight,
+                self.action_delta,
+                self.cfg.action_rate_penalty_weight,
+                self.cfg.hand_joint_velocity_penalty_scale,
+                self.cfg.hand_action_rate_penalty_scale,
             )
 
         # Add reward signals to tensorboard
@@ -867,10 +889,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.extras["object_to_goal_reward"] = object_to_goal_reward.mean()
         self.extras["finger_curl_reg"] = finger_curl_reg.mean()
         self.extras["lift_reward"] = lift_reward.mean()
+        self.extras["hand_object_contact_reward"] = contact_reward.mean()
         self.extras["palm_direction_alignment_reward"] = palm_direction_alignment_reward.mean()
+        self.extras["joint_velocity_penalty"] = joint_vel_penalty.mean()
+        self.extras["action_rate_penalty"] = action_rate_penalty.mean()
 
         total_reward = hand_to_object_reward + object_to_goal_reward +\
-                       finger_curl_reg + lift_reward + palm_direction_alignment_reward
+                       finger_curl_reg + lift_reward + palm_direction_alignment_reward + contact_reward + joint_vel_penalty + action_rate_penalty
 
         # Log other information
         self.extras["num_adr_increases"] = self.dextrah_adr.num_increments()
@@ -914,7 +939,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # Hand termination: any palm/fingertip point closer than 2 cm to table surface
         hand_min_z = self.hand_pos[..., 2].min(dim=1).values
-        clearance_thresh = table_top_z + 0.02  # 2 cm above table
+        clearance_thresh = table_top_z + 0.01  # 2 cm above table
         hand_too_close = hand_min_z < clearance_thresh
 
         out_of_reach = object_outside_upper_x | \
@@ -1303,6 +1328,69 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                             np.random.uniform(0., 2*np.pi)
                         )
 
+    def _collect_table_contacts(self):
+        """Collect table contacts per env, update mask, and return [[env_idx, contacts], ...].
+
+        Contacts are reported as (link_name, filter_name) tuples.
+        """
+        contacts_per_env = [[] for _ in range(self.num_envs)]
+        self.arm_table_contact_mask.zero_()
+
+        for link_name, sensor in zip(self.table_contact_links, self.table_contact_sensors):
+            data = sensor.data
+            if data is None or data.force_matrix_w is None:
+                continue
+
+            fm = data.force_matrix_w
+            contact_mask = (fm.abs().sum(-1) > 1e-4)
+
+            per_env_contact = contact_mask
+            if per_env_contact.dim() > 2:
+                per_env_contact = per_env_contact.any(dim=-1)
+            if per_env_contact.dim() > 1:
+                per_env_contact = per_env_contact.any(dim=-1)
+            self.arm_table_contact_mask |= per_env_contact.to(self.arm_table_contact_mask.device)
+
+            nz = contact_mask.nonzero(as_tuple=False)
+            if len(nz) == 0:
+                continue
+
+            filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
+            for env_idx, body_idx, filter_idx in nz.tolist():
+                filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
+                contacts_per_env[env_idx].append((link_name, filter_name))
+
+        return [[env_idx, contacts] for env_idx, contacts in enumerate(contacts_per_env) if contacts]
+
+    def _collect_object_contacts(self):
+        """Collect object contacts per env. Returns [[env_idx, [num_contacts, link_names]], ...]."""
+        contact_counts = [0 for _ in range(self.num_envs)]
+        contact_links = [[] for _ in range(self.num_envs)]
+
+        for link_name, sensor in zip(self.object_contact_links, self.object_contact_sensors):
+            data = sensor.data
+            if data is None or data.force_matrix_w is None:
+                continue
+
+            contact_mask = (data.force_matrix_w.abs().sum(-1) > 1e-4)
+            nz = contact_mask.nonzero(as_tuple=False)
+            if len(nz) == 0:
+                continue
+
+            for env_idx, _, _ in nz.tolist():
+                contact_counts[env_idx] += 1
+                if link_name not in contact_links[env_idx]:
+                    contact_links[env_idx].append(link_name)
+
+        self.object_contact_counts = torch.tensor(
+            contact_counts, device=self.device, dtype=torch.float
+        )
+        return [
+            [env_idx, [contact_counts[env_idx], contact_links[env_idx]]]
+            for env_idx in range(self.num_envs)
+            if contact_counts[env_idx] > 0
+        ]
+
     def _compute_intermediate_values(self):
         # Data from robot--------------------------
         # Robot measured joint position and velocity
@@ -1348,43 +1436,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.table_pos = self.table.data.root_pos_w - self.scene.env_origins
         self.table_pos_z = self.table_pos[:, 2]
 
-        # # Contact pair map: robot links vs table (per-link sensors)
-        # sensor = self.scene.sensors["table_contact_sensor_iiwa7_link_6"]
-        # data = sensor.data
-        # if data is None or data.force_matrix_w is None:
-        #     print("contact pairs: none")
-        # else:
-        #     body_names = getattr(sensor, "body_names", [])
-        #     filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
-        #     nz = (data.force_matrix_w.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
-        #     if len(nz) == 0:
-        #         print("contact pairs: none")
-        #     else:
-        #         pairs = []
-        #         for env_idx, body_idx, filter_idx in nz.tolist():
-        #             body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
-        #             filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
-        #             pairs.append((env_idx, body_name, filter_name))
-        #         print("contact pairs:", pairs)
+        # Contact sensors: populate per-env arm-table mask and optionally report pairs.
+        self.table_contact_report = self._collect_table_contacts()
+        if self.table_contact_report:
+            for env_idx, contacts in self.table_contact_report:
+                print(f"[env {env_idx}] table contact pairs: {contacts}")      
+            print("#################")
 
-        # for link_name, sensor in zip(self.table_contact_links, self.table_contact_sensors):
-        #     data = sensor.data
-        #     if data is None or data.force_matrix_w is None:
-        #         print("something is wrong")
-        #     body_names = getattr(sensor, "body_names", [])
-        #     filters = getattr(sensor.cfg, "filter_prim_paths_expr", [])
-        #     nz = (data.force_matrix_w.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
-        #     if len(nz) == 0:
-        #         print("contact pairs: none")
-        #     pairs = []
-        #     for env_idx, body_idx, filter_idx in nz.tolist():
-        #         body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
-        #         filter_name = filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
-        #         pairs.append((env_idx, body_name, filter_name))
-        #     print(f"[{link_name}] contact pairs: {pairs}")
-        
-        input()
-        
         # Query the finger forces
         self.hand_forces =\
             self.robot.root_physx_view.get_link_incoming_joint_force()[:, self.hand_bodies]
@@ -1452,6 +1510,14 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # It is a max over the distances from points on hand to object
         self.hand_to_object_pos_error =\
             torch.norm(self.hand_pos - self.object_pos[:, None, :], dim=-1).max(dim=-1).values
+
+        # contact counts
+        self.object_contact_report = self._collect_object_contacts()
+        if self.object_contact_report:
+            print(self.object_contact_report)
+            print("#==========================")
+        # action delta
+        self.action_delta = self.actions - self.prev_actions
 
     def compute_actions(self, actions: torch.Tensor) -> None: #torch.Tensor:
         assert_equals(actions.shape, (self.num_envs, self.cfg.num_actions))
@@ -1636,6 +1702,14 @@ def compute_rewards(
     palm_alignment_weight: float,
     palm_dir: torch.Tensor,
     palm_dir_target: torch.Tensor,
+    contact_count: torch.Tensor,
+    contact_count_weight: float,
+    joint_vel: torch.Tensor,
+    joint_vel_penalty_weight: float,
+    action_delta: torch.Tensor,
+    action_rate_penalty_weight: float,
+    hand_vel_scale: float,
+    hand_action_scale: float,
 ):
 
     # Reward for moving fingertip and palm points closer to object centroid point
@@ -1660,7 +1734,33 @@ def compute_rewards(
     cos_sim = torch.sum(palm_dir * palm_dir_target, dim=-1).clamp(-1.0, 1.0)
     palm_dir_align_reward = -palm_alignment_weight * (1.0 - cos_sim)
 
-    return hand_to_object_reward, object_to_goal_reward, finger_curl_reg, lift_reward, palm_dir_align_reward
+    # Reward for making contact with the object (more contacts -> higher reward).
+    contact_reward = contact_count_weight * contact_count
+    
+    # penalize on joint velocity
+    arm_vel = joint_vel[:, :7]
+    hand_vel = joint_vel[:, 7:]
+    joint_vel_penalty = -joint_vel_penalty_weight * (
+        (arm_vel ** 2).sum(dim=-1) + hand_vel_scale * (hand_vel ** 2).sum(dim=-1)
+    )
+
+    # penalize on action rate
+    arm_delta = action_delta[:, :7]
+    hand_delta = action_delta[:, 7:]
+    action_rate_penalty = -action_rate_penalty_weight * (
+        (arm_delta ** 2).sum(dim=-1) + hand_action_scale * (hand_delta ** 2).sum(dim=-1)
+    )
+
+    return (
+        hand_to_object_reward,
+        object_to_goal_reward,
+        finger_curl_reg,
+        lift_reward,
+        palm_dir_align_reward,
+        contact_reward,
+        joint_vel_penalty,
+        action_rate_penalty,
+    )
     
 @torch.jit.script
 def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):

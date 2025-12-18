@@ -124,5 +124,3 @@ python play_test.py \
   --max_pose_angle 45 \
   --checkpoint /home/chizhang/projects/DEXTRAH/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2025-12-12_11-49-37/nn/last_dextrah_lstm_ep_20000_rew_-46.002758.pth
 
-## TODO: training is difficult if I don't implement palm pose instructions
-# the upstream allegro task uses fabric controller to ensure the palm is always facing the object 
