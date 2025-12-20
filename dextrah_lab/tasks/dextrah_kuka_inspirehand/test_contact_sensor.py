@@ -38,16 +38,29 @@ def main():
         "iiwa7_joint_5": -1.76,
         "iiwa7_joint_6": 0.90,
         "iiwa7_joint_7": 0.64,
-        "index_joint_0": 0.55,
-        "little_joint_0": 0.55,
-        "middle_joint_0": 0.55,
-        "ring_joint_0": 0.55,
-        "thumb_joint_0": 0.3,
-        "index_joint_1": 0.85,
-        "little_joint_1": 0.85,
-        "middle_joint_1": 0.85,
-        "ring_joint_1": 0.85,
-        "thumb_joint_1": 0.25,
+        # "index_joint_0": 0.55,
+        # "little_joint_0": 0.55,
+        # "middle_joint_0": 0.55,
+        # "ring_joint_0": 0.55,
+        # "thumb_joint_0": 0.3,
+        # "index_joint_1": 0.85,
+        # "little_joint_1": 0.85,
+        # "middle_joint_1": 0.85,
+        # "ring_joint_1": 0.85,
+        # "thumb_joint_1": 0.25,
+        # "thumb_joint_2": 0.25,
+        # "thumb_joint_3": 0.6,
+
+        "index_joint_0": 0.0,
+        "little_joint_0": 0.0,
+        "middle_joint_0": 0.0,
+        "ring_joint_0": 0.0,
+        "thumb_joint_0": 0.0,
+        "index_joint_1": 0.0,
+        "little_joint_1": 0.0,
+        "middle_joint_1": 0.0,
+        "ring_joint_1": 0.0,
+        "thumb_joint_1": 0.0,
         "thumb_joint_2": 0.25,
         "thumb_joint_3": 0.6,
     }
@@ -82,7 +95,8 @@ def main():
             spawn=sim_utils.UsdFileCfg(
                 usd_path="/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/scene_objects/table.usd",
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-                scale=(1.0, 1.5, 50.0),  # adjust XYZ scale here
+                # scale=(1.0, 1.5, 50.0),  # adjust XYZ scale here
+                scale=(1.0, 1.0, 1.0), 
             ),
             init_state=RigidObjectCfg.InitialStateCfg(
                 pos=(-0.21 - 0.725 / 2, 0.668 - 1.16 / 2, 0.25 - 0.03 / 2),
@@ -169,9 +183,22 @@ def main():
         robot.set_joint_position_target(start_joint_pos)
 
         default_joint_pos = start_joint_pos.clone()
+        print("default_joint_pos = ")
+        print(default_joint_pos)
         phase = torch.zeros((1, robot.num_joints), device=default_joint_pos.device)
         amp = 0.2
         freq_hz = 0.5
+
+        # Debug: print actuated joint limits and PD gains
+        # actuators = robot.actuators
+        # print(actuators)
+        # act = actuators["kuka_inspirehand_actuators"]
+        # print("Actuated joints: ", act.joint_names)
+        # print("efforts: ",act.applied_effort)
+        # print("velocity limits: ",act.velocity_limit_sim)
+        # print("stiffness: ", act.stiffness)
+        # print("damping: ", act.damping)
+        # input("debugging actuator cfgs")
 
         resolved_paths = contact_sensor.body_physx_view.prim_paths[: contact_sensor.num_bodies]
         print(f"[INFO] Contact sensor prim path: {contact_sensor.cfg.prim_path}")
@@ -189,28 +216,28 @@ def main():
             time_s += sim_dt
 
             # Contact sensor outputs
-            data = contact_sensor.data
-            if data is not None and data.net_forces_w is not None:
-                # print("-------------------------------")
-                # print("link sensor:", contact_sensor)
-                print("force_matrix_w:", data.force_matrix_w)
-                print("net_forces_w:", data.net_forces_w)
-                if data.force_matrix_w is not None:
-                    body_names = getattr(contact_sensor, "body_names", [])
-                    filters = contact_sensor.cfg.filter_prim_paths_expr
-                    nz = (data.force_matrix_w.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
-                    if len(nz) == 0:
-                        print("contact pairs: none")
-                    else:
-                        pairs = []
-                        for env_idx, body_idx, filter_idx in nz.tolist():
-                            body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
-                            filter_name = (
-                                filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
-                            )
-                            pairs.append((env_idx, body_name, filter_name))
-                        print("contact pairs:", pairs)
-                input("debugging contact sensor")
+            # data = contact_sensor.data
+            # if data is not None and data.net_forces_w is not None:
+            #     # print("-------------------------------")
+            #     # print("link sensor:", contact_sensor)
+            #     print("force_matrix_w:", data.force_matrix_w)
+            #     print("net_forces_w:", data.net_forces_w)
+            #     if data.force_matrix_w is not None:
+            #         body_names = getattr(contact_sensor, "body_names", [])
+            #         filters = contact_sensor.cfg.filter_prim_paths_expr
+            #         nz = (data.force_matrix_w.abs().sum(-1) > 1e-4).nonzero(as_tuple=False)
+            #         if len(nz) == 0:
+            #             print("contact pairs: none")
+            #         else:
+            #             pairs = []
+            #             for env_idx, body_idx, filter_idx in nz.tolist():
+            #                 body_name = body_names[body_idx] if body_idx < len(body_names) else f"body_{body_idx}"
+            #                 filter_name = (
+            #                     filters[filter_idx] if filter_idx < len(filters) else f"filter_{filter_idx}"
+            #                 )
+            #                 pairs.append((env_idx, body_name, filter_name))
+            #             print("contact pairs:", pairs)
+                #input("debugging contact sensor")
 
     simulation_app.close()
 

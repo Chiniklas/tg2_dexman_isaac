@@ -395,11 +395,18 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.object_contact_links = []
         object_contact_cfgs = [
             ("palm", self.cfg.palm_object_contact_sensor),
-            ("index_link_1", self.cfg.index_object_contact_sensor),
-            ("middle_link_1", self.cfg.middle_object_contact_sensor),
-            ("ring_link_1", self.cfg.ring_object_contact_sensor),
-            ("little_link_1", self.cfg.little_object_contact_sensor),
-            ("thumb_link_3", self.cfg.thumb_object_contact_sensor),
+            ("index_link_0", self.cfg.index0_object_contact_sensor),
+            ("middle_link_0", self.cfg.middle0_object_contact_sensor),
+            ("ring_link_0", self.cfg.ring0_object_contact_sensor),
+            ("little_link_0", self.cfg.little0_object_contact_sensor),
+            ("index_link_1", self.cfg.index1_object_contact_sensor),
+            ("middle_link_1", self.cfg.middle1_object_contact_sensor),
+            ("ring_link_1", self.cfg.ring1_object_contact_sensor),
+            ("little_link_1", self.cfg.little1_object_contact_sensor),
+            ("thumb_link_0", self.cfg.thumb0_object_contact_sensor),
+            ("thumb_link_1", self.cfg.thumb1_object_contact_sensor),
+            ("thumb_link_2", self.cfg.thumb2_object_contact_sensor),
+            ("thumb_link_3", self.cfg.thumb3_object_contact_sensor),
         ]
         for link_name, sensor_cfg in object_contact_cfgs:
             sensor = ContactSensor(sensor_cfg)
@@ -923,8 +930,9 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         z_height_cutoff = 0.2
         object_too_low = self.object_pos[:,2] < z_height_cutoff
 
-        table_half_x = self.cfg.table_size_x * 0.5
-        table_half_y = self.cfg.table_size_y * 0.5
+        bbox_margin = getattr(self.cfg, "hand_bbox_margin", 0.0)
+        table_half_x = self.cfg.table_size_x * 0.5 + bbox_margin
+        table_half_y = self.cfg.table_size_y * 0.5 + bbox_margin
         table_top_z = self.table_pos_z + self.cfg.table_size_z * 0.5
 
         # Hand termination: keep palm origin inside a box above the table surface
@@ -934,7 +942,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         palm_y_out = (palm_pos[:, 1] > (self.table_pos[:, 1] + table_half_y)) | \
                      (palm_pos[:, 1] < (self.table_pos[:, 1] - table_half_y))
         # Constrain palm height to remain between the table surface and a band above it
-        palm_z_out = (palm_pos[:, 2] < table_top_z) | (palm_pos[:, 2] > (table_top_z + 1.0))
+        palm_z_out = (palm_pos[:, 2] < table_top_z) | (palm_pos[:, 2] > (table_top_z + 1.0 + bbox_margin))
         hand_too_far = palm_x_out | palm_y_out | palm_z_out
 
         # Hand termination: any palm/fingertip point closer than 2 cm to table surface
@@ -942,14 +950,55 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         clearance_thresh = table_top_z + 0.01  # 2 cm above table
         hand_too_close = hand_min_z < clearance_thresh
 
-        out_of_reach = object_outside_upper_x | \
-                       object_outside_lower_x | \
-                       object_outside_upper_y | \
-                       object_outside_lower_y | \
-                       object_too_low | \
-                       hand_too_far | \
-                       hand_too_close | \
-                       self.arm_table_contact_mask
+        # Palm flip termination: if palm direction deviates too far from -Z target.
+        palm_flip_cos = torch.sum(self.palm_direction_vec * self._palm_dir_target_world, dim=-1)
+        palm_flipped = palm_flip_cos < self.cfg.palm_flip_cos_thresh
+
+        out_of_reach = (
+            object_outside_upper_x
+            | object_outside_lower_x
+            | object_outside_upper_y
+            | object_outside_lower_y
+            | object_too_low
+            | hand_too_far
+            | hand_too_close
+            | self.arm_table_contact_mask
+            # | palm_flipped
+        )
+#============================================================================================================================
+        # if out_of_reach.any():
+        #     env_ids = torch.nonzero(out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #     print(f"termination triggered in envs: {env_ids}")
+
+        #     object_fail = (
+        #         object_outside_upper_x
+        #         | object_outside_lower_x
+        #         | object_outside_upper_y
+        #         | object_outside_lower_y
+        #         | object_too_low
+        #     )
+        #     hand_fail = hand_too_far | hand_too_close | palm_flipped
+
+        #     if object_fail.any():
+        #         envs = torch.nonzero(object_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #         print(f"object out of range termination: envs {envs}")
+        #     if hand_fail.any():
+        #         envs = torch.nonzero(hand_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #         print(f"hand out of range termination: envs {envs}")
+        #         if hand_too_far.any():
+        #             envs = torch.nonzero(hand_too_far & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #             print(f"hand too far: envs {envs}")
+        #         if hand_too_close.any():
+        #             envs = torch.nonzero(hand_too_close & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #             print(f"hand too close: envs {envs}")
+        #         # if palm_flipped.any():
+        #         #     envs = torch.nonzero(palm_flipped & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #         #     print(f"palm flipped: envs {envs}")
+        #     if self.arm_table_contact_mask.any():
+        #         envs = torch.nonzero(self.arm_table_contact_mask & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #         print(f"arm colliding with the table termination: envs {envs}")
+        #     # input("debugging termination conditions")
+#===================================================================================================================================
 
         # Terminate rollout if maximum episode length reached
         if self.cfg.distillation:
@@ -1506,10 +1555,12 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             0.
         )
 
-        # Object to palm and fingertip distance
-        # It is a max over the distances from points on hand to object
-        self.hand_to_object_pos_error =\
-            torch.norm(self.hand_pos - self.object_pos[:, None, :], dim=-1).max(dim=-1).values
+        # Object to palm and fingertip distance (average over hand points)
+        self.hand_to_object_pos_error = (
+            torch.norm(self.hand_pos - self.object_pos[:, None, :], dim=-1).mean(dim=-1)
+        )
+        # self.hand_to_object_pos_error =\
+        # torch.norm(self.hand_pos - self.object_pos[:, None, :], dim=-1).max(dim=-1).values
 
         # contact counts
         self.object_contact_report = self._collect_object_contacts()

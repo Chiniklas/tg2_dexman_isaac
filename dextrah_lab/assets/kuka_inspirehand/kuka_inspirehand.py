@@ -47,6 +47,7 @@ KUKA_INSPIREHAND_CFG = ArticulationCfg(
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
+        # Use position drive and mirror the primary actuator gains for faster, consistent response in GUI/Inspector.
         joint_drive_props=sim_utils.JointDrivePropertiesCfg(drive_type="force"),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
@@ -81,22 +82,22 @@ KUKA_INSPIREHAND_CFG = ArticulationCfg(
             ],
             effort_limit_sim={
                 "iiwa7_joint_(1|2|3|4|5|6|7)": 300.,
-                "index_joint_0": 10, # default 0.5
-                "middle_joint_0": 10,
-                "ring_joint_0": 10,
-                "little_joint_0": 10,
-                "thumb_joint_(0|1)": 10,
+                "index_joint_0": 100, # default 0.5
+                "middle_joint_0": 100,
+                "ring_joint_0": 100,
+                "little_joint_0": 100,
+                "thumb_joint_(0|1)": 100,
             },
             stiffness={
                 "iiwa7_joint_(1|2|3|4)": 300.,
                 "iiwa7_joint_5": 100.,
                 "iiwa7_joint_6": 50.,
                 "iiwa7_joint_7": 25.,
-                "index_joint_0": 100.0, #default 3 
-                "middle_joint_0": 100.0,
-                "ring_joint_0": 100.0,
-                "little_joint_0":100.0,
-                "thumb_joint_(0|1)": 100.0,
+                "index_joint_0": 30, #default 3 
+                "middle_joint_0": 30,
+                "ring_joint_0": 30,
+                "little_joint_0":30,
+                "thumb_joint_(0|1)": 30,
             },
             damping={
                 "iiwa7_joint_(1|2|3|4)": 45.,
