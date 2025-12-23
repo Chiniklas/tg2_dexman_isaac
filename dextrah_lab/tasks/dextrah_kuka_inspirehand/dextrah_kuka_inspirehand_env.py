@@ -88,6 +88,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.use_camera = self.cfg.distillation
         self.simulate_stereo = self.use_camera and self.cfg.simulate_stereo
         self.stereo_baseline = self.cfg.stereo_baseline
+        # Number of env steps to hold zero actions after reset so the object can settle.
+        step_dt = self.cfg.sim_dt * self.cfg.decimation
+        # self.action_freeze_steps = int(max(0, round(self.cfg.action_freeze_duration_s / step_dt)))
+        self.action_freeze_steps = 6000
 
         # list of actuated joints
         self.actuated_dof_indices = list()
@@ -245,7 +249,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # this is a fabric based forward kinematics helper
         # the purpose is to use forward kinematics to generate a noisy fingertip and palm position and vel
         # the noisy pos and vel will be compared with pure pos and vel
-        self.urdf_path = "/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/kuka_inspirehand/urdf/kuka_inspirehand_test.urdf"
+        self.urdf_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/kuka_inspirehand/urdf/kuka_inspirehand_test.urdf"
         self.hand_points_taskmap = RobotFrameOriginsTaskMap(self.urdf_path, self.cfg.hand_body_names,
                                                             self.num_envs, self.device)
 
@@ -256,6 +260,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.gt_pos_markers = VisualizationMarkers(
             self.cfg.gt_pos_marker_cfg
         )
+        # How many steps to print reward breakdowns for (debugging aid).
+        self._reward_debug_steps_remaining = getattr(self.cfg, "debug_reward_steps", 0)
 
         # original camera poses
         self.camera_pos_orig = torch.tensor(
@@ -662,7 +668,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         self.prev_actions = self.actions.clone()
         self.actions = actions.clone()
-
+        
         # Map actions to joint position/velocity targets
         self.compute_actions(self.actions)
 
@@ -901,8 +907,28 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.extras["joint_velocity_penalty"] = joint_vel_penalty.mean()
         self.extras["action_rate_penalty"] = action_rate_penalty.mean()
 
+        # total_reward = hand_to_object_reward + object_to_goal_reward +\
+        #                finger_curl_reg + lift_reward + palm_direction_alignment_reward + contact_reward + joint_vel_penalty + action_rate_penalty
         total_reward = hand_to_object_reward + object_to_goal_reward +\
-                       finger_curl_reg + lift_reward + palm_direction_alignment_reward + contact_reward + joint_vel_penalty + action_rate_penalty
+                       finger_curl_reg + lift_reward + palm_direction_alignment_reward + contact_reward + action_rate_penalty
+        # Optional reward debug printout for the first N steps.
+        if self._reward_debug_steps_remaining < 0:
+            step_id = int(self.episode_length_buf.max().item())
+            print(
+                f"[REWARD DEBUG] step={step_id} "
+                f"total_mean={total_reward.mean().item():.4f} "
+                f"hand_obj={hand_to_object_reward.mean().item():.4f} "
+                f"obj_goal={object_to_goal_reward.mean().item():.4f} "
+                f"lift={lift_reward.mean().item():.4f} "
+                f"palm_align={palm_direction_alignment_reward.mean().item():.4f} "
+                f"contact={contact_reward.mean().item():.4f} "
+                f"finger_curl={finger_curl_reg.mean().item():.4f} "
+                f"joint_vel_pen={joint_vel_penalty.mean().item():.4f} "
+                f"action_rate_pen={action_rate_penalty.mean().item():.4f} "
+                f"vel_max={self.robot_dof_vel.abs().max().item():.3f} "
+                f"action_delta_max={self.action_delta.abs().max().item():.3f}"
+            )
+            self._reward_debug_steps_remaining -= 1
 
         # Log other information
         self.extras["num_adr_increases"] = self.dextrah_adr.num_increments()
@@ -963,7 +989,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             | hand_too_far
             | hand_too_close
             | self.arm_table_contact_mask
-            # | palm_flipped
+            | palm_flipped
         )
 #============================================================================================================================
         # if out_of_reach.any():
@@ -1763,12 +1789,15 @@ def compute_rewards(
     hand_action_scale: float,
 ):
 
+    # Binary mask: only award lift/goal progress after hand-object contact.
+    contact_mask = (contact_count > 0.0).to(contact_count.dtype)
+
     # Reward for moving fingertip and palm points closer to object centroid point
     hand_to_object_reward = hand_to_object_weight * torch.exp(-hand_to_object_sharpness * hand_to_object_pos_error)
 
     # Reward for moving the object to the goal translational position
     object_to_goal_reward =\
-        object_to_goal_weight * torch.exp(object_to_goal_sharpness * object_to_object_goal_pos_error)
+        object_to_goal_weight * torch.exp(object_to_goal_sharpness * object_to_object_goal_pos_error) * contact_mask
 
     # Regularizer on hand joints towards a nominally curled config
     # I brought this in because the fingers seem to curl in a lot to play with the object
@@ -1779,7 +1808,7 @@ def compute_rewards(
         finger_curl_reg_weight * finger_curl_dist ** 2
 
     # Reward for lifting object off table and towards object goal
-    lift_reward = lift_weight * torch.exp(-lift_sharpness * object_vertical_error)
+    lift_reward = lift_weight * torch.exp(-lift_sharpness * object_vertical_error) * contact_mask
 
     # Palm alignment penalty: 0 when perfectly aligned, negative when deviating from target.
     cos_sim = torch.sum(palm_dir * palm_dir_target, dim=-1).clamp(-1.0, 1.0)

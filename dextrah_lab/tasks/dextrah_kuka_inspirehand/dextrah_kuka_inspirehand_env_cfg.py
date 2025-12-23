@@ -128,6 +128,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     fabric_decimation = 2 # number of fabric steps per physics step
     num_sim_steps_to_render=2 # renders every 4 sim steps, so 60 Hz
     num_actions = 13 # 1:1 joint position targets for 7 arm + 6 hand DOF
+    # Hold actions at zero for an initial settle time so the object can rest on the table.
+    action_freeze_duration_s = 1.0
     success_timeout = 2.
     # num_observations = 94
     distillation = False
@@ -155,7 +157,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         ),
         physx=PhysxCfg(
             bounce_threshold_velocity=0.2,
-            gpu_max_rigid_patch_count=4 * 5 * 2**15
+            gpu_max_rigid_patch_count=4 * 5 * 2**15,
+            gpu_collision_stack_size= 2 ** 29
         ),
     )
     # robot
@@ -532,9 +535,11 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     hand_object_contact_weight = 5.5
     
     joint_velocity_penalty_weight = 1e-4
-    hand_joint_velocity_penalty_scale = 50.0
+    hand_joint_velocity_penalty_scale = 1.0
     action_rate_penalty_weight = 1e-4
-    hand_action_rate_penalty_scale = 50.0
+    hand_action_rate_penalty_scale = 5.0
+    # Optional: print per-step reward breakdown for the first N steps (debugging aid).
+    debug_reward_steps = 0 # to show,set to -1
     # Terminate if palm flips beyond this cosine threshold relative to target (-Z).
     palm_flip_cos_thresh = -0.15
 

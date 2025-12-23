@@ -25,7 +25,8 @@ module_path = os.path.dirname(__file__)
 root_path = os.path.dirname(module_path)
 # Update the USD path to point to the Inspirehand USD file
 # kuka_inspirehand_usd_path = os.path.join(root_path, "kuka_inspirehand.usd")
-kuka_inspirehand_usd_path = "/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand.usd"
+kuka_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand.usd"
+# kuka_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand_legacy.usd"
 KUKA_INSPIREHAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=kuka_inspirehand_usd_path,
@@ -47,6 +48,13 @@ KUKA_INSPIREHAND_CFG = ArticulationCfg(
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
+        # articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+        #     enabled_self_collisions=False,
+        #     solver_position_iteration_count=16,
+        #     solver_velocity_iteration_count=2,
+        #     sleep_threshold=0.005,
+        #     stabilization_threshold=0.0005,
+        # ),
         # Use position drive and mirror the primary actuator gains for faster, consistent response in GUI/Inspector.
         joint_drive_props=sim_utils.JointDrivePropertiesCfg(drive_type="force"),
     ),
@@ -82,22 +90,22 @@ KUKA_INSPIREHAND_CFG = ArticulationCfg(
             ],
             effort_limit_sim={
                 "iiwa7_joint_(1|2|3|4|5|6|7)": 300.,
-                "index_joint_0": 100, # default 0.5
-                "middle_joint_0": 100,
-                "ring_joint_0": 100,
-                "little_joint_0": 100,
-                "thumb_joint_(0|1)": 100,
+                "index_joint_0": 1.0, # default 0.5
+                "middle_joint_0": 1.0,
+                "ring_joint_0": 1.0,
+                "little_joint_0": 1.0,
+                "thumb_joint_(0|1)": 1.0,
             },
             stiffness={
                 "iiwa7_joint_(1|2|3|4)": 300.,
                 "iiwa7_joint_5": 100.,
                 "iiwa7_joint_6": 50.,
                 "iiwa7_joint_7": 25.,
-                "index_joint_0": 30, #default 3 
-                "middle_joint_0": 30,
-                "ring_joint_0": 30,
-                "little_joint_0":30,
-                "thumb_joint_(0|1)": 30,
+                "index_joint_0": 300, #default 3 
+                "middle_joint_0": 300,
+                "ring_joint_0": 300,
+                "little_joint_0": 300,
+                "thumb_joint_(0|1)": 300,
             },
             damping={
                 "iiwa7_joint_(1|2|3|4)": 45.,

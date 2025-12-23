@@ -93,7 +93,7 @@ def main():
         table = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/table",
             spawn=sim_utils.UsdFileCfg(
-                usd_path="/home/chizhang/projects/DEXTRAH/dextrah_lab/assets/scene_objects/table.usd",
+                usd_path="/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/scene_objects/table.usd",
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
                 # scale=(1.0, 1.5, 50.0),  # adjust XYZ scale here
                 scale=(1.0, 1.0, 1.0), 
