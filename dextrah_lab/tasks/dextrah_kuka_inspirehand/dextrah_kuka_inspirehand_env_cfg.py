@@ -128,8 +128,6 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     fabric_decimation = 2 # number of fabric steps per physics step
     num_sim_steps_to_render=2 # renders every 4 sim steps, so 60 Hz
     num_actions = 13 # 1:1 joint position targets for 7 arm + 6 hand DOF
-    # Hold actions at zero for an initial settle time so the object can rest on the table.
-    action_freeze_duration_s = 1.0
     success_timeout = 2.
     # num_observations = 94
     distillation = False
@@ -195,6 +193,14 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     ]
     
     hand_body_names = [
+        "palm",
+        "index_tip",
+        "middle_tip",
+        "ring_tip",
+        "little_tip",
+        "thumb_tip",
+    ]
+    hand_object_distance_body_names = [
         "palm",
         "index_tip",
         "middle_tip",
@@ -524,30 +530,46 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=2., replicate_physics=False)
 
     # reward weights
-    # hand_to_object_weight = 1.
-    hand_to_object_weight = 10. #default 1
-    hand_to_object_sharpness = 10. #default 10
-    object_to_goal_weight = 5. #default 5 
-    # object_to_goal_weight = 0.
+    # phase 1: reaching
+    hand_to_object_weight = 20. #default 1
+    hand_to_object_sharpness = 8. #default 10
+    palm_direction_alignment_weight = 2.0
+    palm_down_local_axis = (-1.0, 0.0, 0.0)
+    palm_finger_alignment_weight = 1.0
+    palm_finger_local_axis = (0.0, -1.0, 0.0)
+    palm_finger_direction_target = (-1.0, -1.0, 0.0)
+    
+    palm_linear_velocity_penalty_weight = 1e-2
+    joint_velocity_penalty_weight = 5e-4
+    hand_joint_velocity_penalty_scale = 3.0
+    action_rate_penalty_weight = 5e-4
+    hand_action_rate_penalty_scale = 3.0 # default = 5.0
+
+    # phase 2: contact
+    hand_object_contact_weight = 2.0 #default 5.5
+
+    #phase 3: lifting
+    object_to_goal_weight = 5 #default 5 
     in_success_region_at_rest_weight = 10. #default10
     lift_sharpness = 8.5 #default 8.5
-    palm_direction_alignment_weight = 1.0
-    hand_object_contact_weight = 5.5
+
+    # extras
+    episode_length_reward_weight = 0.0 # default 0.0
     
-    joint_velocity_penalty_weight = 1e-4
-    hand_joint_velocity_penalty_scale = 1.0
-    action_rate_penalty_weight = 1e-4
-    hand_action_rate_penalty_scale = 5.0
+    # palm_linear_velocity_penalty_weight = 0.1
+    # palm_linear_velocity_penalty_sharpness = 10.0
+
     # Optional: print per-step reward breakdown for the first N steps (debugging aid).
     debug_reward_steps = 0 # to show,set to -1
     # Terminate if palm flips beyond this cosine threshold relative to target (-Z).
-    palm_flip_cos_thresh = -0.15
+    palm_flip_cos_thresh = 0.25
 
     # Goal reaching parameters
     object_goal_tol = 0.1 # m
     success_for_adr = 0.4
     #min_steps_for_dr_change = 240 # number of steps
     min_steps_for_dr_change = 5 * int(episode_length_s / (decimation * sim_dt))
+
 
     # Lift criteria
     min_num_episode_steps = 60
@@ -646,7 +668,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         },
         "reward_weights": {
             # "finger_curl_reg": (-0.01, -0.005),
-            "finger_curl_reg": (-0.2, -0.1),
+            "finger_curl_reg": (-0.1, -0.1),
+            # "finger_curl_reg": (-1.0, -0.25),
             "object_to_goal_sharpness": (-15., -20.),
             "lift_weight": (5., 0.) # default = (5,0)
         },

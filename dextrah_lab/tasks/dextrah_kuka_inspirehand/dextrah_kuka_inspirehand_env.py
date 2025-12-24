@@ -127,13 +127,38 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # arm bodies (everything not in hand_bodies)
         self.arm_bodies = [i for i, name in enumerate(self.robot.body_names) if i not in self.hand_bodies]
 
-        # Palm body index and local axis used to compute a live palm direction vector.
+        # Bodies used for hand-object distance calculation.
+        self.hand_object_distance_bodies = []
+        for body_name in self.cfg.hand_object_distance_body_names:
+            self.hand_object_distance_bodies.append(self.robot.body_names.index(body_name))
+        self.hand_object_distance_bodies.sort()
+        self.num_hand_object_distance_bodies = len(self.hand_object_distance_bodies)
+
+        # Palm body index and local axes used to compute live palm direction vectors.
         self.palm_body_idx = self.robot.body_names.index("palm")
-        # Palm local axis (z) used to compute world-frame palm direction
-        self._palm_local_axis = torch.tensor([-1.0, 0.0, 0.0], device=self.device).view(1, 3, 1)
+
+        def _normalize_vector(vec: torch.Tensor) -> torch.Tensor:
+            norm = torch.norm(vec)
+            return vec if norm == 0 else vec / norm
+
+        palm_down_axis = _normalize_vector(
+            torch.tensor(self.cfg.palm_down_local_axis, device=self.device, dtype=torch.float)
+        )
+        self._palm_down_local_axis = palm_down_axis.view(1, 3, 1)
+        palm_finger_axis = _normalize_vector(
+            torch.tensor(self.cfg.palm_finger_local_axis, device=self.device, dtype=torch.float)
+        )
+        self._palm_finger_local_axis = palm_finger_axis.view(1, 3, 1)
+
         self.palm_direction_vec = torch.zeros(self.num_envs, 3, device=self.device)
-        # Target palm direction: world -Z (points down toward the table)
+        self.palm_finger_direction_vec = torch.zeros(self.num_envs, 3, device=self.device)
+        # Target palm direction: world -Z (points down toward the table).
         self._palm_dir_target_world = torch.tensor([0.0, 0.0, -1.0], device=self.device).view(1, 3)
+        # Target finger direction: configurable world direction.
+        palm_finger_target = _normalize_vector(
+            torch.tensor(self.cfg.palm_finger_direction_target, device=self.device, dtype=torch.float)
+        )
+        self._palm_finger_target_world = palm_finger_target.view(1, 3)
 
         # joint limits
         joint_pos_limits = self.robot.root_physx_view.get_dof_limits().to(self.device)
@@ -159,19 +184,19 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # Nominal reset states for the robot
         self.robot_start_joint_pos =\
-            torch.tensor([-0.85, -0.0,  0.76,  1.25, -1.76, 0.90, 0.64, # arm
-                          0.55,  # index_joint_0
-                          0.55,  # little_joint_0
-                          0.55,  # middle_joint_0
-                          0.55,  # ring_joint_0
+            torch.tensor([-1.2, 0.0,  0.7,  1.10, -1.55, 1.5, 0.0, # arm
+                          0.25,  # index_joint_0
+                          0.25,  # little_joint_0
+                          0.25,  # middle_joint_0
+                          0.25,  # ring_joint_0
                           0.0,  # thumb_joint_0
-                          0.85,  # index_joint_1
-                          0.85,  # little_joint_1
-                          0.85,  # middle_joint_1
-                          0.85,  # ring_joint_1
-                          0.25,  # thumb_joint_1
-                          0.25,  # thumb_joint_2
-                          0.6], device=self.device) # thumb_joint_3
+                          0.386,  # index_joint_1
+                          0.386,  # little_joint_1
+                          0.386,  # middle_joint_1
+                          0.386,  # ring_joint_1
+                          0.1,  # thumb_joint_1
+                          0.2,  # thumb_joint_2
+                          0.4], device=self.device) # thumb_joint_3
         self.robot_start_joint_pos =\
             self.robot_start_joint_pos.repeat(self.num_envs, 1).contiguous()
         # Start with zero initial velocities and accelerations
@@ -181,12 +206,12 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Nominal finger curled config
         # Only the actuated finger joints – matches robot_dof_pos[:, 7:]
         self.curled_q =\
-            torch.tensor([0.55,  # index_joint_0
-                          0.55,  # little_joint_0
-                          0.55,  # middle_joint_0
-                          0.55,  # ring_joint_0
+            torch.tensor([0.25,  # index_joint_0
+                          0.25,  # little_joint_0
+                          0.25,  # middle_joint_0
+                          0.25,  # ring_joint_0
                           0.0,  # thumb_joint_0
-                          0.25], device=self.device)  # thumb_joint_1
+                          0.1], device=self.device)  # thumb_joint_1
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
         # Set up ADR
@@ -865,6 +890,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             finger_curl_reg,
             lift_reward,
             palm_direction_alignment_reward,
+            palm_finger_alignment_reward,
             contact_reward,
             joint_vel_penalty,
             action_rate_penalty,
@@ -887,6 +913,9 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.cfg.palm_direction_alignment_weight,  
                 self.palm_direction_vec,  
                 self._palm_dir_target_world.expand_as(self.palm_direction_vec),  # world -Z target
+                self.cfg.palm_finger_alignment_weight,
+                self.palm_finger_direction_vec,
+                self._palm_finger_target_world.expand_as(self.palm_finger_direction_vec),
                 self.object_contact_counts,
                 self.cfg.hand_object_contact_weight,
                 self.robot_dof_vel,
@@ -897,6 +926,23 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.cfg.hand_action_rate_penalty_scale,
             )
 
+        episode_length_weight = getattr(self.cfg, "episode_length_reward_weight", 0.0)
+        episode_length_reward = episode_length_weight * self.episode_length_buf.to(
+            hand_to_object_reward.dtype
+        ).mean()
+
+        # palm velocity penalty
+        palm_lin_vel_weight = getattr(self.cfg, "palm_linear_velocity_penalty_weight", 0.0)
+        # palm_lin_vel_sharpness = getattr(self.cfg, "palm_linear_velocity_penalty_sharpness", 0.0)
+        # palm_pos = self.robot.data.body_pos_w[:, self.palm_body_idx] - self.scene.env_origins
+        # table_top_z = self.table.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2] + self.cfg.table_size_z * 0.5
+        # palm_table_z_dist = torch.clamp(palm_pos[:, 2] - table_top_z, min=0.0)
+        # palm_proximity_scale = torch.exp(-palm_lin_vel_sharpness * palm_table_z_dist)
+        palm_lin_vel = self.robot.data.body_vel_w[:, self.palm_body_idx, :3]
+        
+        palm_lin_vel_penalty = -5e-4 * (palm_lin_vel ** 2).sum(dim=-1)
+        # palm_lin_vel_penalty = -palm_lin_vel_weight * palm_proximity_scale * (palm_lin_vel ** 2).sum(dim=-1)
+
         # Add reward signals to tensorboard
         self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
         self.extras["object_to_goal_reward"] = object_to_goal_reward.mean()
@@ -904,13 +950,16 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.extras["lift_reward"] = lift_reward.mean()
         self.extras["hand_object_contact_reward"] = contact_reward.mean()
         self.extras["palm_direction_alignment_reward"] = palm_direction_alignment_reward.mean()
+        self.extras["palm_finger_alignment_reward"] = palm_finger_alignment_reward.mean()
         self.extras["joint_velocity_penalty"] = joint_vel_penalty.mean()
         self.extras["action_rate_penalty"] = action_rate_penalty.mean()
+        # self.extras["episode_length_reward"] = episode_length_reward.mean()
+        self.extras["palm_linear_velocity_penalty"] = palm_lin_vel_penalty.mean()
 
         # total_reward = hand_to_object_reward + object_to_goal_reward +\
         #                finger_curl_reg + lift_reward + palm_direction_alignment_reward + contact_reward + joint_vel_penalty + action_rate_penalty
         total_reward = hand_to_object_reward + object_to_goal_reward +\
-                       finger_curl_reg + lift_reward + palm_direction_alignment_reward + contact_reward + action_rate_penalty
+                       finger_curl_reg + lift_reward + palm_direction_alignment_reward + palm_finger_alignment_reward + contact_reward + action_rate_penalty + episode_length_reward + palm_lin_vel_penalty
         # Optional reward debug printout for the first N steps.
         if self._reward_debug_steps_remaining < 0:
             step_id = int(self.episode_length_buf.max().item())
@@ -921,10 +970,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 f"obj_goal={object_to_goal_reward.mean().item():.4f} "
                 f"lift={lift_reward.mean().item():.4f} "
                 f"palm_align={palm_direction_alignment_reward.mean().item():.4f} "
+                f"palm_finger_align={palm_finger_alignment_reward.mean().item():.4f} "
                 f"contact={contact_reward.mean().item():.4f} "
                 f"finger_curl={finger_curl_reg.mean().item():.4f} "
                 f"joint_vel_pen={joint_vel_penalty.mean().item():.4f} "
                 f"action_rate_pen={action_rate_penalty.mean().item():.4f} "
+                f"ep_len={episode_length_reward.mean().item():.4f} "
+                f"palm_lin_vel_pen={palm_lin_vel_penalty.mean().item():.4f} "
                 f"vel_max={self.robot_dof_vel.abs().max().item():.3f} "
                 f"action_delta_max={self.action_delta.abs().max().item():.3f}"
             )
@@ -1063,7 +1115,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         object_xy[:, 1] += self.cfg.y_center
         object_start_state[env_ids, :2] = object_xy
         # Keep drop height the same
-        object_start_state[:, 2] = 0.5
+        # object_start_state[:, 2] = 0.5
+        object_start_state[:, 2] = 0.4
 
         # Randomize rotation
 #        rot_noise = sample_uniform(-1.0, 1.0, (num_ids, 2), device=self.device)  # noise for X and Y rotation
@@ -1470,6 +1523,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Data from robot--------------------------
         # Robot measured joint position and velocity
         self.robot_dof_pos = self.robot.data.joint_pos[:, self.actuated_dof_indices]
+        # print(self.robot_dof_pos)
         self.robot_dof_pos_noisy = self.robot_dof_pos +\
             self.robot_joint_pos_noise_width *\
             2. * (torch.rand_like(self.robot_dof_pos) - 0.5) +\
@@ -1495,6 +1549,12 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.hand_pos = self.robot.data.body_pos_w[:, self.hand_bodies]
         self.hand_pos -= self.scene.env_origins.repeat((1, self.num_hand_bodies
             )).reshape(self.num_envs, self.num_hand_bodies, 3)
+
+        # Hand points used for distance-to-object calculation.
+        self.hand_object_distance_pos = self.robot.data.body_pos_w[:, self.hand_object_distance_bodies]
+        self.hand_object_distance_pos -= self.scene.env_origins.repeat(
+            (1, self.num_hand_object_distance_bodies)
+        ).reshape(self.num_envs, self.num_hand_object_distance_bodies, 3)
 
         # Robot fingertip and palm velocity. 6D
         self.hand_vel = self.robot.data.body_vel_w[:, self.hand_bodies]
@@ -1554,10 +1614,13 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Object full velocity, 6D
         self.object_vel = self.object.data.root_vel_w
 
-        # Update palm direction (world-frame) from current palm orientation
+        # Update palm directions (world-frame) from current palm orientation
         palm_rot = quat_to_rotmat(self.robot.data.body_quat_w[:, self.palm_body_idx])
         self.palm_direction_vec = torch.bmm(
-            palm_rot, self._palm_local_axis.expand(self.num_envs, 3, 1)
+            palm_rot, self._palm_down_local_axis.expand(self.num_envs, 3, 1)
+        ).squeeze(-1)
+        self.palm_finger_direction_vec = torch.bmm(
+            palm_rot, self._palm_finger_local_axis.expand(self.num_envs, 3, 1)
         ).squeeze(-1)
         # # Debug: print palm direction in world frame per env
         # for env_idx, vec in enumerate(self.palm_direction_vec.detach().cpu().numpy()):
@@ -1581,9 +1644,9 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             0.
         )
 
-        # Object to palm and fingertip distance (average over hand points)
+        # Object to hand points distance (average over selected bodies)
         self.hand_to_object_pos_error = (
-            torch.norm(self.hand_pos - self.object_pos[:, None, :], dim=-1).mean(dim=-1)
+            torch.norm(self.hand_object_distance_pos - self.object_pos[:, None, :], dim=-1).max(dim=-1).values
         )
         # self.hand_to_object_pos_error =\
         # torch.norm(self.hand_pos - self.object_pos[:, None, :], dim=-1).max(dim=-1).values
@@ -1779,6 +1842,9 @@ def compute_rewards(
     palm_alignment_weight: float,
     palm_dir: torch.Tensor,
     palm_dir_target: torch.Tensor,
+    palm_finger_alignment_weight: float,
+    palm_finger_dir: torch.Tensor,
+    palm_finger_target: torch.Tensor,
     contact_count: torch.Tensor,
     contact_count_weight: float,
     joint_vel: torch.Tensor,
@@ -1814,6 +1880,9 @@ def compute_rewards(
     cos_sim = torch.sum(palm_dir * palm_dir_target, dim=-1).clamp(-1.0, 1.0)
     palm_dir_align_reward = -palm_alignment_weight * (1.0 - cos_sim)
 
+    cos_sim_finger = torch.sum(palm_finger_dir * palm_finger_target, dim=-1).clamp(-1.0, 1.0)
+    palm_finger_align_reward = -palm_finger_alignment_weight * (1.0 - cos_sim_finger)
+
     # Reward for making contact with the object (more contacts -> higher reward).
     contact_reward = contact_count_weight * contact_count
     
@@ -1837,6 +1906,7 @@ def compute_rewards(
         finger_curl_reg,
         lift_reward,
         palm_dir_align_reward,
+        palm_finger_align_reward,
         contact_reward,
         joint_vel_penalty,
         action_rate_penalty,
