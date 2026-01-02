@@ -926,10 +926,23 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.cfg.hand_action_rate_penalty_scale,
             )
 
+        finger_curl_reg = torch.clamp(
+            finger_curl_reg,
+            min=self.cfg.finger_curl_reg_min,
+            max=self.cfg.finger_curl_reg_max,
+        )
+
         episode_length_weight = getattr(self.cfg, "episode_length_reward_weight", 0.0)
         episode_length_reward = episode_length_weight * self.episode_length_buf.to(
             hand_to_object_reward.dtype
-        ).mean()
+        )
+        # Gate survival reward until the hand is within 0.3m of the object.
+        gate_dist = getattr(self.cfg, "episode_length_gate_dist", 0.3)
+        episode_length_reward = torch.where(
+            self.hand_to_object_pos_error < gate_dist,
+            episode_length_reward,
+            torch.zeros_like(episode_length_reward),
+        )
 
         # palm velocity penalty
         palm_lin_vel_weight = getattr(self.cfg, "palm_linear_velocity_penalty_weight", 0.0)
@@ -953,7 +966,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.extras["palm_finger_alignment_reward"] = palm_finger_alignment_reward.mean()
         self.extras["joint_velocity_penalty"] = joint_vel_penalty.mean()
         self.extras["action_rate_penalty"] = action_rate_penalty.mean()
-        # self.extras["episode_length_reward"] = episode_length_reward.mean()
+        self.extras["episode_length_reward"] = episode_length_reward.mean()
         self.extras["palm_linear_velocity_penalty"] = palm_lin_vel_penalty.mean()
 
         # total_reward = hand_to_object_reward + object_to_goal_reward +\

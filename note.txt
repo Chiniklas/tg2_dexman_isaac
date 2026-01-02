@@ -99,7 +99,7 @@ python eval.py \
 python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
   train.py \
     --task=Dextrah-Kuka-Inspirehand \
-    --seed -1 \
+    --seed 42 \
     --num_envs 4 \
     --headless\
     agent.params.config.minibatch_size=64 \

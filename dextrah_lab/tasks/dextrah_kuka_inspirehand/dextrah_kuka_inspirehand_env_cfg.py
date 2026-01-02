@@ -539,25 +539,27 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     palm_finger_local_axis = (0.0, -1.0, 0.0)
     palm_finger_direction_target = (-1.0, -1.0, 0.0)
     
-    palm_linear_velocity_penalty_weight = 1e-2
+    palm_linear_velocity_penalty_weight = 0.01
+    # palm_linear_velocity_penalty_sharpness = 10.0
     joint_velocity_penalty_weight = 5e-4
     hand_joint_velocity_penalty_scale = 3.0
     action_rate_penalty_weight = 5e-4
     hand_action_rate_penalty_scale = 3.0 # default = 5.0
 
     # phase 2: contact
-    hand_object_contact_weight = 2.0 #default 5.5
+    hand_object_contact_weight = 1.0 #default 5.5
+    finger_curl_reg_min = -2.0
+    finger_curl_reg_max = 0.0
+
 
     #phase 3: lifting
-    object_to_goal_weight = 5 #default 5 
+    object_to_goal_weight = 8 #default 5 
     in_success_region_at_rest_weight = 10. #default10
     lift_sharpness = 8.5 #default 8.5
 
     # extras
-    episode_length_reward_weight = 0.0 # default 0.0
-    
-    # palm_linear_velocity_penalty_weight = 0.1
-    # palm_linear_velocity_penalty_sharpness = 10.0
+    episode_length_reward_weight = 0.01 # default 0.0    
+    episode_length_gate_dist = 0.3
 
     # Optional: print per-step reward breakdown for the first N steps (debugging aid).
     debug_reward_steps = 0 # to show,set to -1
