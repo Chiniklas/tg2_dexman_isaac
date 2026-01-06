@@ -115,7 +115,7 @@ class EventCfg:
 class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     # Placeholder for objects_dir which targets the directory of objects for training
     objects_dir = "replace_me"
-    valid_objects_dir = ["visdex_objects"]
+    valid_objects_dir = ["visdex_objects","test_object"]
 
     # Toggle for using cuda graph
     use_cuda_graph = False
@@ -551,15 +551,14 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     finger_curl_reg_min = -2.0
     finger_curl_reg_max = 0.0
 
-
     #phase 3: lifting
     object_to_goal_weight = 8 #default 5 
     in_success_region_at_rest_weight = 10. #default10
     lift_sharpness = 8.5 #default 8.5
 
     # extras
-    episode_length_reward_weight = 0.01 # default 0.0    
-    episode_length_gate_dist = 0.3
+    episode_length_reward_weight = 0.04# default 0.075    
+    episode_length_gate_dist = 0.25 # default 0.3
 
     # Optional: print per-step reward breakdown for the first N steps (debugging aid).
     debug_reward_steps = 0 # to show,set to -1
@@ -593,7 +592,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     # with the above robot_joint_friction EventTerm above.
     starting_robot_dof_friction_coefficients = [
         1., 1., 1., 1., 1., 1., 1., # arm joints
-        0.01, 0.01,  # index finger joints
+        0.01, 0.01,  # index finger joints # default 0.01
         0.01, 0.01,  # middle finger joints
         0.01, 0.01,  # ring finger joints
         0.01, 0.01,  # little finger joints

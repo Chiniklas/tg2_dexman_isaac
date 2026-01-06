@@ -181,7 +181,9 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # TODO: need to make these goals dynamic, sampled at the start of the rollout
         self.object_goal =\
             torch.tensor([-0.5, 0., 0.75], device=self.device).repeat((self.num_envs, 1))
-
+        # self.object_goal =\
+        #     torch.tensor([-0.5, 0., 0.4], device=self.device).repeat((self.num_envs, 1))
+        
         # Nominal reset states for the robot
         self.robot_start_joint_pos =\
             torch.tensor([-1.2, 0.0,  0.7,  1.10, -1.55, 1.5, 0.0, # arm
@@ -932,6 +934,15 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             max=self.cfg.finger_curl_reg_max,
         )
 
+        min_steps = getattr(self.cfg, "min_num_episode_steps", 0)
+        if min_steps > 0:
+            lift_reward = torch.where(
+                self.episode_length_buf >= min_steps,
+                lift_reward,
+                torch.zeros_like(lift_reward),
+            )
+
+        # give episode length reward to let the robot survice around the grasping position
         episode_length_weight = getattr(self.cfg, "episode_length_reward_weight", 0.0)
         episode_length_reward = episode_length_weight * self.episode_length_buf.to(
             hand_to_object_reward.dtype
@@ -946,15 +957,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # palm velocity penalty
         palm_lin_vel_weight = getattr(self.cfg, "palm_linear_velocity_penalty_weight", 0.0)
-        # palm_lin_vel_sharpness = getattr(self.cfg, "palm_linear_velocity_penalty_sharpness", 0.0)
-        # palm_pos = self.robot.data.body_pos_w[:, self.palm_body_idx] - self.scene.env_origins
-        # table_top_z = self.table.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2] + self.cfg.table_size_z * 0.5
-        # palm_table_z_dist = torch.clamp(palm_pos[:, 2] - table_top_z, min=0.0)
-        # palm_proximity_scale = torch.exp(-palm_lin_vel_sharpness * palm_table_z_dist)
-        palm_lin_vel = self.robot.data.body_vel_w[:, self.palm_body_idx, :3]
-        
+        palm_lin_vel = self.robot.data.body_vel_w[:, self.palm_body_idx, :3] 
         palm_lin_vel_penalty = -5e-4 * (palm_lin_vel ** 2).sum(dim=-1)
-        # palm_lin_vel_penalty = -palm_lin_vel_weight * palm_proximity_scale * (palm_lin_vel ** 2).sum(dim=-1)
 
         # Add reward signals to tensorboard
         self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
@@ -1586,10 +1590,10 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # Contact sensors: populate per-env arm-table mask and optionally report pairs.
         self.table_contact_report = self._collect_table_contacts()
-        if self.table_contact_report:
-            for env_idx, contacts in self.table_contact_report:
-                print(f"[env {env_idx}] table contact pairs: {contacts}")      
-            print("#################")
+        # if self.table_contact_report:
+        #     for env_idx, contacts in self.table_contact_report:
+        #         print(f"[env {env_idx}] table contact pairs: {contacts}")      
+        #     print("#################")
 
         # Query the finger forces
         self.hand_forces =\
@@ -1666,9 +1670,9 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # contact counts
         self.object_contact_report = self._collect_object_contacts()
-        if self.object_contact_report:
-            print(self.object_contact_report)
-            print("#==========================")
+        # if self.object_contact_report:
+        #     print(self.object_contact_report)
+        #     print("#==========================")
         # action delta
         self.action_delta = self.actions - self.prev_actions
 
