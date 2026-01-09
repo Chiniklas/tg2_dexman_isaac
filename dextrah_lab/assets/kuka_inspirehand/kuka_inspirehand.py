@@ -37,14 +37,14 @@ KUKA_INSPIREHAND_CFG = ArticulationCfg(
             retain_accelerations=True,
             linear_damping=0.0,
             angular_damping=0.0,
-            max_linear_velocity=1000.0,
-            max_angular_velocity=1000.0,
-            max_depenetration_velocity=1000.0,
+            max_linear_velocity=100.0, # default 1000
+            max_angular_velocity=500.0, # default 1000
+            max_depenetration_velocity=30.0, # default 1000
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,
             solver_position_iteration_count=8,
-            solver_velocity_iteration_count=0,
+            solver_velocity_iteration_count=2,
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),

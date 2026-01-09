@@ -1,0 +1,2097 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="handleft9183">
+  
+  <link name="world"/>
+  <joint name="fixed" type="fixed">
+  <origin
+   xyz="0.5 0.5 0.5"
+   rpy="-1.5707963 0 0" />
+  <parent link="world"/>
+  <child link="base_link"/>
+  </joint>
+  
+  
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.002551 -0.066047 -0.0019357"
+        rpy="0 0 0" />
+      <mass
+        value="0.14143" />
+      <inertia
+        ixx="0.0001234"
+        ixy="2.1995E-06"
+        ixz="-1.7694E-06"
+        iyy="8.3835E-05"
+        iyz="1.5968E-06"
+        izz="7.7231E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="Link1">
+    <inertial>
+      <origin
+        xyz="-0.0011554 -0.028574 2.6263E-07"
+        rpy="0 0 0" />
+      <mass
+        value="0.0069755" />
+      <inertia
+        ixx="1.9953E-06"
+        ixy="-1.5666E-08"
+        ixz="3.2534E-12"
+        iyy="1.464E-07"
+        iyz="3.34E-11"
+        izz="2.0272E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint01"
+    type="revolute">
+    <origin
+      xyz="0.00629 -0.056236 0.02346"
+      rpy="-0.034898 -0.00075929 -0.021745" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.05"
+      upper="0.05"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link2">
+    <inertial>
+      <origin
+        xyz="-7.5135E-11 1.8729E-10 -0.011292"
+        rpy="0 0 0" />
+      <mass
+        value="0.00030666" />
+      <inertia
+        ixx="1.4483E-08"
+        ixy="-2.6234E-14"
+        ixz="-2.7451E-16"
+        iyy="1.4449E-08"
+        iyz="5.3125E-16"
+        izz="6.5358E-10" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint12"
+    type="prismatic">
+    <origin
+      xyz="0 -0.0507 0"
+      rpy="1.5708 1.57 -3.1416" />
+    <parent
+      link="Link1" />
+    <child
+      link="Link2" />
+    <axis
+      xyz="0 -6.0156E-05 -1" />
+    <limit
+      lower="0"
+      upper="0.01"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link3">
+    <inertial>
+      <origin
+        xyz="0.0030736 0.017402 -0.00089984"
+        rpy="0 0 0" />
+      <mass
+        value="0.0042405" />
+      <inertia
+        ixx="6.6215E-07"
+        ixy="1.8442E-08"
+        ixz="-1.3482E-12"
+        iyy="2.1167E-07"
+        iyz="1.4788E-11"
+        izz="6.9402E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint23"
+    type="revolute">
+    <origin
+      xyz="-0.0009 0 -0.0244"
+      rpy="-1.5708 0.021758 1.57" />
+    <parent
+      link="Link2" />
+    <child
+      link="Link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link4">
+    <inertial>
+      <origin
+        xyz="-0.0021753 0.019567 0.00305"
+        rpy="0 0 0" />
+      <mass
+        value="0.0045682" />
+      <inertia
+        ixx="7.6284E-07"
+        ixy="-8.063E-08"
+        ixz="-3.6667E-13"
+        iyy="9.4308E-08"
+        iyz="-1.5005E-13"
+        izz="7.8176E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint34"
+    type="revolute">
+    <origin
+      xyz="0.0067937 0.037509 -0.00395"
+      rpy="0 0 0" />
+    <parent
+      link="Link3" />
+    <child
+      link="Link4" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint03"
+    type="revolute">
+    <pose relative_to = "base_link">0.00028533 -0.13674 0.026271 0.034907 0 3.1416</pose>
+    <parent>base_link</parent>
+    <child>Link3</child>
+    <axis>0 0 -1</axis>
+    <limit
+      lower="-2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link5">
+    <inertial>
+      <origin
+        xyz="-0.0039265 0.015726 0.00145"
+        rpy="0 0 0" />
+      <mass
+        value="0.00031561" />
+      <inertia
+        ixx="4.8649E-08"
+        ixy="1.1992E-08"
+        ixz="-2.3879E-23"
+        iyy="3.789E-09"
+        iyz="1.0023E-22"
+        izz="5.1996E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.82745 0.83922 0.82745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint05"
+    type="revolute">
+    <origin
+      xyz="-0.00546 -0.13197 0.024654"
+      rpy="0.034907 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link5" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint54"
+    type="revolute">
+    <pose relative_to = "Link5">-0.0079562 0.031614 0.0045 0 0 0</pose>
+    <parent>Link5</parent>
+    <child>Link4</child>
+    <axis>0 0 1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link11">
+    <inertial>
+      <origin
+        xyz="0.0011554 0.028574 2.6228E-07"
+        rpy="0 0 0" />
+      <mass
+        value="0.0069755" />
+      <inertia
+        ixx="1.9953E-06"
+        ixy="-1.5666E-08"
+        ixz="-3.2708E-12"
+        iyy="1.464E-07"
+        iyz="-3.3369E-11"
+        izz="2.0272E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link11.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link11.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint011"
+    type="revolute">
+    <origin
+      xyz="0.00629 -0.05655 0.00695"
+      rpy="0 0 3.1198" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link11" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.05"
+      upper="0.05"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link12">
+    <inertial>
+      <origin
+        xyz="7.5076E-12 1.3049E-10 -0.011292"
+        rpy="0 0 0" />
+      <mass
+        value="0.00030666" />
+      <inertia
+        ixx="1.4483E-08"
+        ixy="-3.8563E-16"
+        ixz="1.5065E-17"
+        iyy="1.4449E-08"
+        iyz="4.2368E-16"
+        izz="6.5358E-10" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link12.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link12.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint1112"
+    type="prismatic">
+    <origin
+      xyz="0 0.0507 0"
+      rpy="1.5708 1.5708 0" />
+    <parent
+      link="Link11" />
+    <child
+      link="Link12" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.01"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link13">
+    <inertial>
+      <origin
+        xyz="0.0030736 0.017402 -0.0020499"
+        rpy="0 0 0" />
+      <mass
+        value="0.0042405" />
+      <inertia
+        ixx="6.6215E-07"
+        ixy="1.8442E-08"
+        ixz="-1.2148E-12"
+        iyy="2.1167E-07"
+        iyz="1.45E-11"
+        izz="6.9402E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link13.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link13.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint1213"
+    type="revolute">
+    <origin
+      xyz="-0.00205 0 -0.0244"
+      rpy="-1.5708 0.021758 1.5708" />
+    <parent
+      link="Link12" />
+    <child
+      link="Link13" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link14">
+    <inertial>
+      <origin
+        xyz="-0.001921 0.020796 -0.0030499"
+        rpy="0 0 0" />
+      <mass
+        value="0.0050397" />
+      <inertia
+        ixx="9.5823E-07"
+        ixy="-1.1425E-07"
+        ixz="2.4213E-12"
+        iyy="1.0646E-07"
+        iyz="-3.6866E-12"
+        izz="9.8385E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link14.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.82745 0.83922 0.82745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link14.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint1314"
+    type="revolute">
+    <origin
+      xyz="0.0067937 0.037509 0.001"
+      rpy="0 0 0" />
+    <parent
+      link="Link13" />
+    <child
+      link="Link14" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint013"
+    type="revolute">
+    <pose relative_to = "base_link">0.00028533 -0.13674 0.026271 0.034907 0 3.1416</pose>
+    <parent>base_link</parent>
+    <child>Link13</child>
+    <axis>0 -0.034899 -0.99939</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link15">
+    <inertial>
+      <origin
+        xyz="-0.0039265 0.015726 -0.00145"
+        rpy="0 0 0" />
+      <mass
+        value="0.00031561" />
+      <inertia
+        ixx="4.8649E-08"
+        ixy="1.1992E-08"
+        ixz="2.3996E-24"
+        iyy="3.789E-09"
+        iyz="-1.2443E-23"
+        izz="5.1996E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link15.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.82745 0.83922 0.82745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link15.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint015"
+    type="revolute">
+    <origin
+      xyz="-0.00546 -0.13228 0.0084"
+      rpy="0 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link15" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint1514"
+    type="revolute">
+    <pose relative_to = "Link15">-0.0079562 0.031614 0.0016 0 0 0</pose>
+    <parent>Link15</parent>
+    <child>Link14</child>
+    <axis>0 0 1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link21">
+    <inertial>
+      <origin
+        xyz="0.0011553 0.028574 2.6944E-07"
+        rpy="0 0 0" />
+      <mass
+        value="0.0069755" />
+      <inertia
+        ixx="1.9953E-06"
+        ixy="-1.5665E-08"
+        ixz="-3.6195E-12"
+        iyy="1.464E-07"
+        iyz="-3.387E-11"
+        izz="2.0272E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link21.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link21.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint021"
+    type="revolute">
+    <origin
+      xyz="0.00629 -0.056157 -0.0080633"
+      rpy="-0.052348 -0.0011387 3.1199" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link21" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.05"
+      upper="0.05"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link22">
+    <inertial>
+      <origin
+        xyz="-8.8629E-12 1.4214E-10 -0.011292"
+        rpy="0 0 0" />
+      <mass
+        value="0.00030666" />
+      <inertia
+        ixx="1.4483E-08"
+        ixy="3.8409E-14"
+        ixz="-4.2332E-17"
+        iyy="1.4449E-08"
+        iyz="4.4596E-16"
+        izz="6.5358E-10" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link22.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link22.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint2122"
+    type="prismatic">
+    <origin
+      xyz="0 0.0507 0"
+      rpy="-1.5708 1.5697 3.1416" />
+    <parent
+      link="Link21" />
+    <child
+      link="Link22" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.01"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link23">
+    <inertial>
+      <origin
+        xyz="0.0030736 0.017402 -0.0020499"
+        rpy="0 0 0" />
+      <mass
+        value="0.0042405" />
+      <inertia
+        ixx="6.6215E-07"
+        ixy="1.8442E-08"
+        ixz="-9.5137E-13"
+        iyy="2.1167E-07"
+        iyz="1.413E-11"
+        izz="6.9402E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link23.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link23.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint2223"
+    type="revolute">
+    <origin
+      xyz="-0.00205 0 -0.0244"
+      rpy="-1.5708 0.021758 1.5719" />
+    <parent
+      link="Link22" />
+    <child
+      link="Link23" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link24">
+    <inertial>
+      <origin
+        xyz="-0.0021753 0.019567 -0.00305"
+        rpy="0 0 0" />
+      <mass
+        value="0.0045682" />
+      <inertia
+        ixx="7.6285E-07"
+        ixy="-8.0631E-08"
+        ixz="-8.286E-14"
+        iyy="9.4308E-08"
+        iyz="2.1637E-13"
+        izz="7.8176E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link24.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link24.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint2324"
+    type="revolute">
+    <origin
+      xyz="0.0067937 0.037509 0.001"
+      rpy="0 0 0" />
+    <parent
+      link="Link23" />
+    <child
+      link="Link24" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint023"
+    type="revolute">
+    <pose relative_to = "base_link">0.00028533 -0.13691 -0.0062872 -0.05236 0 3.1416</pose>
+    <parent>base_link</parent>
+    <child>Link23</child>
+    <axis>0 0 -1</axis>
+    <limit
+      lower="-2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link25">
+    <inertial>
+      <origin
+        xyz="-0.0039265 0.015726 -0.00145"
+        rpy="0 0 0" />
+      <mass
+        value="0.00031561" />
+      <inertia
+        ixx="4.8649E-08"
+        ixy="1.1992E-08"
+        ixz="5.7294E-25"
+        iyy="3.789E-09"
+        iyz="2.0721E-24"
+        izz="5.1996E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link25.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.82745 0.83922 0.82745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link25.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint025"
+    type="revolute">
+    <origin
+      xyz="-0.00546 -0.13186 -0.010579"
+      rpy="-0.05236 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link25" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint2524"
+    type="revolute">
+    <pose relative_to = "Link25">-0.0079562 0.031614 0.0016 0 0 0</pose>
+    <parent>Link25</parent>
+    <child>Link24</child>
+    <axis>0 0 1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link31">
+    <inertial>
+      <origin
+        xyz="0.0011553 0.028574 2.6921E-07"
+        rpy="0 0 0" />
+      <mass
+        value="0.0069755" />
+      <inertia
+        ixx="1.9953E-06"
+        ixy="-1.5665E-08"
+        ixz="-3.634E-12"
+        iyy="1.464E-07"
+        iyz="-3.3854E-11"
+        izz="2.0272E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link31.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link31.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint031"
+    type="revolute">
+    <origin
+      xyz="0.00629 -0.054979 -0.023035"
+      rpy="-0.1047 -0.0022742 3.12" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link31" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.05"
+      upper="0.05"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link32">
+    <inertial>
+      <origin
+        xyz="-3.061E-10 3.4606E-10 -0.011292"
+        rpy="0 0 0" />
+      <mass
+        value="0.00030666" />
+      <inertia
+        ixx="1.4483E-08"
+        ixy="7.7422E-14"
+        ixz="-1.0841E-15"
+        iyy="1.4449E-08"
+        iyz="8.3301E-16"
+        izz="6.5358E-10" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link32.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link32.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint3132"
+    type="prismatic">
+    <origin
+      xyz="0 0.0507 0"
+      rpy="-1.5708 1.5685 3.1416" />
+    <parent
+      link="Link31" />
+    <child
+      link="Link32" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.01"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link33">
+    <inertial>
+      <origin
+        xyz="0.0030737 0.017402 -0.0020499"
+        rpy="0 0 0" />
+      <mass
+        value="0.0042405" />
+      <inertia
+        ixx="6.6215E-07"
+        ixy="1.8442E-08"
+        ixz="-1.0042E-12"
+        iyy="2.1167E-07"
+        iyz="1.4291E-11"
+        izz="6.9402E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link33.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link33.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint3233"
+    type="revolute">
+    <origin
+      xyz="-0.00205 0 -0.0244"
+      rpy="-1.5708 0.021758 1.5731" />
+    <parent
+      link="Link32" />
+    <child
+      link="Link33" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link34">
+    <inertial>
+      <origin
+        xyz="-0.0024788 0.016208 -0.0030501"
+        rpy="0 0 0" />
+      <mass
+        value="0.0036036" />
+      <inertia
+        ixx="4.3923E-07"
+        ixy="-4.1355E-08"
+        ixz="-1.2075E-12"
+        iyy="7.0315E-08"
+        iyz="-3.0761E-12"
+        izz="4.4881E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link34.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link34.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint3334"
+    type="revolute">
+    <origin
+      xyz="0.0067937 0.037509 0.001"
+      rpy="0 0 0" />
+    <parent
+      link="Link33" />
+    <child
+      link="Link34" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.7"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint033"
+    type="revolute">
+    <pose relative_to = "base_link">0.00028533 -0.13571 -0.025488 -0.10472 0 3.1416</pose>
+    <parent>base_link</parent>
+    <child>Link33</child>
+    <axis>0 0 -1</axis>
+    <limit
+      lower="-2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link35">
+    <inertial>
+      <origin
+        xyz="-0.0039265 0.015726 -0.00145"
+        rpy="0 0 0" />
+      <mass
+        value="0.00031561" />
+      <inertia
+        ixx="4.8649E-08"
+        ixy="1.1992E-08"
+        ixz="-8.1994E-25"
+        iyy="3.789E-09"
+        iyz="-1.3635E-24"
+        izz="5.1996E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link35.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.82745 0.83922 0.82745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link35.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint035"
+    type="revolute">
+    <origin
+      xyz="-0.00546 -0.13044 -0.029509"
+      rpy="-0.10472 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link35" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint3534"
+    type="revolute">
+    <pose relative_to = "Link35">-0.0079562 0.031614 -0.0045 0 0 0</pose>
+    <parent>Link35</parent>
+    <child>Link34</child>
+    <axis>0 0 1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link41">
+    <inertial>
+      <origin
+        xyz="-2.0826E-10 0.022007 -0.0065979"
+        rpy="0 0 0" />
+      <mass
+        value="0.0092961" />
+      <inertia
+        ixx="1.5208E-06"
+        ixy="-2.5145E-13"
+        ixz="1.6919E-15"
+        iyy="5.558E-07"
+        iyz="8.9659E-08"
+        izz="1.1427E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link41.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link41.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint041"
+    type="revolute">
+    <origin
+      xyz="-0.01096 -0.06025 -0.02985"
+      rpy="1.5708 0.017281 -3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link41" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-0.02"
+      upper="0.02"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link42">
+    <inertial>
+      <origin
+        xyz="-4.8323E-09 -2.1024E-09 -0.011425"
+        rpy="0 0 0" />
+      <mass
+        value="0.00016153" />
+      <inertia
+        ixx="7.1494E-09"
+        ixy="-2.5979E-16"
+        ixz="-5.8508E-15"
+        iyy="7.1771E-09"
+        iyz="-2.6055E-15"
+        izz="2.337E-10" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link42.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.77647 0.75686 0.73725 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link42.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4142"
+    type="prismatic">
+    <origin
+      xyz="0 0.02708 0"
+      rpy="-1.5708 0 3.1416" />
+    <parent
+      link="Link41" />
+    <child
+      link="Link42" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.01"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link43">
+    <inertial>
+      <origin
+        xyz="-0.0085587 -0.005582 -0.00132"
+        rpy="0 0 0" />
+      <mass
+        value="0.0018869" />
+      <inertia
+        ixx="5.5158E-08"
+        ixy="-1.1803E-08"
+        ixz="4.6743E-09"
+        iyy="8.2164E-08"
+        iyz="1.3521E-09"
+        izz="6.7434E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link43.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.82745 0.83922 0.82745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link43.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4243"
+    type="revolute">
+    <origin
+      xyz="0 0.00295 -0.01955"
+      rpy="1.5708 -1.5535 3.1416" />
+    <parent
+      link="Link42" />
+    <child
+      link="Link43" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.2"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link44">
+    <inertial>
+      <origin
+        xyz="-0.021936 0.01279 -0.0080386"
+        rpy="0 0 0" />
+      <mass
+        value="0.0066101" />
+      <inertia
+        ixx="1.5692E-06"
+        ixy="7.8339E-07"
+        ixz="-8.5951E-10"
+        iyy="1.7355E-06"
+        iyz="-1.0379E-09"
+        izz="2.787E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link44.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link44.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4344"
+    type="revolute">
+    <origin
+      xyz="-0.013664 -0.015018 -0.003"
+      rpy="1.5708 0 0.16939" />
+    <parent
+      link="Link43" />
+    <child
+      link="Link44" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.5"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link45">
+    <inertial>
+      <origin
+        xyz="-0.006773 0.021894 1.2538E-10"
+        rpy="0 0 0" />
+      <mass
+        value="0.0092255" />
+      <inertia
+        ixx="1.1303E-06"
+        ixy="9.3665E-08"
+        ixz="-6.7934E-15"
+        iyy="5.5222E-07"
+        iyz="2.0346E-13"
+        izz="1.5062E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link45.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link45.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4445"
+    type="revolute">
+    <origin
+      xyz="-0.0083049 -0.0034513 -0.008"
+      rpy="-3.1416 0 -2.1326" />
+    <parent
+      link="Link44" />
+    <child
+      link="Link45" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0.4"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link46">
+    <inertial>
+      <origin
+        xyz="2.1964E-12 8.6178E-12 -0.01215"
+        rpy="0 0 0" />
+      <mass
+        value="0.0001755" />
+      <inertia
+        ixx="8.3384E-09"
+        ixy="1.3334E-11"
+        ixz="2.215E-18"
+        iyy="8.3761E-09"
+        iyz="1.0571E-17"
+        izz="2.4209E-10" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link46.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.77647 0.75686 0.73725 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link46.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4546"
+    type="prismatic">
+    <origin
+      xyz="-0.00016567 0.024279 0"
+      rpy="-1.5708 0.30756 -3.1348" />
+    <parent
+      link="Link45" />
+    <child
+      link="Link46" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.01"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link47">
+    <inertial>
+      <origin
+        xyz="-0.0060675 0.011295 0.00099983"
+        rpy="0 0 0" />
+      <mass
+        value="0.0037844" />
+      <inertia
+        ixx="3.6981E-07"
+        ixy="9.8603E-08"
+        ixz="2.8815E-12"
+        iyy="3.2395E-07"
+        iyz="2.8409E-12"
+        izz="4.6532E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link47.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link47.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4647"
+    type="revolute">
+    <origin
+      xyz="-0.00030273 -0.00095308 -0.0223"
+      rpy="-1.5708 -1.0022 -0.30756" />
+    <parent
+      link="Link46" />
+    <child
+      link="Link47" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.8"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link48">
+    <inertial>
+      <origin
+        xyz="-0.0092888 0.004953 0.0015467"
+        rpy="0 0 0" />
+      <mass
+        value="0.003344" />
+      <inertia
+        ixx="1.3632E-07"
+        ixy="5.6787E-08"
+        ixz="9.1939E-11"
+        iyy="1.4052E-07"
+        iyz="-1.2145E-10"
+        izz="2.0026E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link48.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link48.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4748"
+    type="revolute">
+    <origin
+      xyz="-0.016763 0.023079 -0.00055"
+      rpy="0 0 0" />
+    <parent
+      link="Link47" />
+    <child
+      link="Link48" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="1.2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  <link
+    name="Link49">
+    <inertial>
+      <origin
+        xyz="-0.017737 0.0022319 0.00145"
+        rpy="0 0 0" />
+      <mass
+        value="0.00021109" />
+      <inertia
+        ixx="7.9738E-10"
+        ixy="2.8747E-09"
+        ixz="-9.2799E-24"
+        iyy="2.5464E-08"
+        iyz="2.289E-24"
+        izz="2.5965E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link49.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link49.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4449"
+    type="revolute">
+    <origin
+      xyz="-0.036109 0.035336 -0.00945"
+      rpy="0 0 0" />
+    <parent
+      link="Link44" />
+    <child
+      link="Link49" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1"
+      upper="0"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint4948"
+    type="revolute">
+    <pose relative_to = "Link49">-0.029097 0.003439 -0.0001 0 0 0</pose>
+    <parent>Link49</parent>
+    <child>Link48</child>
+    <axis>0 0 -1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <gazebo>
+  <joint
+    name="joint4447"
+    type="revolute">
+    <pose relative_to = "Link44">-0.04407 0.034553 -0.0152 0 0 0</pose>
+    <parent>Link44</parent>
+    <child>Link47</child>
+    <axis>0 0 1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <link
+    name="Link50">
+    <inertial>
+      <origin
+        xyz="-0.023451 0.0093386 0.0123"
+        rpy="0 0 0" />
+      <mass
+        value="0.00031643" />
+      <inertia
+        ixx="1.1104E-08"
+        ixy="2.5564E-08"
+        ixz="-2.2985E-22"
+        iyy="6.5483E-08"
+        iyz="9.3059E-23"
+        izz="7.6534E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link50.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.82745 0.83922 0.82745 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://handleft9183/meshes/Link50.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint4350"
+    type="revolute">
+    <origin
+      xyz="-0.013795 -0.00043185 0.0056933"
+      rpy="1.5708 0 0.16939" />
+    <parent
+      link="Link43" />
+    <child
+      link="Link50" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="1"
+      effort="50"
+      velocity="1" />
+  </joint>
+  
+  
+  <gazebo>
+  <joint
+    name="joint5047"
+    type="revolute">
+    <pose relative_to = "Link50">-0.047358 0.018925 0.0136 3.1416 0 -3.1416</pose>
+    <parent>Link50</parent>
+    <child>Link47</child>
+    <axis>0 0 -1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <gazebo>
+  <joint
+    name="joint043"
+    type="revolute">
+    <pose relative_to = "base_link">-0.01696 -0.0667 0.02045 1.5708 -1.5708 0</pose>
+    <parent>base_link</parent>
+    <child>Link43</child>
+    <axis>0 0 -1</axis>
+    <limit
+      lower="-2"
+      upper="2"
+      effort="50"
+      velocity="1" />
+  </joint>
+  </gazebo>
+  
+  
+  <gazebo>
+   <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so">
+    <robotNamespace>/swivel</robotNamespace>
+    <controlPeriod>0.001</controlPeriod>
+    <robotSimType>gazebo_ros_control/DefaultRobotHWSim</robotSimType>
+   </plugin>
+  </gazebo>
+
+  <transmission name="tran1">
+   <type>transmission_interface/SimpleTransmission</type>
+   <joint name="joint12">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+   </joint>
+   <actuator name="motor1">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    <mechanicalReduction>1</mechanicalReduction>
+   </actuator>
+  </transmission>
+  
+  <transmission name="tran2">
+   <type>transmission_interface/SimpleTransmission</type>
+   <joint name="joint1112">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+   </joint>
+   <actuator name="motor2">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    <mechanicalReduction>1</mechanicalReduction>
+   </actuator>
+  </transmission>
+  
+  <transmission name="tran3">
+   <type>transmission_interface/SimpleTransmission</type>
+   <joint name="joint2122">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+   </joint>
+   <actuator name="motor3">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    <mechanicalReduction>1</mechanicalReduction>
+   </actuator>
+  </transmission>
+  
+  <transmission name="tran4">
+   <type>transmission_interface/SimpleTransmission</type>
+   <joint name="joint3132">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+   </joint>
+   <actuator name="motor4">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    <mechanicalReduction>1</mechanicalReduction>
+   </actuator>
+  </transmission>
+  
+  <transmission name="tran5">
+   <type>transmission_interface/SimpleTransmission</type>
+   <joint name="joint4142">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+   </joint>
+   <actuator name="motor5">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    <mechanicalReduction>1</mechanicalReduction>
+   </actuator>
+  </transmission>
+  
+  <transmission name="tran6">
+   <type>transmission_interface/SimpleTransmission</type>
+   <joint name="joint4546">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+   </joint>
+   <actuator name="motor6">
+    <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    <mechanicalReduction>1</mechanicalReduction>
+   </actuator>
+  </transmission>
+  
+  
+</robot>

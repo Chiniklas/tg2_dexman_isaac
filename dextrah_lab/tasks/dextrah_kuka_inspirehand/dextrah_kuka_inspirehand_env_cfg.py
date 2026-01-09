@@ -669,16 +669,13 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         },
         "reward_weights": {
             # "finger_curl_reg": (-0.01, -0.005),
-            "finger_curl_reg": (-0.1, -0.1),
+            "finger_curl_reg": (-0.1, -0.05),
             # "finger_curl_reg": (-1.0, -0.25),
             "object_to_goal_sharpness": (-15., -20.),
-            "lift_weight": (5., 0.) # default = (5,0)
+            "lift_weight": (5., 2.5) # default = (5,0)
         },
         "pd_targets": {
             "velocity_target_factor": (1., 0.)
-        },
-        "fabric_damping": {
-            "gain": (10., 20.)
         },
         "observation_annealing": {
             "coefficient": (0., 0.)
