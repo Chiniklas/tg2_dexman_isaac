@@ -37,6 +37,7 @@ from .dextrah_kuka_inspirehand_utils import (
     assert_equals,
     scale,
     compute_absolute_action,
+    compute_delta_action,
     to_torch,
     quat_to_rotmat,
     print_prim_tree_once,
@@ -208,6 +209,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                           0.4], device=self.device) # thumb_joint_3
         self.robot_start_joint_pos =\
             self.robot_start_joint_pos.repeat(self.num_envs, 1).contiguous()
+        self.actuated_start_joint_pos =\
+            self.robot_start_joint_pos[:, self.actuated_dof_indices].clone()
         # Start with zero initial velocities and accelerations
         self.robot_start_joint_vel =\
             torch.zeros(self.num_envs, self.num_robot_dofs, device=self.device)
@@ -973,7 +976,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             hand_to_object_reward.dtype
         )
         # Gate survival reward until the hand is within 0.3m of the object.
-        gate_dist = getattr(self.cfg, "episode_length_gate_dist", 0.3)
+        gate_dist = getattr(
+            self.cfg,
+            "hand_joint_approach_gate_dist",
+            getattr(self.cfg, "episode_length_gate_dist", 0.3),
+        )
         episode_length_reward = torch.where(
             self.hand_to_object_pos_error < gate_dist,
             episode_length_reward,
@@ -1717,11 +1724,42 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         assert_equals(actions.shape, (self.num_envs, self.cfg.num_actions))
 
         # Scale actions to joint limits and set PD targets
-        joint_targets = compute_absolute_action(
-            raw_actions=actions,
-            lower_limits=self.robot_dof_lower_limits[0],
-            upper_limits=self.robot_dof_upper_limits[0],
-        )
+        if getattr(self.cfg, "use_delta_actions", False):
+            base_action = self.joint_position_targets[:, self.actuated_dof_indices]
+            joint_targets = compute_delta_action(
+                raw_actions=actions,
+                base_action=base_action,
+                lower_limits=self.robot_dof_lower_limits[0],
+                upper_limits=self.robot_dof_upper_limits[0],
+                delta_scale=self.cfg.delta_action_scale,
+            )
+        else:
+            joint_targets = compute_absolute_action(
+                raw_actions=actions,
+                lower_limits=self.robot_dof_lower_limits[0],
+                upper_limits=self.robot_dof_upper_limits[0],
+            )
+
+        if getattr(self.cfg, "enable_hand_action_clamp", True):
+            gate_dist = getattr(
+                self.cfg,
+                "hand_joint_approach_gate_dist",
+                getattr(self.cfg, "episode_length_gate_dist", 0.3),
+            )
+            hand_joint_start = 7
+            if self.cfg.num_actions > hand_joint_start:
+                hand_nominal = self.actuated_start_joint_pos[:, hand_joint_start:]
+                tol = self.cfg.hand_joint_approach_tolerance
+                hand_lower = hand_nominal - tol
+                hand_upper = hand_nominal + tol
+                hand_targets = joint_targets[:, hand_joint_start:]
+                clamped = torch.max(torch.min(hand_targets, hand_upper), hand_lower)
+                sigmoid_k = getattr(self.cfg, "hand_joint_approach_sigmoid_k", 20.0)
+                clamp_alpha = torch.sigmoid(
+                    (self.hand_to_object_pos_error - gate_dist) * sigmoid_k
+                ).unsqueeze(1)
+                hand_targets = clamp_alpha * clamped + (1.0 - clamp_alpha) * hand_targets
+                joint_targets[:, hand_joint_start:] = hand_targets
 
         self.joint_position_targets[:, self.actuated_dof_indices] = joint_targets
         self.dof_pos_targets[:, self.actuated_dof_indices] = joint_targets

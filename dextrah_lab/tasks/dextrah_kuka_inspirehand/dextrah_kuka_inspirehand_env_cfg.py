@@ -209,11 +209,11 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         "palm_contact",
 
         # "palm", # this is default
-        # "index_tip",
-        # "middle_tip",
-        # "ring_tip",
-        # "little_tip",
-        # "thumb_tip",
+        "index_tip",
+        "middle_tip",
+        "ring_tip",
+        "little_tip",
+        "thumb_tip",
 
         # "contact_guide",
     ]
@@ -540,7 +540,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
 
     # reward weights
     # phase 1: reaching
-    hand_to_object_weight = 25.  # 20 #default 1
+    hand_to_object_weight = 20.  # 20 #default 1
     hand_to_object_sharpness = 8. # 8 #default 10
     palm_direction_alignment_weight = 2.0
     palm_down_local_axis = (-1.0, 0.0, 0.0)
@@ -572,6 +572,12 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     # extras
     episode_length_reward_weight = 0.04 # default 0.04   
     episode_length_gate_dist = 0.25 # default 0.25
+    hand_joint_approach_gate_dist = 0.15
+    hand_joint_approach_tolerance = 0.1
+    hand_joint_approach_sigmoid_k = 20.0
+    enable_hand_action_clamp = True
+    use_delta_actions = False
+    delta_action_scale = 0.25
 
     # Optional: print per-step reward breakdown for the first N steps (debugging aid).
     debug_reward_steps = 0 # to show,set to -1

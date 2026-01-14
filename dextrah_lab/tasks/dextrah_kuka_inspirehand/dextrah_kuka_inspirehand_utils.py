@@ -48,6 +48,35 @@ def compute_absolute_action(
 
     return absolute_action
 
+def compute_delta_action(
+    raw_actions: torch.Tensor,
+    base_action: torch.Tensor,
+    lower_limits: torch.Tensor,
+    upper_limits: torch.Tensor,
+    delta_scale: float | torch.Tensor = 1.0,
+) -> torch.Tensor:
+    """Apply delta actions around a base target and clamp to joint limits."""
+    N, D = raw_actions.shape
+    assert_equals(base_action.shape, (N, D))
+    assert_equals(lower_limits.shape, (D,))
+    assert_equals(upper_limits.shape, (D,))
+
+    if not torch.is_tensor(delta_scale):
+        delta_scale = torch.tensor(
+            delta_scale,
+            device=raw_actions.device,
+            dtype=raw_actions.dtype,
+        )
+    delta = raw_actions * delta_scale
+    action = base_action + delta
+    action = tensor_clamp(
+        t=action,
+        min_t=lower_limits,
+        max_t=upper_limits,
+    )
+
+    return action
+
 @torch.jit.script
 def tensor_clamp(t, min_t, max_t):
     return torch.max(torch.min(t, max_t), min_t)
