@@ -70,9 +70,9 @@ params:
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000
-    max_epochs: 100000 #20000
-    save_best_after: 1000
-    save_frequency: 2000
+    max_epochs: 20000 #20000
+    save_best_after: 500
+    save_frequency: 1000
     print_stats: True
     grad_norm: 1.0
     entropy_coef: 0.002

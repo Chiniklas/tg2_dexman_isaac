@@ -25,8 +25,9 @@ module_path = os.path.dirname(__file__)
 root_path = os.path.dirname(module_path)
 # Update the USD path to point to the Inspirehand USD file
 # kuka_inspirehand_usd_path = os.path.join(root_path, "kuka_inspirehand.usd")
-kuka_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand.usd"
+# kuka_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand.usd"
 # kuka_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand_legacy.usd"
+kuka_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/kuka_inspirehand/kuka_inspirehand_adjusted_thumb.usd"
 KUKA_INSPIREHAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=kuka_inspirehand_usd_path,

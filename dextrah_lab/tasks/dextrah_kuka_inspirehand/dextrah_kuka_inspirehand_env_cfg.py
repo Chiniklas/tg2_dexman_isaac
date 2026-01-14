@@ -115,7 +115,10 @@ class EventCfg:
 class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     # Placeholder for objects_dir which targets the directory of objects for training
     objects_dir = "replace_me"
-    valid_objects_dir = ["visdex_objects","test_object"]
+    valid_objects_dir = [
+                            "visdex_objects",
+                            "test_object",
+                            "multi_objects"]
 
     # Toggle for using cuda graph
     use_cuda_graph = False
@@ -129,6 +132,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     num_sim_steps_to_render=2 # renders every 4 sim steps, so 60 Hz
     num_actions = 13 # 1:1 joint position targets for 7 arm + 6 hand DOF
     success_timeout = 2.
+    no_contact_timeout_s = 3.0
     # num_observations = 94
     distillation = False
     num_student_observations = 0
@@ -170,7 +174,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
                 "middle_joint_(0|1)": 0.,
                 "ring_joint_(0|1)": 0.,
                 "little_joint_(0|1)": 0.,
-                "thumb_joint_0": 0.3,
+                # "thumb_joint_0": 0.3,
+                "thumb_joint_0": 0.78,
                 "thumb_joint_(1|2|3)": 0.
             },
         )
@@ -193,7 +198,7 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     ]
     
     hand_body_names = [
-        "palm",
+        "palm", # this is default
         "index_tip",
         "middle_tip",
         "ring_tip",
@@ -201,12 +206,16 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
         "thumb_tip",
     ]
     hand_object_distance_body_names = [
-        "palm",
-        "index_tip",
-        "middle_tip",
-        "ring_tip",
-        "little_tip",
-        "thumb_tip",
+        "palm_contact",
+
+        # "palm", # this is default
+        # "index_tip",
+        # "middle_tip",
+        # "ring_tip",
+        # "little_tip",
+        # "thumb_tip",
+
+        # "contact_guide",
     ]
 
 
@@ -531,8 +540,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
 
     # reward weights
     # phase 1: reaching
-    hand_to_object_weight = 20. #default 1
-    hand_to_object_sharpness = 8. #default 10
+    hand_to_object_weight = 25.  # 20 #default 1
+    hand_to_object_sharpness = 8. # 8 #default 10
     palm_direction_alignment_weight = 2.0
     palm_down_local_axis = (-1.0, 0.0, 0.0)
     palm_finger_alignment_weight = 1.0
@@ -543,13 +552,17 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     # palm_linear_velocity_penalty_sharpness = 10.0
     joint_velocity_penalty_weight = 5e-4
     hand_joint_velocity_penalty_scale = 3.0
-    action_rate_penalty_weight = 5e-4
+    action_rate_penalty_weight = 5e-4 # default 5e-4
     hand_action_rate_penalty_scale = 3.0 # default = 5.0
 
     # phase 2: contact
     hand_object_contact_weight = 1.0 #default 5.5
-    finger_curl_reg_min = -2.0
+    finger_curl_reg_min = -2.0 # default -2.0
     finger_curl_reg_max = 0.0
+    # Two-stage curl reward weights (gated by episode_length_gate_dist).
+    finger_curl_reg_weight_far = -0.1 # default -0.1
+    finger_curl_reg_weight_near = -0.1 # default -0.1
+    finger_curl_switch_dist = 0.15
 
     #phase 3: lifting
     object_to_goal_weight = 8 #default 5 
@@ -557,8 +570,8 @@ class DextrahKukaInspirehandEnvCfg(DirectRLEnvCfg):
     lift_sharpness = 8.5 #default 8.5
 
     # extras
-    episode_length_reward_weight = 0.04# default 0.075    
-    episode_length_gate_dist = 0.25 # default 0.3
+    episode_length_reward_weight = 0.04 # default 0.04   
+    episode_length_gate_dist = 0.25 # default 0.25
 
     # Optional: print per-step reward breakdown for the first N steps (debugging aid).
     debug_reward_steps = 0 # to show,set to -1

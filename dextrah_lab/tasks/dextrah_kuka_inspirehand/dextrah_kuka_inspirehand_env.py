@@ -79,6 +79,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         self.arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # Track hand-object contact counts per env.
         self.object_contact_counts = torch.zeros(self.num_envs, device=self.device)
+        # Track whether each env has made hand-object contact since reset.
+        self.had_object_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         
         self.num_observations = (
             self.cfg.num_student_observations if self.cfg.distillation
@@ -92,6 +94,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         step_dt = self.cfg.sim_dt * self.cfg.decimation
         # self.action_freeze_steps = int(max(0, round(self.cfg.action_freeze_duration_s / step_dt)))
         self.action_freeze_steps = 6000
+        self.no_contact_timeout_s = getattr(self.cfg, "no_contact_timeout_s", 3.0)
+        self.no_contact_max_steps = max(1, int(np.ceil(self.no_contact_timeout_s / step_dt)))
 
         # list of actuated joints
         self.actuated_dof_indices = list()
@@ -109,6 +113,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         print("[DEBUG] Robot joint order (USD):", self.robot.joint_names)
         debug_joint_map = list(zip(cfg.actuated_joint_names, self.actuated_dof_indices))
         print("[DEBUG] Actuated joints -> indices:", debug_joint_map)
+        print("[DEBUG] Body names:", self.robot.body_names)
+        # input("Debugging")
 
         # buffers for position targets
         self.robot_dof_targets =\
@@ -191,7 +197,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                           0.25,  # little_joint_0
                           0.25,  # middle_joint_0
                           0.25,  # ring_joint_0
-                          0.0,  # thumb_joint_0
+                        #   0.0,  # thumb_joint_0
+                          0.78, # thumb joint 0
                           0.386,  # index_joint_1
                           0.386,  # little_joint_1
                           0.386,  # middle_joint_1
@@ -212,7 +219,8 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                           0.25,  # little_joint_0
                           0.25,  # middle_joint_0
                           0.25,  # ring_joint_0
-                          0.0,  # thumb_joint_0
+                        #   0.0,  # thumb_joint_0
+                          0.78,  # thumb_joint_0
                           0.1], device=self.device)  # thumb_joint_1
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
@@ -889,7 +897,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         (
             hand_to_object_reward,
             object_to_goal_reward,
-            finger_curl_reg,
+            finger_curl_reg_raw,
             lift_reward,
             palm_direction_alignment_reward,
             palm_finger_alignment_reward,
@@ -928,6 +936,23 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
                 self.cfg.hand_action_rate_penalty_scale,
             )
 
+        # Original curl reward (ADR-weighted).
+        # finger_curl_reg = torch.clamp(
+        #     finger_curl_reg_raw,
+        #     min=self.cfg.finger_curl_reg_min,
+        #     max=self.cfg.finger_curl_reg_max,
+        # )
+
+        finger_curl_dist = (self.robot_dof_pos[:, 7:] - self.curled_q).norm(p=2, dim=-1)
+        curl_weight_far = self.cfg.finger_curl_reg_weight_far
+        curl_weight_near = self.cfg.finger_curl_reg_weight_near
+        curl_switch_dist = self.cfg.finger_curl_switch_dist
+        curl_weight = torch.where(
+            self.hand_to_object_pos_error < curl_switch_dist,
+            torch.full_like(finger_curl_dist, curl_weight_near),
+            torch.full_like(finger_curl_dist, curl_weight_far),
+        )
+        finger_curl_reg = curl_weight * finger_curl_dist ** 2
         finger_curl_reg = torch.clamp(
             finger_curl_reg,
             min=self.cfg.finger_curl_reg_min,
@@ -960,11 +985,16 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         palm_lin_vel = self.robot.data.body_vel_w[:, self.palm_body_idx, :3] 
         palm_lin_vel_penalty = -5e-4 * (palm_lin_vel ** 2).sum(dim=-1)
 
+        lift_success = (self.object_contact_counts > 0.0) & (
+            self.object_pos[:, 2] > self.cfg.object_height_thresh
+        )
+
         # Add reward signals to tensorboard
         self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
         self.extras["object_to_goal_reward"] = object_to_goal_reward.mean()
         self.extras["finger_curl_reg"] = finger_curl_reg.mean()
         self.extras["lift_reward"] = lift_reward.mean()
+        self.extras["lift_success"] = lift_success.float().mean()
         self.extras["hand_object_contact_reward"] = contact_reward.mean()
         self.extras["palm_direction_alignment_reward"] = palm_direction_alignment_reward.mean()
         self.extras["palm_finger_alignment_reward"] = palm_finger_alignment_reward.mean()
@@ -1060,6 +1090,11 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
             | self.arm_table_contact_mask
             | palm_flipped
         )
+        no_contact_timeout = (
+            (self.episode_length_buf >= self.no_contact_max_steps)
+            & (~self.had_object_contact)
+        )
+        out_of_reach = out_of_reach | no_contact_timeout
 #============================================================================================================================
         # if out_of_reach.any():
         #     env_ids = torch.nonzero(out_of_reach, as_tuple=False).squeeze(-1).tolist()
@@ -1190,6 +1225,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
         # Reset success signals
         self.in_success_region[env_ids] = False
         self.time_in_success_region[env_ids] = 0.
+        self.had_object_contact[env_ids] = False
 
         # Get object mass - this is used in F/T disturbance, etc.
         # NOTE: object mass on the CPU, so we only query infrequently
@@ -1670,6 +1706,7 @@ class DextrahKukaInspirehandEnv(DirectRLEnv):
 
         # contact counts
         self.object_contact_report = self._collect_object_contacts()
+        self.had_object_contact |= self.object_contact_counts > 0.0
         # if self.object_contact_report:
         #     print(self.object_contact_report)
         #     print("#==========================")
