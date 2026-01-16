@@ -69,6 +69,7 @@ import dextrah_lab.tasks.dextrah_kuka_allegro.gym_setup
 import dextrah_lab.tasks.dextrah_kuka_inspirehand.gym_setup
 import dextrah_lab.tasks.dextrah_kuka_inspirehand_pc.gym_setup
 import dextrah_lab.tasks.dextrah_kuka_inspirehand_v2.gym_setup
+import dextrah_lab.tasks.tg2_inspirehand.gym_setup
 
 import time
 import wandb
