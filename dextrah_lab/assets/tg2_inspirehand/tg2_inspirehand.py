@@ -26,7 +26,7 @@ root_path = os.path.dirname(module_path)
 # Update the USD path to point to the TG2-Inspirehand USD file
 # tg2_inspirehand_usd_path = os.path.join(root_path, "tg2_inspirehand.usd")
 # tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand.usd"
-tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand_no_legs.usd"
+tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand_no_leg.usd"
 TG2_INSPIREHAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=tg2_inspirehand_usd_path,
@@ -91,52 +91,62 @@ TG2_INSPIREHAND_CFG = ArticulationCfg(
                 "thumb_joint_1",
             ],
             effort_limit_sim={
-                "shoulder_pitch_r_joint": 10.,
-                "shoulder_roll_r_joint": 10.,
-                "shoulder_yaw_r_joint": 10.,
-                "elbow_pitch_r_joint": 10.,
-                "elbow_yaw_r_joint": 10.,
-                "wrist_pitch_r_joint": 10.,
-                "wrist_roll_r_joint": 10.,
-                "index_joint_0": 10.0, # default 0.5
-                "middle_joint_0": 10.0,
-                "ring_joint_0": 10.0,
-                "little_joint_0": 10.0,
-                "thumb_joint_0": 10.0,
-                "thumb_joint_1": 10.0,
-            },
-            stiffness={
-                "shoulder_pitch_r_joint": 300.,
-                "shoulder_roll_r_joint": 300.,
-                "shoulder_yaw_r_joint": 300.,
-                "elbow_pitch_r_joint": 200.,
-                "elbow_yaw_r_joint": 50.,
+                "shoulder_pitch_r_joint": 250.,
+                "shoulder_roll_r_joint": 200.,
+                "shoulder_yaw_r_joint": 120.,
+                "elbow_pitch_r_joint": 120.,
+                "elbow_yaw_r_joint": 120.,
                 "wrist_pitch_r_joint": 50.,
                 "wrist_roll_r_joint": 50.,
-                "index_joint_0": 10, #default 3 
-                "middle_joint_0": 10,
-                "ring_joint_0": 10,
-                "little_joint_0": 10,
-                "thumb_joint_0": 10,
-                "thumb_joint_1": 10,
+                "index_joint_0": 3.0,
+                "middle_joint_0": 3.0,
+                "ring_joint_0": 3.0,
+                "little_joint_0": 3.0,
+                "thumb_joint_0": 3.0,
+                "thumb_joint_1": 3.0,
+            },
+
+            stiffness = {
+                "shoulder_pitch_r_joint": 1200,
+                "shoulder_roll_r_joint": 300,
+                "shoulder_yaw_r_joint": 300,
+                "elbow_pitch_r_joint": 300,
+                "elbow_yaw_r_joint": 300,
+                "wrist_pitch_r_joint": 200,
+                "wrist_roll_r_joint": 200,
+                "index_joint_0": 30,
+                "middle_joint_0": 30,
+                "ring_joint_0": 30,
+                "little_joint_0": 30,
+                "thumb_joint_0": 30,
+                "thumb_joint_1": 30,
             },
             damping={
-                "shoulder_pitch_r_joint": 30.,
-                "shoulder_roll_r_joint": 25.,
-                "shoulder_yaw_r_joint": 15.,
-                "elbow_pitch_r_joint": 7.,
-                "elbow_yaw_r_joint": 4.,
-                "wrist_pitch_r_joint": 4.,
-                "wrist_roll_r_joint": 4.,
-                "index_joint_0": 20.0, # default 0.1
-                "middle_joint_0": 20.0,
-                "ring_joint_0": 20.0,
-                "little_joint_0": 20.0,
-                "thumb_joint_0": 20.0,
-                "thumb_joint_1": 20.0,
+                "shoulder_pitch_r_joint": 60,
+                "shoulder_roll_r_joint": 20,
+                "shoulder_yaw_r_joint": 20,
+                "elbow_pitch_r_joint": 15,
+                "elbow_yaw_r_joint": 15,
+                "wrist_pitch_r_joint": 8,
+                "wrist_roll_r_joint": 8,
+                "index_joint_0": 1.0,
+                "middle_joint_0": 1.0,
+                "ring_joint_0": 1.0,
+                "little_joint_0": 1.0,
+                "thumb_joint_0": 1.0,
+                "thumb_joint_1": 1.0,
             },
         ),
     },
-    soft_joint_pos_limit_factor=1.0,
+    # actuators = {
+    #     "tg2_inspirehand_actuators": ImplicitActuatorCfg(
+    #         joint_names_expr = [".*"],
+    #         damping = 30,
+    #         stiffness = 300,
+    #         effort_limit_sim = 10,
+    #     )
+    # },
+
+    soft_joint_pos_limit_factor=0.9,
 )
 """Configuration of TG2 Inspirehand robot."""

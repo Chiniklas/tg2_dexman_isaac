@@ -122,10 +122,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
 
     # env
     sim_dt = 1/120.
-    fabrics_dt = 1/60.
     decimation = 2 # 60 Hz
     episode_length_s = 10. #10.0
-    fabric_decimation = 2 # number of fabric steps per physics step
     num_sim_steps_to_render=2 # renders every 4 sim steps, so 60 Hz
     num_actions = 13 # 1:1 joint position targets for 7 arm + 6 hand DOF
     success_timeout = 2.
@@ -695,6 +693,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     }
 
     # Action space related parameters
+    action_mode = "absolute"  # "absolute" or "delta"
+    action_step = 0.005
     max_pose_angle = -1. # it is not used for now
 
     # depth randomization parameters

@@ -48,6 +48,23 @@ def compute_absolute_action(
 
     return absolute_action
 
+
+def compute_delta_action(
+    raw_actions: torch.Tensor,
+    current_targets: torch.Tensor,
+    lower_limits: torch.Tensor,
+    upper_limits: torch.Tensor,
+    step: float,
+) -> torch.Tensor:
+    """Compute delta-based joint targets with clamping to limits."""
+    absolute_action = current_targets + raw_actions * step
+    absolute_action = tensor_clamp(
+        t=absolute_action,
+        min_t=lower_limits,
+        max_t=upper_limits,
+    )
+    return absolute_action
+
 @torch.jit.script
 def tensor_clamp(t, min_t, max_t):
     return torch.max(torch.min(t, max_t), min_t)

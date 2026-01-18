@@ -37,6 +37,7 @@ from .dextrah_tg2_inspirehand_utils import (
     assert_equals,
     scale,
     compute_absolute_action,
+    compute_delta_action,
     to_torch,
     quat_to_rotmat,
     print_prim_tree_once,
@@ -136,6 +137,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         # Palm body index and local axes used to compute live palm direction vectors.
         self.palm_body_idx = self.robot.body_names.index("palm")
+        self.middle_link_0_body_idx = self.robot.body_names.index("middle_link_0")
 
         def _normalize_vector(vec: torch.Tensor) -> torch.Tensor:
             norm = torch.norm(vec)
@@ -199,7 +201,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                           0.386,  # ring_joint_1
                           0.1,  # thumb_joint_1
                           0.2,  # thumb_joint_2
-                          0.16], device=self.device) # thumb_joint_3
+                          0.4], device=self.device) # thumb_joint_3
         self.robot_start_joint_pos =\
             self.robot_start_joint_pos.repeat(self.num_envs, 1).contiguous()
         # Start with zero initial velocities and accelerations
@@ -269,11 +271,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.robot_joint_pos_noise_width = torch.zeros(self.num_envs, 1, device=self.device)
         self.robot_joint_vel_noise_width = torch.zeros(self.num_envs, 1, device=self.device)
 
-        # For querying 3D points on hand
-        # robot_dir_name = "kuka_inspirehand"
-        # robot_name = "kuka_inspirehand"
-        # self.urdf_path = get_robot_urdf_path(robot_dir_name, robot_name)
-        
+        # For querying 3D points on hand      
         # this is a fabric based forward kinematics helper
         # the purpose is to use forward kinematics to generate a noisy fingertip and palm position and vel
         # the noisy pos and vel will be compared with pure pos and vel
@@ -1031,15 +1029,15 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         table_half_y = self.cfg.table_size_y * 0.5 + bbox_margin
         table_top_z = self.table_pos_z + self.cfg.table_size_z * 0.5
 
-        # Hand termination: keep palm origin inside a box above the table surface
-        palm_pos = self.robot.data.body_pos_w[:, self.palm_body_idx] - self.scene.env_origins
-        palm_x_out = (palm_pos[:, 0] > (self.table_pos[:, 0] + table_half_x)) | \
-                     (palm_pos[:, 0] < (self.table_pos[:, 0] - table_half_x))
-        palm_y_out = (palm_pos[:, 1] > (self.table_pos[:, 1] + table_half_y)) | \
-                     (palm_pos[:, 1] < (self.table_pos[:, 1] - table_half_y))
-        # Constrain palm height to remain between the table surface and a band above it
-        palm_z_out = (palm_pos[:, 2] < table_top_z) | (palm_pos[:, 2] > (table_top_z + 1.0 + bbox_margin))
-        hand_too_far = palm_x_out | palm_y_out | palm_z_out
+        # Hand termination: keep middle_link_0 origin inside a box above the table surface
+        middle_pos = self.robot.data.body_pos_w[:, self.middle_link_0_body_idx] - self.scene.env_origins
+        middle_x_out = (middle_pos[:, 0] > (self.table_pos[:, 0] + table_half_x)) | \
+                       (middle_pos[:, 0] < (self.table_pos[:, 0] - table_half_x))
+        middle_y_out = (middle_pos[:, 1] > (self.table_pos[:, 1] + table_half_y)) | \
+                       (middle_pos[:, 1] < (self.table_pos[:, 1] - table_half_y))
+        # Constrain middle_link_0 height to remain between the table surface and a band above it
+        middle_z_out = (middle_pos[:, 2] < table_top_z) | (middle_pos[:, 2] > (table_top_z + 1.0 + bbox_margin))
+        hand_too_far = middle_x_out | middle_y_out | middle_z_out
 
         # Hand termination: any palm/fingertip point closer than 2 cm to table surface
         hand_min_z = self.hand_pos[..., 2].min(dim=1).values
@@ -1056,44 +1054,44 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             | object_outside_upper_y
             | object_outside_lower_y
             | object_too_low
-            # | hand_too_far
+            | hand_too_far
             | hand_too_close
             | self.arm_table_contact_mask
             | palm_flipped
         )
 #============================================================================================================================
-        # if out_of_reach.any():
-        #     env_ids = torch.nonzero(out_of_reach, as_tuple=False).squeeze(-1).tolist()
-        #     print(f"termination triggered in envs: {env_ids}")
+        if out_of_reach.any():
+            env_ids = torch.nonzero(out_of_reach, as_tuple=False).squeeze(-1).tolist()
+            print(f"termination triggered in envs: {env_ids}")
 
-        #     object_fail = (
-        #         object_outside_upper_x
-        #         | object_outside_lower_x
-        #         | object_outside_upper_y
-        #         | object_outside_lower_y
-        #         | object_too_low
-        #     )
-        #     hand_fail = hand_too_far | hand_too_close | palm_flipped
+            object_fail = (
+                object_outside_upper_x
+                | object_outside_lower_x
+                | object_outside_upper_y
+                | object_outside_lower_y
+                | object_too_low
+            )
+            hand_fail = hand_too_far | hand_too_close | palm_flipped
 
-        #     if object_fail.any():
-        #         envs = torch.nonzero(object_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-        #         print(f"object out of range termination: envs {envs}")
-        #     if hand_fail.any():
-        #         envs = torch.nonzero(hand_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-        #         print(f"hand out of range termination: envs {envs}")
-        #         if hand_too_far.any():
-        #             envs = torch.nonzero(hand_too_far & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-        #             print(f"hand too far: envs {envs}")
-        #         if hand_too_close.any():
-        #             envs = torch.nonzero(hand_too_close & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-        #             print(f"hand too close: envs {envs}")
-        #         # if palm_flipped.any():
-        #         #     envs = torch.nonzero(palm_flipped & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-        #         #     print(f"palm flipped: envs {envs}")
-        #     if self.arm_table_contact_mask.any():
-        #         envs = torch.nonzero(self.arm_table_contact_mask & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-        #         print(f"arm colliding with the table termination: envs {envs}")
-        #     # input("debugging termination conditions")
+            if object_fail.any():
+                envs = torch.nonzero(object_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+                print(f"object out of range termination: envs {envs}")
+            if hand_fail.any():
+                envs = torch.nonzero(hand_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+                print(f"hand out of range termination: envs {envs}")
+                if hand_too_far.any():
+                    envs = torch.nonzero(hand_too_far & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+                    print(f"hand too far: envs {envs}")
+                if hand_too_close.any():
+                    envs = torch.nonzero(hand_too_close & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+                    print(f"hand too close: envs {envs}")
+                if palm_flipped.any():
+                    envs = torch.nonzero(palm_flipped & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+                    print(f"palm flipped: envs {envs}")
+            if self.arm_table_contact_mask.any():
+                envs = torch.nonzero(self.arm_table_contact_mask & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+                print(f"arm colliding with the table termination: envs {envs}")
+            # input("debugging termination conditions")
 #===================================================================================================================================
 
         # Terminate rollout if maximum episode length reached
@@ -1680,12 +1678,24 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
     def compute_actions(self, actions: torch.Tensor) -> None: #torch.Tensor:
         assert_equals(actions.shape, (self.num_envs, self.cfg.num_actions))
 
-        # Scale actions to joint limits and set PD targets
-        joint_targets = compute_absolute_action(
-            raw_actions=actions,
-            lower_limits=self.robot_dof_lower_limits[0],
-            upper_limits=self.robot_dof_upper_limits[0],
-        )
+        action_mode = getattr(self.cfg, "action_mode", "absolute")
+        if action_mode == "delta":
+            # Delta action: update targets by a fixed step per action dimension.
+            step = getattr(self.cfg, "action_step", 0.01)
+            joint_targets = compute_delta_action(
+                raw_actions=actions,
+                current_targets=self.joint_position_targets[:, self.actuated_dof_indices],
+                lower_limits=self.robot_dof_lower_limits[0],
+                upper_limits=self.robot_dof_upper_limits[0],
+                step=step,
+            )
+        else:
+            # Absolute action: scale actions to joint limits and set PD targets.
+            joint_targets = compute_absolute_action(
+                raw_actions=actions,
+                lower_limits=self.robot_dof_lower_limits[0],
+                upper_limits=self.robot_dof_upper_limits[0],
+            )
 
         self.joint_position_targets[:, self.actuated_dof_indices] = joint_targets
         self.dof_pos_targets[:, self.actuated_dof_indices] = joint_targets
