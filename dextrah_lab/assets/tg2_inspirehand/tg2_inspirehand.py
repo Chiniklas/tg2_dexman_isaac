@@ -35,11 +35,11 @@ TG2_INSPIREHAND_CFG = ArticulationCfg(
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,
             retain_accelerations=True,
-            linear_damping=0.0,
+            linear_damping=0.001,
             angular_damping=0.0,
-            max_linear_velocity=1000.0, # default 1000
-            max_angular_velocity=1000.0, # default 1000
-            max_depenetration_velocity=1.0, # default 1000
+            max_linear_velocity=500.0, # default 1000
+            max_angular_velocity=500.0, # default 1000
+            max_depenetration_velocity=2.0, # default 1000
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,

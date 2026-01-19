@@ -145,7 +145,7 @@ python play_test.py \
 python train.py \
     --task=dextrah_tg2_inspirehand \
     --seed 42 \
-    --num_envs 4 \
+    --num_envs 256 \
     --action_mode delta \
     agent.params.config.minibatch_size=64 \
     agent.params.config.central_value_config.minibatch_size=64 \
@@ -155,5 +155,21 @@ python train.py \
     agent.params.config.multi_gpu=False \
     agent.wandb_activate=False \
     env.success_for_adr=0.4 \
-    env.objects_dir=test_object \
+    env.objects_dir=multi_objects \
+    env.use_cuda_graph=False
+
+python train.py \
+    --task=dextrah_tg2_inspirehand \
+    --seed 42 \
+    --num_envs 256 \
+    --headless \
+    agent.params.config.minibatch_size=64 \
+    agent.params.config.central_value_config.minibatch_size=64 \
+    agent.params.config.learning_rate=0.0001 \
+    agent.params.config.horizon_length=16 \
+    agent.params.config.mini_epochs=4 \
+    agent.params.config.multi_gpu=False \
+    agent.wandb_activate=False \
+    env.success_for_adr=0.4 \
+    env.objects_dir=multi_objects \
     env.use_cuda_graph=False

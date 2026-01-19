@@ -115,7 +115,9 @@ class EventCfg:
 class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     # Placeholder for objects_dir which targets the directory of objects for training
     objects_dir = "replace_me"
-    valid_objects_dir = ["visdex_objects","test_object"]
+    valid_objects_dir = ["visdex_objects",
+                        "test_object",
+                        "multi_objects"]
 
     # Toggle for using cuda graph
     use_cuda_graph = False
@@ -541,23 +543,23 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
 
     # reward weights
     # phase 1: reaching
-    hand_to_object_weight = 20. #default 1
-    hand_to_object_sharpness = 8. #default 10
-    palm_direction_alignment_weight = 2.0
+    hand_to_object_weight = 5. #default 1
+    hand_to_object_sharpness = 10. #default 10
+    palm_direction_alignment_weight = 0.1
     palm_down_local_axis = (-1.0, 0.0, 0.0)
     palm_finger_alignment_weight = 1.0
     palm_finger_local_axis = (0.0, -1.0, 0.0)
     palm_finger_direction_target = (-1.0, -1.0, 0.0)
+    palm_linear_velocity_penalty_weight = 0.005
+    action_rate_penalty_weight = 0.01
+    hand_action_rate_penalty_scale = 3.0 # default = 5.0
     
-    palm_linear_velocity_penalty_weight = 0.01
-    # palm_linear_velocity_penalty_sharpness = 10.0
     joint_velocity_penalty_weight = 5e-4
     hand_joint_velocity_penalty_scale = 3.0
-    action_rate_penalty_weight = 5e-4
-    hand_action_rate_penalty_scale = 3.0 # default = 5.0
 
     # phase 2: contact
     hand_object_contact_weight = 1.0 #default 5.5
+    finger_curl_reg_weight = -0.1
     finger_curl_reg_min = -2.0
     finger_curl_reg_max = 0.0
 
@@ -567,13 +569,13 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     lift_sharpness = 8.5 #default 8.5
 
     # extras
-    episode_length_reward_weight = 0.04# default 0.075    
-    episode_length_gate_dist = 0.25 # default 0.3
+    episode_length_reward_weight = 0.025# default 0.075    
+    episode_length_gate_dist = 0.2 # default 0.3
 
     # Optional: print per-step reward breakdown for the first N steps (debugging aid).
     debug_reward_steps = 0 # to show,set to -1
     # Terminate if palm flips beyond this cosine threshold relative to target (-Z).
-    palm_flip_cos_thresh = 0.25
+    palm_flip_cos_thresh = 0.0
 
     # Goal reaching parameters
     object_goal_tol = 0.1 # m
@@ -678,9 +680,6 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
             "robot_joint_vel_bias": (0.0, 0.08), # rad
         },
         "reward_weights": {
-            # "finger_curl_reg": (-0.01, -0.005),
-            "finger_curl_reg": (-0.1, -0.05),
-            # "finger_curl_reg": (-1.0, -0.25),
             "object_to_goal_sharpness": (-15., -20.),
             "lift_weight": (5., 2.5) # default = (5,0)
         },

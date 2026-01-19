@@ -909,7 +909,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.cfg.hand_to_object_sharpness,
                 self.cfg.object_to_goal_weight,
                 self.dextrah_adr.get_custom_param_value("reward_weights", "object_to_goal_sharpness"),
-                self.dextrah_adr.get_custom_param_value("reward_weights", "finger_curl_reg"),
+                self.cfg.finger_curl_reg_weight,
                 self.dextrah_adr.get_custom_param_value("reward_weights", "lift_weight"),
                 self.cfg.lift_sharpness,
                 self.cfg.palm_direction_alignment_weight,  
@@ -958,7 +958,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # palm velocity penalty
         palm_lin_vel_weight = getattr(self.cfg, "palm_linear_velocity_penalty_weight", 0.0)
         palm_lin_vel = self.robot.data.body_vel_w[:, self.palm_body_idx, :3] 
-        palm_lin_vel_penalty = -5e-4 * (palm_lin_vel ** 2).sum(dim=-1)
+        palm_lin_vel_penalty = -palm_lin_vel_weight * (palm_lin_vel ** 2).sum(dim=-1)
 
         # Add reward signals to tensorboard
         self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
@@ -973,10 +973,25 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.extras["episode_length_reward"] = episode_length_reward.mean()
         self.extras["palm_linear_velocity_penalty"] = palm_lin_vel_penalty.mean()
 
+        reward_terms = {
+            "hand_to_object": hand_to_object_reward,
+            "finger_curl": finger_curl_reg,
+            "palm_align": palm_direction_alignment_reward,
+            # "palm_finger_align": palm_finger_alignment_reward,
+            "action_rate_penalty": action_rate_penalty,
+            # "palm_lin_vel_penalty": palm_lin_vel_penalty,
+            "contact": contact_reward,
+            "episode_length": episode_length_reward,
+            # "palm_lin_vel_penalty": palm_lin_vel_penalty,
+            "object_to_goal": object_to_goal_reward,
+            "lift": lift_reward,
+            
+            
+        }
+        total_reward = sum(reward_terms.values())
+        
         # total_reward = hand_to_object_reward + object_to_goal_reward +\
-        #                finger_curl_reg + lift_reward + palm_direction_alignment_reward + contact_reward + joint_vel_penalty + action_rate_penalty
-        total_reward = hand_to_object_reward + object_to_goal_reward +\
-                       finger_curl_reg + lift_reward + palm_direction_alignment_reward + palm_finger_alignment_reward + contact_reward + action_rate_penalty + episode_length_reward + palm_lin_vel_penalty
+        #                finger_curl_reg + lift_reward + palm_direction_alignment_reward + palm_finger_alignment_reward + contact_reward + action_rate_penalty + episode_length_reward + palm_lin_vel_penalty
         # Optional reward debug printout for the first N steps.
         if self._reward_debug_steps_remaining < 0:
             step_id = int(self.episode_length_buf.max().item())
@@ -1177,7 +1192,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         dof_vel[:, self.actuated_dof_indices] += joint_vel_noise * joint_vel_deltas
 
         self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
-        
+        # input("debugging resetting states")
+
         # Reset position and velocity targets to the actual robot position and velocity
         self.robot.set_joint_position_target(dof_pos[:, self.actuated_dof_indices],
             env_ids=env_ids, joint_ids=self.actuated_dof_indices)
@@ -1905,12 +1921,14 @@ def compute_rewards(
     # Reward for lifting object off table and towards object goal
     lift_reward = lift_weight * torch.exp(-lift_sharpness * object_vertical_error) * contact_mask
 
-    # Palm alignment penalty: 0 when perfectly aligned, negative when deviating from target.
+    # Palm alignment penalty: squared angle (theta**2) from target direction.
     cos_sim = torch.sum(palm_dir * palm_dir_target, dim=-1).clamp(-1.0, 1.0)
-    palm_dir_align_reward = -palm_alignment_weight * (1.0 - cos_sim)
+    theta = torch.acos(cos_sim)
+    palm_dir_align_reward = -palm_alignment_weight * (theta ** 2)
 
     cos_sim_finger = torch.sum(palm_finger_dir * palm_finger_target, dim=-1).clamp(-1.0, 1.0)
-    palm_finger_align_reward = -palm_finger_alignment_weight * (1.0 - cos_sim_finger)
+    theta_finger = torch.acos(cos_sim_finger)
+    palm_finger_align_reward = -palm_finger_alignment_weight * (theta_finger ** 2)
 
     # Reward for making contact with the object (more contacts -> higher reward).
     contact_reward = contact_count_weight * contact_count
