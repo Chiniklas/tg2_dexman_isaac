@@ -110,6 +110,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         print("[DEBUG] Robot joint order (USD):", self.robot.joint_names)
         debug_joint_map = list(zip(cfg.actuated_joint_names, self.actuated_dof_indices))
         print("[DEBUG] Actuated joints -> indices:", debug_joint_map)
+        # input("debugging")
 
         # buffers for position targets
         self.robot_dof_targets =\
@@ -188,8 +189,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         
         # Nominal reset states for the robot
         self.robot_start_joint_pos =\
-            torch.tensor([-0.84473936, -0.93200582, 0.31590459, -1.60221225,
-                          -0.02094395, -0.17453293, -0.18675023, # arm
+            torch.tensor([-1.570796, -0.523599, 1.108284, -1.275836,
+                          0.089012, -0.027925, -0.048869, # arm
                           0.25,  # index_joint_0
                           0.25,  # little_joint_0
                           0.25,  # middle_joint_0

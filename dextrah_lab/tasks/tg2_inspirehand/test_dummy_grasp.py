@@ -13,6 +13,16 @@ def main():
     """Spawn the robot in a simple scene and hold a nominal joint configuration."""
     parser = argparse.ArgumentParser()
     AppLauncher.add_app_launcher_args(parser)
+    parser.add_argument(
+        "--print-joints",
+        action="store_true",
+        help="Print joint positions/velocities during the run.",
+    )
+    parser.add_argument(
+        "--plot-joints",
+        action="store_true",
+        help="Plot joint positions during the run.",
+    )
     args_cli = parser.parse_args()
 
     # Launch Kit before importing anything that needs carb/USD.
@@ -29,22 +39,27 @@ def main():
 
     from dextrah_lab.assets.tg2_inspirehand.tg2_inspirehand import TG2_INSPIREHAND_CFG
 
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib.widgets import Slider
-    except Exception:
+    plot_enabled = getattr(args_cli, "plot_joints", False)
+    if plot_enabled:
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.widgets import Slider
+        except Exception:
+            plt = None
+            Slider = None
+    else:
         plt = None
         Slider = None
 
     # Nominal joint angles for a reachable tabletop pose; fingers open.
     init_joint_pos = {
-        "shoulder_pitch_r_joint": -0.89,
-        "shoulder_roll_r_joint": -0.93200582,
-        "shoulder_yaw_r_joint": 0.31590459,
-        "elbow_pitch_r_joint": -1.60221225,
-        "elbow_yaw_r_joint": -0.02094395,
-        "wrist_pitch_r_joint": -0.17453293,
-        "wrist_roll_r_joint": -0.18675023,
+        "shoulder_pitch_r_joint": -1.570796,
+        "shoulder_roll_r_joint": -0.523599,
+        "shoulder_yaw_r_joint": 1.108284,
+        "elbow_pitch_r_joint": -1.275836,
+        "elbow_yaw_r_joint": 0.089012,
+        "wrist_pitch_r_joint": -0.027925,
+        "wrist_roll_r_joint": -0.048869,
         "index_joint_0": 0.25,
         "little_joint_0": 0.25,
         "middle_joint_0": 0.25,
@@ -91,6 +106,8 @@ def main():
     scene_cfg = DummyGraspSceneCfg(num_envs=1, env_spacing=2.0, replicate_physics=False)
     device = getattr(args_cli, "device", "cuda:0")
     sim_dt = 1.0 / 120.0
+    if sine_freq_hz <= 0.0:
+        sine_freq_hz = 0.5
 
     # Spin up simulation context before building the scene so SimulationContext.instance() is valid.
     with build_simulation_context(device=device, dt=sim_dt, add_ground_plane=False, add_lighting=False) as sim:
@@ -101,13 +118,36 @@ def main():
         scene.reset()
 
         robot = scene.articulations["robot"]
+        num_joints = len(robot.joint_names)
+        actuated_joint_names = []
+        actuators = getattr(robot, "actuators", None)
+        if actuators:
+            for actuator in actuators.values():
+                names = getattr(actuator, "joint_names", None)
+                if names:
+                    actuated_joint_names.extend(list(names))
+        if not actuated_joint_names:
+            cfg_actuators = getattr(TG2_INSPIREHAND_CFG, "actuators", {})
+            for actuator_cfg in cfg_actuators.values():
+                names = getattr(actuator_cfg, "joint_names_expr", None)
+                if names:
+                    actuated_joint_names.extend(list(names))
+        seen = set()
+        actuated_joint_names = [
+            name for name in actuated_joint_names
+            if name in robot.joint_names and not (name in seen or seen.add(name))
+        ]
+        actuated_dof_indices = [robot.joint_names.index(name) for name in actuated_joint_names]
+        if not actuated_dof_indices:
+            print("[WARN] No actuated joints found; defaulting to all joints.")
+            actuated_dof_indices = list(range(num_joints))
         joint_pos = robot.data.joint_pos.clone()
-        joint_vel = torch.zeros_like(robot.data.joint_vel)
         for idx, name in enumerate(robot.joint_names):
             if name in nominal_joint_pos:
                 joint_pos[:, idx] = nominal_joint_pos[name]
+        joint_vel = torch.zeros_like(robot.data.joint_vel)
         robot.write_joint_state_to_sim(joint_pos, joint_vel)
-        robot.set_joint_position_target(joint_pos)
+        robot.set_joint_position_target(joint_pos[:, actuated_dof_indices], joint_ids=actuated_dof_indices)
 
         print("[INFO] Dummy grasp scene running. Close the window to exit.")
         t = 0.0
@@ -123,7 +163,9 @@ def main():
         plot_lines_obs = []
         plot_lines_des = []
         scroll_slider = None
-        if plt is None:
+        if not plot_enabled:
+            pass
+        elif plt is None:
             print("[WARN] matplotlib unavailable; skipping plot rendering.")
         else:
             plt.ion()
@@ -201,11 +243,11 @@ def main():
             for idx, name in enumerate(robot.joint_names):
                 if name in nominal_joint_pos:
                     joint_pos[:, idx] = nominal_joint_pos[name] + sine_amp_rad * math.sin(phase)
-            robot.set_joint_position_target(joint_pos)
+            robot.set_joint_position_target(joint_pos[:, actuated_dof_indices], joint_ids=actuated_dof_indices)
             scene.write_data_to_sim()
             sim.step(render=True)
             scene.update(dt=sim_dt)
-            if step_count % report_every_steps == 0:
+            if getattr(args_cli, "print_joints", False) and step_count % report_every_steps == 0:
                 joint_pos_report = robot.data.joint_pos[0].tolist()
                 joint_vel_report = robot.data.joint_vel[0].tolist()
                 print("[JOINT STATE]")

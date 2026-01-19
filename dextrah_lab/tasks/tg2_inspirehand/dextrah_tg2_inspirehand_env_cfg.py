@@ -163,25 +163,25 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
             pos=(0.0, 0.0, 0.25),
             rot=(0.0, 0.0, 0.0, 1.0),
             joint_pos={
-                "shoulder_pitch_r_joint": -0.84473936,
-                "shoulder_roll_r_joint": -0.93200582,
-                "shoulder_yaw_r_joint": 0.31590459,
-                "elbow_pitch_r_joint": -1.60221225,
-                "elbow_yaw_r_joint": -0.02094395,
-                "wrist_pitch_r_joint": -0.17453293,
-                "wrist_roll_r_joint": -0.18675023,
-                "index_joint_0": 0.25,
-                "little_joint_0": 0.25,
-                "middle_joint_0": 0.25,
-                "ring_joint_0": 0.25,
-                "thumb_joint_0": 0.5,
-                "index_joint_1": 0.386,
-                "little_joint_1": 0.386,
-                "middle_joint_1": 0.386,
-                "ring_joint_1": 0.386,
-                "thumb_joint_1": 0.1,
-                "thumb_joint_2": 0.2,
-                "thumb_joint_3": 0.4,
+                "shoulder_pitch_r_joint": -1.570796,  # -90.00 deg
+                "shoulder_roll_r_joint": -0.523599,  # -30.00 deg
+                "shoulder_yaw_r_joint": 1.108284,  # 63.50 deg
+                "elbow_pitch_r_joint": -1.275836,  # -73.10 deg
+                "elbow_yaw_r_joint": 0.089012,  # 5.10 deg
+                "wrist_pitch_r_joint": -0.027925,  # -1.60 deg
+                "wrist_roll_r_joint": -0.048869,  # -2.80 deg
+                "index_joint_0": 0.25,  # 14.32 deg
+                "little_joint_0": 0.25,  # 14.32 deg
+                "middle_joint_0": 0.25,  # 14.32 deg
+                "ring_joint_0": 0.25,  # 14.32 deg
+                "thumb_joint_0": 0.5,  # 28.65 deg
+                "index_joint_1": 0.386,  # 22.12 deg
+                "little_joint_1": 0.386,  # 22.12 deg
+                "middle_joint_1": 0.386,  # 22.12 deg
+                "ring_joint_1": 0.386,  # 22.12 deg
+                "thumb_joint_1": 0.1,  # 5.73 deg
+                "thumb_joint_2": 0.2,  # 11.46 deg
+                "thumb_joint_3": 0.4,  # 22.92 deg
             },
         )
     )

@@ -37,14 +37,14 @@ TG2_INSPIREHAND_CFG = ArticulationCfg(
             retain_accelerations=True,
             linear_damping=0.0,
             angular_damping=0.0,
-            max_linear_velocity=100.0, # default 1000
-            max_angular_velocity=500.0, # default 1000
-            max_depenetration_velocity=5.0, # default 1000
+            max_linear_velocity=1000.0, # default 1000
+            max_angular_velocity=1000.0, # default 1000
+            max_depenetration_velocity=1.0, # default 1000
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,
             solver_position_iteration_count=8,
-            solver_velocity_iteration_count=2,
+            solver_velocity_iteration_count=4,
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
@@ -91,13 +91,13 @@ TG2_INSPIREHAND_CFG = ArticulationCfg(
                 "thumb_joint_1",
             ],
             effort_limit_sim={
-                "shoulder_pitch_r_joint": 250.,
-                "shoulder_roll_r_joint": 200.,
-                "shoulder_yaw_r_joint": 120.,
-                "elbow_pitch_r_joint": 120.,
-                "elbow_yaw_r_joint": 120.,
-                "wrist_pitch_r_joint": 50.,
-                "wrist_roll_r_joint": 50.,
+                "shoulder_pitch_r_joint": 52.5,
+                "shoulder_roll_r_joint": 52.5,
+                "shoulder_yaw_r_joint": 52.5,
+                "elbow_pitch_r_joint": 52.5,
+                "elbow_yaw_r_joint": 52.5,
+                "wrist_pitch_r_joint": 52.5,
+                "wrist_roll_r_joint": 52.5,
                 "index_joint_0": 3.0,
                 "middle_joint_0": 3.0,
                 "ring_joint_0": 3.0,
@@ -105,30 +105,44 @@ TG2_INSPIREHAND_CFG = ArticulationCfg(
                 "thumb_joint_0": 3.0,
                 "thumb_joint_1": 3.0,
             },
-
-            stiffness = {
-                "shoulder_pitch_r_joint": 1200,
-                "shoulder_roll_r_joint": 300,
-                "shoulder_yaw_r_joint": 300,
-                "elbow_pitch_r_joint": 300,
-                "elbow_yaw_r_joint": 300,
-                "wrist_pitch_r_joint": 200,
-                "wrist_roll_r_joint": 200,
-                "index_joint_0": 30,
-                "middle_joint_0": 30,
-                "ring_joint_0": 30,
-                "little_joint_0": 30,
-                "thumb_joint_0": 30,
-                "thumb_joint_1": 30,
+            velocity_limit_sim={
+                "shoulder_pitch_r_joint": 14.1,
+                "shoulder_roll_r_joint": 14.1,
+                "shoulder_yaw_r_joint": 14.1,
+                "elbow_pitch_r_joint": 14.1,
+                "elbow_yaw_r_joint": 14.1,
+                "wrist_pitch_r_joint": 14.1,
+                "wrist_roll_r_joint": 14.1,
+                "index_joint_0": 15.7,
+                "middle_joint_0": 15.7,
+                "ring_joint_0": 15.7,
+                "little_joint_0": 15.7,
+                "thumb_joint_0": 15.7,
+                "thumb_joint_1": 15.7,
             },
-            damping={
+            stiffness = {
                 "shoulder_pitch_r_joint": 60,
                 "shoulder_roll_r_joint": 20,
-                "shoulder_yaw_r_joint": 20,
-                "elbow_pitch_r_joint": 15,
-                "elbow_yaw_r_joint": 15,
-                "wrist_pitch_r_joint": 8,
-                "wrist_roll_r_joint": 8,
+                "shoulder_yaw_r_joint": 10,
+                "elbow_pitch_r_joint": 10,
+                "elbow_yaw_r_joint": 10,
+                "wrist_pitch_r_joint": 10,
+                "wrist_roll_r_joint": 10,
+                "index_joint_0": 10,
+                "middle_joint_0": 10,
+                "ring_joint_0": 10,
+                "little_joint_0": 10,
+                "thumb_joint_0": 10,
+                "thumb_joint_1": 10,
+            },
+            damping={
+                "shoulder_pitch_r_joint": 3,
+                "shoulder_roll_r_joint": 1.5,
+                "shoulder_yaw_r_joint": 1.0,
+                "elbow_pitch_r_joint": 1.0,
+                "elbow_yaw_r_joint": 1.0,
+                "wrist_pitch_r_joint": 1.0,
+                "wrist_roll_r_joint": 1.0,
                 "index_joint_0": 1.0,
                 "middle_joint_0": 1.0,
                 "ring_joint_0": 1.0,
@@ -138,15 +152,6 @@ TG2_INSPIREHAND_CFG = ArticulationCfg(
             },
         ),
     },
-    # actuators = {
-    #     "tg2_inspirehand_actuators": ImplicitActuatorCfg(
-    #         joint_names_expr = [".*"],
-    #         damping = 30,
-    #         stiffness = 300,
-    #         effort_limit_sim = 10,
-    #     )
-    # },
-
     soft_joint_pos_limit_factor=0.9,
 )
 """Configuration of TG2 Inspirehand robot."""

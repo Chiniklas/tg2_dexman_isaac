@@ -146,7 +146,6 @@ python train.py \
     --task=dextrah_tg2_inspirehand \
     --seed 42 \
     --num_envs 4 \
-    --sigma 0.2 \
     --action_mode delta \
     agent.params.config.minibatch_size=64 \
     agent.params.config.central_value_config.minibatch_size=64 \
