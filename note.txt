@@ -161,10 +161,10 @@ python train.py \
 python train.py \
     --task=dextrah_tg2_inspirehand \
     --seed 42 \
-    --num_envs 256 \
+    --num_envs 64 \
     --headless \
-    agent.params.config.minibatch_size=64 \
-    agent.params.config.central_value_config.minibatch_size=64 \
+    agent.params.config.minibatch_size=256 \
+    agent.params.config.central_value_config.minibatch_size=256 \
     agent.params.config.learning_rate=0.0001 \
     agent.params.config.horizon_length=16 \
     agent.params.config.mini_epochs=4 \
@@ -173,3 +173,5 @@ python train.py \
     env.success_for_adr=0.4 \
     env.objects_dir=multi_objects \
     env.use_cuda_graph=False
+
+maybe num_envs 128, minibatch_size = 512

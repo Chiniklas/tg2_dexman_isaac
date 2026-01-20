@@ -213,7 +213,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         "thumb_tip",
     ]
     hand_object_distance_body_names = [
-        "palm",
+        # "palm",
+        "palm_center",
         "index_tip",
         "middle_tip",
         "ring_tip",

@@ -1076,38 +1076,38 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             | palm_flipped
         )
 #============================================================================================================================
-        if out_of_reach.any():
-            env_ids = torch.nonzero(out_of_reach, as_tuple=False).squeeze(-1).tolist()
-            print(f"termination triggered in envs: {env_ids}")
+        # if out_of_reach.any():
+        #     env_ids = torch.nonzero(out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #     print(f"termination triggered in envs: {env_ids}")
 
-            object_fail = (
-                object_outside_upper_x
-                | object_outside_lower_x
-                | object_outside_upper_y
-                | object_outside_lower_y
-                | object_too_low
-            )
-            hand_fail = hand_too_far | hand_too_close | palm_flipped
+        #     object_fail = (
+        #         object_outside_upper_x
+        #         | object_outside_lower_x
+        #         | object_outside_upper_y
+        #         | object_outside_lower_y
+        #         | object_too_low
+        #     )
+        #     hand_fail = hand_too_far | hand_too_close | palm_flipped
 
-            if object_fail.any():
-                envs = torch.nonzero(object_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-                print(f"object out of range termination: envs {envs}")
-            if hand_fail.any():
-                envs = torch.nonzero(hand_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-                print(f"hand out of range termination: envs {envs}")
-                if hand_too_far.any():
-                    envs = torch.nonzero(hand_too_far & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-                    print(f"hand too far: envs {envs}")
-                if hand_too_close.any():
-                    envs = torch.nonzero(hand_too_close & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-                    print(f"hand too close: envs {envs}")
-                if palm_flipped.any():
-                    envs = torch.nonzero(palm_flipped & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-                    print(f"palm flipped: envs {envs}")
-            if self.arm_table_contact_mask.any():
-                envs = torch.nonzero(self.arm_table_contact_mask & out_of_reach, as_tuple=False).squeeze(-1).tolist()
-                print(f"arm colliding with the table termination: envs {envs}")
-            # input("debugging termination conditions")
+        #     if object_fail.any():
+        #         envs = torch.nonzero(object_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #         print(f"object out of range termination: envs {envs}")
+        #     if hand_fail.any():
+        #         envs = torch.nonzero(hand_fail & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #         print(f"hand out of range termination: envs {envs}")
+        #         if hand_too_far.any():
+        #             envs = torch.nonzero(hand_too_far & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #             print(f"hand too far: envs {envs}")
+        #         if hand_too_close.any():
+        #             envs = torch.nonzero(hand_too_close & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #             print(f"hand too close: envs {envs}")
+        #         if palm_flipped.any():
+        #             envs = torch.nonzero(palm_flipped & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #             print(f"palm flipped: envs {envs}")
+        #     if self.arm_table_contact_mask.any():
+        #         envs = torch.nonzero(self.arm_table_contact_mask & out_of_reach, as_tuple=False).squeeze(-1).tolist()
+        #         print(f"arm colliding with the table termination: envs {envs}")
+        #     # input("debugging termination conditions")
 #===================================================================================================================================
 
         # Terminate rollout if maximum episode length reached
