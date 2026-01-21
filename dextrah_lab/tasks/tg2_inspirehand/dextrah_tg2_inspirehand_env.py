@@ -80,6 +80,10 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # Track hand-object contact counts per env.
         self.object_contact_counts = torch.zeros(self.num_envs, device=self.device)
+        # Track per-env good-grasp mask (thumb + at least one other finger).
+        self.good_grasp_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Track consecutive steps inside the hand-object proximity gate.
+        self.episode_length_gate_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         
         self.num_observations = (
             self.cfg.num_student_observations if self.cfg.distillation
@@ -191,18 +195,18 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.robot_start_joint_pos =\
             torch.tensor([-1.570796, -0.523599, 1.108284, -1.275836,
                           0.089012, -0.027925, -0.048869, # arm
-                          0.25,  # index_joint_0
-                          0.25,  # little_joint_0
-                          0.25,  # middle_joint_0
-                          0.25,  # ring_joint_0
-                          0.5,  # thumb_joint_0
-                          0.386,  # index_joint_1
-                          0.386,  # little_joint_1
-                          0.386,  # middle_joint_1
-                          0.386,  # ring_joint_1
-                          0.1,  # thumb_joint_1
-                          0.2,  # thumb_joint_2
-                          0.4], device=self.device) # thumb_joint_3
+                          0.0,  # index_joint_0 # default 0.25
+                          0.0,  # little_joint_0 # default 0.25
+                          0.0,  # middle_joint_0 # default 0.25
+                          0.0,  # ring_joint_0 # default 0.25
+                          0.4,  # thumb_joint_0 # default 0.5
+                          0.0,  # index_joint_1 # default 0.386
+                          0.0,  # little_joint_1 # default 0.386
+                          0.0,  # middle_joint_1 # default 0.386
+                          0.0,  # ring_joint_1 # default 0.386
+                          0.1,  # thumb_joint_1 # default 0.1
+                          0.2,  # thumb_joint_2 # default 0.2
+                          0.4], device=self.device) # thumb_joint_3 # default 0.4   
         self.robot_start_joint_pos =\
             self.robot_start_joint_pos.repeat(self.num_envs, 1).contiguous()
         # Start with zero initial velocities and accelerations
@@ -212,12 +216,12 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # Nominal finger curled config
         # Only the actuated finger joints – matches robot_dof_pos[:, 7:]
         self.curled_q =\
-            torch.tensor([0.25,  # index_joint_0
-                          0.25,  # little_joint_0
-                          0.25,  # middle_joint_0
-                          0.25,  # ring_joint_0
-                          0.5,  # thumb_joint_0
-                          0.1], device=self.device)  # thumb_joint_1
+            torch.tensor([0.0,  # index_joint_0 # default 0.25
+                          0.0,  # little_joint_0 # default 0.25
+                          0.0,  # middle_joint_0 # default 0.25
+                          0.0,  # ring_joint_0 # default 0.25
+                          0.4,  # thumb_joint_0 # default 0.5
+                          0.1], device=self.device)  # thumb_joint_1 # default 0.1
         self.curled_q = self.curled_q.repeat(self.num_envs, 1).contiguous()
 
         # Set up ADR
@@ -886,6 +890,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # Update signals related to reward
         self.compute_intermediate_reward_values()
 
+        lift_weight = self.dextrah_adr.get_custom_param_value("reward_weights", "lift_weight")
         (
             hand_to_object_reward,
             object_to_goal_reward,
@@ -893,6 +898,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             lift_reward,
             palm_direction_alignment_reward,
             palm_finger_alignment_reward,
+            in_grip_alignment_reward,
+            good_grasp_reward,
             contact_reward,
             joint_vel_penalty,
             action_rate_penalty,
@@ -910,7 +917,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.cfg.object_to_goal_weight,
                 self.dextrah_adr.get_custom_param_value("reward_weights", "object_to_goal_sharpness"),
                 self.cfg.finger_curl_reg_weight,
-                self.dextrah_adr.get_custom_param_value("reward_weights", "lift_weight"),
+                lift_weight,
                 self.cfg.lift_sharpness,
                 self.cfg.palm_direction_alignment_weight,  
                 self.palm_direction_vec,  
@@ -918,6 +925,11 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.cfg.palm_finger_alignment_weight,
                 self.palm_finger_direction_vec,
                 self._palm_finger_target_world.expand_as(self.palm_finger_direction_vec),
+                self.palm_pos,
+                self.object_pos,
+                self.cfg.in_grip_alignment_weight,
+                self.good_grasp_mask,
+                self.cfg.good_grasp_weight,
                 self.object_contact_counts,
                 self.cfg.hand_object_contact_weight,
                 self.robot_dof_vel,
@@ -942,23 +954,31 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 torch.zeros_like(lift_reward),
             )
 
+        # Track consecutive steps while the hand is within the proximity gate.
+        gate_dist = getattr(self.cfg, "episode_length_gate_dist", 0.3)
+        in_gate = self.hand_to_object_pos_error < gate_dist
+        self.episode_length_gate_buf = torch.where(
+            in_gate,
+            self.episode_length_gate_buf + 1,
+            torch.zeros_like(self.episode_length_gate_buf),
+        )
+
         # give episode length reward to let the robot survice around the grasping position
         episode_length_weight = getattr(self.cfg, "episode_length_reward_weight", 0.0)
-        episode_length_reward = episode_length_weight * self.episode_length_buf.to(
+        episode_length_reward = episode_length_weight * self.episode_length_gate_buf.to(
             hand_to_object_reward.dtype
-        )
-        # Gate survival reward until the hand is within 0.3m of the object.
-        gate_dist = getattr(self.cfg, "episode_length_gate_dist", 0.3)
-        episode_length_reward = torch.where(
-            self.hand_to_object_pos_error < gate_dist,
-            episode_length_reward,
-            torch.zeros_like(episode_length_reward),
         )
 
         # palm velocity penalty
         palm_lin_vel_weight = getattr(self.cfg, "palm_linear_velocity_penalty_weight", 0.0)
         palm_lin_vel = self.robot.data.body_vel_w[:, self.palm_body_idx, :3] 
         palm_lin_vel_penalty = -palm_lin_vel_weight * (palm_lin_vel ** 2).sum(dim=-1)
+        # penalize approach speed toward the object along palm->object direction
+        approach_speed_weight = getattr(self.cfg, "approach_speed_penalty_weight", 0.0)
+        approach_vec = self.object_pos - self.palm_pos
+        approach_dir = approach_vec / (torch.norm(approach_vec, dim=-1, keepdim=True) + 1e-6)
+        approach_speed = (palm_lin_vel * approach_dir).sum(dim=-1)
+        approach_speed_penalty = -approach_speed_weight * torch.clamp(approach_speed, min=0.0) ** 2
 
         # Add reward signals to tensorboard
         self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
@@ -968,24 +988,35 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.extras["hand_object_contact_reward"] = contact_reward.mean()
         self.extras["palm_direction_alignment_reward"] = palm_direction_alignment_reward.mean()
         self.extras["palm_finger_alignment_reward"] = palm_finger_alignment_reward.mean()
+        self.extras["in_grip_alignment_reward"] = in_grip_alignment_reward.mean()
+        self.extras["good_grasp_reward"] = good_grasp_reward.mean()
         self.extras["joint_velocity_penalty"] = joint_vel_penalty.mean()
         self.extras["action_rate_penalty"] = action_rate_penalty.mean()
         self.extras["episode_length_reward"] = episode_length_reward.mean()
         self.extras["palm_linear_velocity_penalty"] = palm_lin_vel_penalty.mean()
+        self.extras["approach_speed_penalty"] = approach_speed_penalty.mean()
 
         reward_terms = {
+            # approach phase
+            "action_rate_penalty": action_rate_penalty,
             "hand_to_object": hand_to_object_reward,
             "finger_curl": finger_curl_reg,
             "palm_align": palm_direction_alignment_reward,
-            # "palm_finger_align": palm_finger_alignment_reward,
-            "action_rate_penalty": action_rate_penalty,
-            # "palm_lin_vel_penalty": palm_lin_vel_penalty,
-            "contact": contact_reward,
+            # "in_grip_align": in_grip_alignment_reward,
+            
+            # grasp phase
+            # "contact": contact_reward,
+            "good_grasp": good_grasp_reward,
             "episode_length": episode_length_reward,
-            # "palm_lin_vel_penalty": palm_lin_vel_penalty,
+            # "approach_speed_penalty": approach_speed_penalty,
+            
+            # lifting phase
             "object_to_goal": object_to_goal_reward,
             "lift": lift_reward,
-            
+
+            # others
+            # "palm_lin_vel_penalty": palm_lin_vel_penalty,
+            # "palm_finger_align": palm_finger_alignment_reward,
             
         }
         total_reward = sum(reward_terms.values())
@@ -1003,11 +1034,14 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 f"lift={lift_reward.mean().item():.4f} "
                 f"palm_align={palm_direction_alignment_reward.mean().item():.4f} "
                 f"palm_finger_align={palm_finger_alignment_reward.mean().item():.4f} "
+                f"in_grip_align={in_grip_alignment_reward.mean().item():.4f} "
                 f"contact={contact_reward.mean().item():.4f} "
+                f"good_grasp={good_grasp_reward.mean().item():.4f} "
                 f"finger_curl={finger_curl_reg.mean().item():.4f} "
                 f"joint_vel_pen={joint_vel_penalty.mean().item():.4f} "
                 f"action_rate_pen={action_rate_penalty.mean().item():.4f} "
                 f"ep_len={episode_length_reward.mean().item():.4f} "
+                f"approach_pen={approach_speed_penalty.mean().item():.4f} "
                 f"palm_lin_vel_pen={palm_lin_vel_penalty.mean().item():.4f} "
                 f"vel_max={self.robot_dof_vel.abs().max().item():.3f} "
                 f"action_delta_max={self.action_delta.abs().max().item():.3f}"
@@ -1017,6 +1051,11 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # Log other information
         self.extras["num_adr_increases"] = self.dextrah_adr.num_increments()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
+        table_center_z = self.cfg.table_cfg.init_state.pos[2]
+        table_top_z = table_center_z + 0.5 * self.cfg.table_size_z
+        lift_height_thresh = table_top_z + getattr(self.cfg, "object_height_thresh", 0.0)
+        lift_success = (lift_weight != 0.0) & (self.object_pos[:, 2] > lift_height_thresh)
+        self.extras["lift_success"] = lift_success.float().mean()
 
         # print('reach reward', hand_to_object_reward.mean())
         # print('lift reward', lift_reward.mean())
@@ -1132,6 +1171,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         # resets articulation and rigid body attributes
         super()._reset_idx(env_ids)
+        self.episode_length_gate_buf[env_ids] = 0
 
         num_ids = env_ids.shape[0]
 
@@ -1527,6 +1567,18 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         """Collect object contacts per env. Returns [[env_idx, [num_contacts, link_names]], ...]."""
         contact_counts = [0 for _ in range(self.num_envs)]
         contact_links = [[] for _ in range(self.num_envs)]
+        contact_fingers = [set() for _ in range(self.num_envs)]
+
+        tip_links = {
+            "index_link_1": "index",
+            "middle_link_1": "middle",
+            "ring_link_1": "ring",
+            "little_link_1": "little",
+            "thumb_link_3": "thumb",
+        }
+
+        def _finger_name(link: str) -> str | None:
+            return tip_links.get(link)
 
         for link_name, sensor in zip(self.object_contact_links, self.object_contact_sensors):
             data = sensor.data
@@ -1542,10 +1594,22 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 contact_counts[env_idx] += 1
                 if link_name not in contact_links[env_idx]:
                     contact_links[env_idx].append(link_name)
+                finger = _finger_name(link_name)
+                if finger is not None:
+                    contact_fingers[env_idx].add(finger)
 
         self.object_contact_counts = torch.tensor(
             contact_counts, device=self.device, dtype=torch.float
         )
+        finger_counts = [len(fingers) for fingers in contact_fingers]
+        thumb_contact = [("thumb" in fingers) for fingers in contact_fingers]
+        finger_counts_tensor = torch.tensor(
+            finger_counts, device=self.device, dtype=torch.float
+        )
+        thumb_contact_tensor = torch.tensor(
+            thumb_contact, device=self.device, dtype=torch.bool
+        )
+        self.good_grasp_mask = (finger_counts_tensor >= 2) & thumb_contact_tensor
         return [
             [env_idx, [contact_counts[env_idx], contact_links[env_idx]]]
             for env_idx in range(self.num_envs)
@@ -1588,6 +1652,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.hand_object_distance_pos -= self.scene.env_origins.repeat(
             (1, self.num_hand_object_distance_bodies)
         ).reshape(self.num_envs, self.num_hand_object_distance_bodies, 3)
+        # Palm center position in env-local coordinates.
+        self.palm_pos = self.robot.data.body_pos_w[:, self.palm_body_idx] - self.scene.env_origins
 
         # Robot fingertip and palm velocity. 6D
         self.hand_vel = self.robot.data.body_vel_w[:, self.hand_bodies]
@@ -1890,6 +1956,11 @@ def compute_rewards(
     palm_finger_alignment_weight: float,
     palm_finger_dir: torch.Tensor,
     palm_finger_target: torch.Tensor,
+    palm_pos: torch.Tensor,
+    object_pos: torch.Tensor,
+    in_grip_alignment_weight: float,
+    good_grasp_mask: torch.Tensor,
+    good_grasp_weight: float,
     contact_count: torch.Tensor,
     contact_count_weight: float,
     joint_vel: torch.Tensor,
@@ -1930,6 +2001,15 @@ def compute_rewards(
     theta_finger = torch.acos(cos_sim_finger)
     palm_finger_align_reward = -palm_finger_alignment_weight * (theta_finger ** 2)
 
+    # Alignment between palm direction and palm->object vector.
+    grasp_vec = object_pos - palm_pos
+    grasp_dir = grasp_vec / (torch.norm(grasp_vec, dim=-1, keepdim=True) + 1e-6)
+    grasp_cos = torch.sum(grasp_dir * palm_dir, dim=-1).clamp(-1.0, 1.0)
+    grasp_theta = torch.acos(grasp_cos)
+    in_grip_alignment_reward = -in_grip_alignment_weight * (grasp_theta ** 2)
+
+    good_grasp_reward = good_grasp_weight * good_grasp_mask.to(contact_count.dtype)
+
     # Reward for making contact with the object (more contacts -> higher reward).
     contact_reward = contact_count_weight * contact_count
     
@@ -1954,6 +2034,8 @@ def compute_rewards(
         lift_reward,
         palm_dir_align_reward,
         palm_finger_align_reward,
+        in_grip_alignment_reward,
+        good_grasp_reward,
         contact_reward,
         joint_vel_penalty,
         action_rate_penalty,

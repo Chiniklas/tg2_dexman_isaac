@@ -117,7 +117,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     objects_dir = "replace_me"
     valid_objects_dir = ["visdex_objects",
                         "test_object",
-                        "multi_objects"]
+                        "multi_objects",
+                        "test_2"]
 
     # Toggle for using cuda graph
     use_cuda_graph = False
@@ -172,15 +173,15 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
                 "elbow_yaw_r_joint": 0.089012,  # 5.10 deg
                 "wrist_pitch_r_joint": -0.027925,  # -1.60 deg
                 "wrist_roll_r_joint": -0.048869,  # -2.80 deg
-                "index_joint_0": 0.25,  # 14.32 deg
-                "little_joint_0": 0.25,  # 14.32 deg
-                "middle_joint_0": 0.25,  # 14.32 deg
-                "ring_joint_0": 0.25,  # 14.32 deg
-                "thumb_joint_0": 0.5,  # 28.65 deg
-                "index_joint_1": 0.386,  # 22.12 deg
-                "little_joint_1": 0.386,  # 22.12 deg
-                "middle_joint_1": 0.386,  # 22.12 deg
-                "ring_joint_1": 0.386,  # 22.12 deg
+                "index_joint_0": 0.0,  # 14.32 deg
+                "little_joint_0": 0.0,  # 14.32 deg
+                "middle_joint_0": 0.0,  # 14.32 deg
+                "ring_joint_0": 0.0,  # 14.32 deg
+                "thumb_joint_0": 0.4,  # 28.65 deg
+                "index_joint_1": 0.0,  # 22.12 deg
+                "little_joint_1": 0.0,  # 22.12 deg
+                "middle_joint_1": 0.0,  # 22.12 deg
+                "ring_joint_1": 0.0,  # 22.12 deg
                 "thumb_joint_1": 0.1,  # 5.73 deg
                 "thumb_joint_2": 0.2,  # 11.46 deg
                 "thumb_joint_3": 0.4,  # 22.92 deg
@@ -547,11 +548,13 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     hand_to_object_weight = 5. #default 1
     hand_to_object_sharpness = 10. #default 10
     palm_direction_alignment_weight = 0.1
+    in_grip_alignment_weight = 0.1
     palm_down_local_axis = (-1.0, 0.0, 0.0)
     palm_finger_alignment_weight = 1.0
     palm_finger_local_axis = (0.0, -1.0, 0.0)
     palm_finger_direction_target = (-1.0, -1.0, 0.0)
     palm_linear_velocity_penalty_weight = 0.005
+    approach_speed_penalty_weight = 0.001
     action_rate_penalty_weight = 0.01
     hand_action_rate_penalty_scale = 3.0 # default = 5.0
     
@@ -559,7 +562,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     hand_joint_velocity_penalty_scale = 3.0
 
     # phase 2: contact
-    hand_object_contact_weight = 1.0 #default 5.5
+    hand_object_contact_weight = 0.1 #default 5.5
+    good_grasp_weight = 10.0 # default 10.0 # too obsessed in finding a good contact, actually finds one
     finger_curl_reg_weight = -0.1
     finger_curl_reg_min = -2.0
     finger_curl_reg_max = 0.0
@@ -570,8 +574,20 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     lift_sharpness = 8.5 #default 8.5
 
     # extras
-    episode_length_reward_weight = 0.025# default 0.075    
+    episode_length_reward_weight = 0.005 # default 0.025   
     episode_length_gate_dist = 0.2 # default 0.3
+    
+    # Active reward terms summed into total_reward.
+    active_reward_terms = [
+        "action_rate_penalty",
+        "hand_to_object",
+        "finger_curl",
+        "palm_align",
+        "good_grasp",
+        "episode_length",
+        "object_to_goal",
+        "lift",
+    ]
 
     # Optional: print per-step reward breakdown for the first N steps (debugging aid).
     debug_reward_steps = 0 # to show,set to -1
@@ -587,7 +603,7 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
 
     # Lift criteria
     min_num_episode_steps = 60
-    object_height_thresh = 0.15
+    object_height_thresh = 0.15  # meters above the table top
 
     # Object spawning params
     x_center = -0.55
@@ -682,7 +698,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         },
         "reward_weights": {
             "object_to_goal_sharpness": (-15., -20.),
-            "lift_weight": (5., 2.5) # default = (5,0)
+            # "lift_weight": (5., 2.5) # default = (5,0)
+            "lift_weight": (10., 10)
         },
         "pd_targets": {
             "velocity_target_factor": (1., 0.)

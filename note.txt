@@ -143,10 +143,29 @@ python play_test.py \
 
 # for tg2 tasks 
 python train.py \
+  --task=dextrah_tg2_inspirehand \
+  --seed 42 \
+  --num_envs 64 \
+  --headless \
+  agent.params.config.minibatch_size=128 \
+  agent.params.config.central_value_config.minibatch_size=128 \
+  agent.params.config.learning_rate=0.0001 \
+  agent.params.config.horizon_length=16 \
+  agent.params.config.mini_epochs=4 \
+  agent.params.config.multi_gpu=False \
+  agent.wandb_activate=False \
+  env.success_for_adr=0.4 \
+  env.objects_dir=test_object \
+  env.use_cuda_graph=False
+
+
+maybe num_envs 128, minibatch_size = 512
+
+python train.py \
     --task=dextrah_tg2_inspirehand \
     --seed 42 \
-    --num_envs 256 \
-    --action_mode delta \
+    --num_envs 16 \
+    --headless \
     agent.params.config.minibatch_size=64 \
     agent.params.config.central_value_config.minibatch_size=64 \
     agent.params.config.learning_rate=0.0001 \
@@ -155,23 +174,12 @@ python train.py \
     agent.params.config.multi_gpu=False \
     agent.wandb_activate=False \
     env.success_for_adr=0.4 \
-    env.objects_dir=multi_objects \
+    env.objects_dir=test_object \
     env.use_cuda_graph=False
 
-python train.py \
-    --task=dextrah_tg2_inspirehand \
-    --seed 42 \
-    --num_envs 64 \
-    --headless \
-    agent.params.config.minibatch_size=256 \
-    agent.params.config.central_value_config.minibatch_size=256 \
-    agent.params.config.learning_rate=0.0001 \
-    agent.params.config.horizon_length=16 \
-    agent.params.config.mini_epochs=4 \
-    agent.params.config.multi_gpu=False \
-    agent.wandb_activate=False \
-    env.success_for_adr=0.4 \
-    env.objects_dir=multi_objects \
-    env.use_cuda_graph=False
-
-maybe num_envs 128, minibatch_size = 512
+python play_test.py \
+  --task dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --objects_dir test_object \
+  --max_pose_angle 90 \
+  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-20_22-43-34/nn/dextrah_lstm.pth
