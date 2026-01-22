@@ -965,9 +965,20 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         # give episode length reward to let the robot survice around the grasping position
         episode_length_weight = getattr(self.cfg, "episode_length_reward_weight", 0.0)
-        episode_length_reward = episode_length_weight * self.episode_length_gate_buf.to(
+        # reward steps from birth while in gate (former logic)
+        episode_length_reward = episode_length_weight * self.episode_length_buf.to(
             hand_to_object_reward.dtype
         )
+        episode_length_reward = torch.where(
+            self.hand_to_object_pos_error < gate_dist,
+            episode_length_reward,
+            torch.zeros_like(episode_length_reward),
+        )
+        #================================================
+        # reward only steps in gate (consecutive count)
+        # episode_length_reward = episode_length_weight * self.episode_length_gate_buf.to(
+        #     hand_to_object_reward.dtype
+        # )
 
         # palm velocity penalty
         palm_lin_vel_weight = getattr(self.cfg, "palm_linear_velocity_penalty_weight", 0.0)
@@ -996,30 +1007,36 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.extras["palm_linear_velocity_penalty"] = palm_lin_vel_penalty.mean()
         self.extras["approach_speed_penalty"] = approach_speed_penalty.mean()
 
-        reward_terms = {
-            # approach phase
-            "action_rate_penalty": action_rate_penalty,
-            "hand_to_object": hand_to_object_reward,
-            "finger_curl": finger_curl_reg,
-            "palm_align": palm_direction_alignment_reward,
-            # "in_grip_align": in_grip_alignment_reward,
-            
-            # grasp phase
-            # "contact": contact_reward,
-            "good_grasp": good_grasp_reward,
-            "episode_length": episode_length_reward,
-            # "approach_speed_penalty": approach_speed_penalty,
-            
-            # lifting phase
-            "object_to_goal": object_to_goal_reward,
-            "lift": lift_reward,
+        holding_flag = self.good_grasp_mask
+        self.extras["holding_flag"] = holding_flag.float().mean()
 
-            # others
-            # "palm_lin_vel_penalty": palm_lin_vel_penalty,
-            # "palm_finger_align": palm_finger_alignment_reward,
+        pre_hold_terms_list = [
+            # approach phase
+            ("action_rate_penalty", action_rate_penalty),
+            ("hand_to_object", hand_to_object_reward),
+            ("finger_curl", finger_curl_reg),
+            ("palm_align", palm_direction_alignment_reward),
+            ("episode_length", episode_length_reward),
+            # ("approach_speed_penalty", approach_speed_penalty),
+            # ("palm_lin_vel_penalty", palm_lin_vel_penalty),
+            # ("palm_finger_align", palm_finger_alignment_reward),
+            # ("in_grip_align", in_grip_alignment_reward),
+        ]
+        hold_terms_list = [
+            # grasp/lift phase
+            ("action_rate_penalty", action_rate_penalty),
+            ("good_grasp", good_grasp_reward),
+            ("episode_length", episode_length_reward),
+            ("object_to_goal", object_to_goal_reward),
+            ("lift", lift_reward),
+            # ("contact", contact_reward),
             
-        }
-        total_reward = sum(reward_terms.values())
+        ]
+        pre_hold_terms = dict(pre_hold_terms_list)
+        hold_terms = dict(hold_terms_list)
+        pre_hold_reward = sum(pre_hold_terms.values())
+        hold_reward = sum(hold_terms.values())
+        total_reward = torch.where(holding_flag, hold_reward, pre_hold_reward)
         
         # total_reward = hand_to_object_reward + object_to_goal_reward +\
         #                finger_curl_reg + lift_reward + palm_direction_alignment_reward + palm_finger_alignment_reward + contact_reward + action_rate_penalty + episode_length_reward + palm_lin_vel_penalty

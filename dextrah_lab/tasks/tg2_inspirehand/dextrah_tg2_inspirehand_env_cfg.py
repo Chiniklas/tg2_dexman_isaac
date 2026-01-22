@@ -698,6 +698,7 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         },
         "reward_weights": {
             "object_to_goal_sharpness": (-15., -20.),
+            # "object_to_goal_sharpness": (-8., -10.),
             # "lift_weight": (5., 2.5) # default = (5,0)
             "lift_weight": (10., 10)
         },
