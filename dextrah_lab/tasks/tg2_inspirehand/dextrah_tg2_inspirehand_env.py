@@ -964,9 +964,28 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         )
 
         # give episode length reward to let the robot survice around the grasping position
-        episode_length_weight = getattr(self.cfg, "episode_length_reward_weight", 0.0)
-        episode_length_reward = episode_length_weight * self.episode_length_gate_buf.to(
-            hand_to_object_reward.dtype
+
+        # reward steps from birth while in gate (former logic)
+        # episode_length_reward = episode_length_weight * self.episode_length_buf.to(
+        #     hand_to_object_reward.dtype
+        # )
+        # episode_length_reward = torch.where(
+        #     self.hand_to_object_pos_error < gate_dist,
+        #     episode_length_reward,
+        #     torch.zeros_like(episode_length_reward),
+        # )
+
+        # reward only steps in gate (consecutive count)
+        # episode_length_reward = episode_length_weight * self.episode_length_gate_buf.to(
+        #     hand_to_object_reward.dtype
+        # )
+        # fixed bonus while in gate
+        episode_length_reward = torch.zeros_like(hand_to_object_reward)
+        gate_bonus = torch.tensor(0.8, device=self.device, dtype=hand_to_object_reward.dtype)
+        episode_length_reward = torch.where(
+            self.hand_to_object_pos_error < gate_dist,
+            gate_bonus.expand_as(episode_length_reward),
+            episode_length_reward,
         )
 
         # palm velocity penalty
@@ -1005,7 +1024,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             # "in_grip_align": in_grip_alignment_reward,
             
             # grasp phase
-            # "contact": contact_reward,
+            "contact": contact_reward,
             "good_grasp": good_grasp_reward,
             "episode_length": episode_length_reward,
             # "approach_speed_penalty": approach_speed_penalty,
@@ -1581,6 +1600,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             return tip_links.get(link)
 
         for link_name, sensor in zip(self.object_contact_links, self.object_contact_sensors):
+            if link_name not in tip_links:
+                continue
             data = sensor.data
             if data is None or data.force_matrix_w is None:
                 continue

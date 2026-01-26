@@ -562,8 +562,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     hand_joint_velocity_penalty_scale = 3.0
 
     # phase 2: contact
-    hand_object_contact_weight = 0.1 #default 5.5
-    good_grasp_weight = 10.0 # default 10.0 # too obsessed in finding a good contact, actually finds one
+    hand_object_contact_weight = 0.5 #default 0.1
+    good_grasp_weight = 5.0 # default 10.0 # too obsessed in finding a good contact, actually finds one
     finger_curl_reg_weight = -0.1
     finger_curl_reg_min = -2.0
     finger_curl_reg_max = 0.0
