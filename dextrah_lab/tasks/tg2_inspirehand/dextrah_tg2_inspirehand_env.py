@@ -16,7 +16,6 @@ import torch
 from colorsys import hsv_to_rgb
 import glob
 import torch.distributed as dist
-import torch.nn.functional as F
 from collections.abc import Sequence
 from scipy.spatial.transform import Rotation as R
 import random
@@ -386,18 +385,20 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             raise ValueError(f"Need to specify valid directory of objects for training: {self.cfg.valid_objects_dir}")
 
         num_unique_objects = self.find_num_unique_objects(self.cfg.objects_dir)
+        if num_unique_objects < 1:
+            raise ValueError(f"No objects found under assets/{self.cfg.objects_dir}/USD")
 
-        # Hardcode observation sizes (base + num_unique_objects), similar to upstream pattern
+        # Hardcode observation sizes (base only). Single-object training drops the one-hot ID.
         # num_actuated = 13, num_hand_bodies = 6 -> student obs = 96
         self.cfg.num_student_observations = 78
-        # Teacher: base 104 plus num_unique_objects
-        self.cfg.num_teacher_observations = 86 + num_unique_objects
+        # Teacher: base 86
+        self.cfg.num_teacher_observations = 86
         if self.cfg.distillation:
             self.cfg.num_observations = self.cfg.num_student_observations
         else:
             self.cfg.num_observations = self.cfg.num_teacher_observations
-        # Critic: base 150 plus num_unique_objects
-        self.cfg.num_states = 132 + num_unique_objects
+        # Critic: base 132
+        self.cfg.num_states = 132
 
         self.cfg.state_space = self.cfg.num_states
         self.cfg.observation_space = self.cfg.num_observations
@@ -539,22 +540,12 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         sub_dirs = [object_name for object_name in sub_dirs if os.path.isdir(
             os.path.join(objects_full_path, object_name))]
 
-        self.num_unique_objects = len(sub_dirs)
+        if not sub_dirs:
+            raise ValueError(f"No objects found under {objects_full_path}")
 
-        # This creates a 1D tensor array of length self.num_envs with values:
-        # [0, 1, ...., num_unique_objects-1, 0, 1, ..., num_unique_objects-1]
-        # which provides a unique index for each unique object over all envs
-        # local_rank = int(os.getenv("LOCAL_RANK", 0))
-        # self.multi_object_idx = torch.remainder(
-        #     torch.arange(self.num_envs)+self.num_envs*local_rank,
-        #     self.num_unique_objects
-        # ).to(self.device)
-        self.multi_object_idx =\
-            torch.remainder(torch.arange(self.num_envs), self.num_unique_objects).to(self.device)
-
-        # Create one-hot encoding of object ID for usage as feature input
-        self.multi_object_idx_onehot = F.one_hot(
-            self.multi_object_idx, num_classes=self.num_unique_objects).float()
+        # Single-object training: pick the first object for all envs.
+        self.num_unique_objects = 1
+        selected_object_name = sub_dirs[0]
 
         stage = omni.usd.get_context().get_stage()
         self.object_mat_prims = list()
@@ -596,7 +587,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         for i in range(self.num_envs):
             # TODO: check to see that the below config settings make sense
-            object_name = sub_dirs[self.multi_object_idx[i]]
+            object_name = selected_object_name
             object_usd_path = objects_full_path + "/" + object_name + "/" + object_name + ".usd"
             print('Object name', object_name)
             print('object usd path', object_usd_path)
@@ -1840,8 +1831,6 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 #self.object_vel, # NOTE: took this out because it's fairly privileged
                 # object goal
                 self.object_goal,
-                # one-hot encoding of object ID
-                self.multi_object_idx_onehot,
                 # object scales
                 self.object_scale,
                 # last action
@@ -1868,8 +1857,6 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.object_vel,
                 # object goal
                 self.object_goal,
-                # one-hot encoding of object ID
-                self.multi_object_idx_onehot,
                 # object scale
                 self.object_scale,
                 # last action

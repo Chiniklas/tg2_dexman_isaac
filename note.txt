@@ -183,3 +183,17 @@ python play_test.py \
   --objects_dir test_object \
   --max_pose_angle 90 \
   --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-20_22-43-34/nn/dextrah_lstm.pth
+
+# batch training
+MULTI_OBJECTS_DIR=/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/multi_objects/USD \
+NUM_ENVS=128 \
+MINIBATCH_SIZE=64 \
+CV_MINIBATCH_SIZE=64 \
+LEARNING_RATE=0.0001 \
+HORIZON_LENGTH=16 \
+MINI_EPOCHS=4 \
+MULTI_GPU=False \
+WANDB_ACTIVATE=False \
+SUCCESS_FOR_ADR=0.4 \
+USE_CUDA_GRAPH=False \
+./train_multi_objects.sh

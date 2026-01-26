@@ -117,8 +117,9 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     objects_dir = "replace_me"
     valid_objects_dir = ["visdex_objects",
                         "test_object",
+                        "test_2",
                         "multi_objects",
-                        "test_2"]
+                        "_single_object"]
 
     # Toggle for using cuda graph
     use_cuda_graph = False
