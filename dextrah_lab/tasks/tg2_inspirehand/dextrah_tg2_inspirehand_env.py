@@ -16,6 +16,7 @@ import torch
 from colorsys import hsv_to_rgb
 import glob
 import torch.distributed as dist
+import torch.nn.functional as F
 from collections.abc import Sequence
 from scipy.spatial.transform import Rotation as R
 import random
@@ -388,17 +389,17 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         if num_unique_objects < 1:
             raise ValueError(f"No objects found under assets/{self.cfg.objects_dir}/USD")
 
-        # Hardcode observation sizes (base only). Single-object training drops the one-hot ID.
+        # Hardcode observation sizes (base + num_unique_objects).
         # num_actuated = 13, num_hand_bodies = 6 -> student obs = 96
         self.cfg.num_student_observations = 78
-        # Teacher: base 86
-        self.cfg.num_teacher_observations = 86
+        # Teacher: base 86 + num_unique_objects (object one-hot)
+        self.cfg.num_teacher_observations = 86 + num_unique_objects
         if self.cfg.distillation:
             self.cfg.num_observations = self.cfg.num_student_observations
         else:
             self.cfg.num_observations = self.cfg.num_teacher_observations
-        # Critic: base 132
-        self.cfg.num_states = 132
+        # Critic: base 132 + num_unique_objects (object one-hot)
+        self.cfg.num_states = 132 + num_unique_objects
 
         self.cfg.state_space = self.cfg.num_states
         self.cfg.observation_space = self.cfg.num_observations
@@ -545,6 +546,10 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         # Single-object training: pick the first object for all envs.
         self.num_unique_objects = 1
+        self.multi_object_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.multi_object_idx_onehot = F.one_hot(
+            self.multi_object_idx, num_classes=self.num_unique_objects
+        ).float()
         selected_object_name = sub_dirs[0]
 
         stage = omni.usd.get_context().get_stage()
@@ -1202,11 +1207,6 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # object_start_state[:, 2] = 0.5
         object_start_state[:, 2] = 0.4
 
-        # Randomize rotation
-#        rot_noise = sample_uniform(-1.0, 1.0, (num_ids, 2), device=self.device)  # noise for X and Y rotation
-#        object_start_state[env_ids, 3:7] = randomize_rotation(
-#            rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
-#        )
         #object_start_state[:, 3] = 1.
         rotation = self.dextrah_adr.get_custom_param_value("object_spawn", "rotation") 
         rot_noise = sample_uniform(-rotation, rotation, (num_ids, 2), device=self.device)  # noise for X and Y rotation
@@ -1263,41 +1263,11 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # NOTE: object mass on the CPU, so we only query infrequently
         self.object_mass = self.object.root_physx_view.get_masses().to(device=self.device)
 
-        # Get material properties to give to value function
-        # TODO: if you want to get mat props then we have to adjust it's size to factor in that
-        # all objects are multiple objects due to convex decomp. Before, they were convex hulls.
-        #self.object_material_props =\
-        #    self.object.root_physx_view.get_material_properties().to(device=self.device).view(self.num_envs, 3)
-
         # Get robot properties
         self.robot_dof_stiffness = self.robot.root_physx_view.get_dof_stiffnesses().to(device=self.device)
         self.robot_dof_damping = self.robot.root_physx_view.get_dof_dampings().to(device=self.device)
         self.robot_material_props =\
             self.robot.root_physx_view.get_material_properties().to(device=self.device).view(self.num_envs, -1)
-
-#        if self.cfg.events:
-#            if "reset" in self.event_manager.available_modes:
-#                term = self.event_manager.get_term_cfg("robot_physics_material")
-#                #term.params['static_friction_range'] = (0., 3.)
-#                self.event_manager.set_term_cfg("robot_physics_material", term)
-#                input(self.event_manager.get_term_cfg("robot_physics_material").params['static_friction_range'])
-#                input(self.event_manager.active_terms)
-#                input('here')
-#                self.event_manager.apply(env_ids=env_ids, mode="reset")
-
-#        # NOTE: use the below to debug DR things if needed
-#        if self.cfg.events:
-#            if "reset" in self.event_manager.available_modes:
-#                # Incrementally increase DR while scoping params from physx
-#                for i in range(15):
-#                    adr_increments = i
-#                    print('adr increments', adr_increments)
-#                    # Set the level of DR
-#                    self.dextrah_adr.set_num_increments(adr_increments)
-#                    # Sample and apply the DR
-#                    self.event_manager.apply(env_ids=env_ids, mode="reset", global_env_step_count=0)
-#                    # Look at what physx directly reports about the param
-#                    input(self.robot.root_physx_view.get_dof_friction_coefficients())
 
         # OBJECT NOISE---------------------------------------------------------------------------
         # Sample widths of uniform distribtion controlling pose bias
@@ -1344,12 +1314,6 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.robot_joint_vel_noise_width[env_ids, 0] =\
             self.dextrah_adr.get_custom_param_value("robot_state_noise", "robot_joint_vel_noise") *\
             torch.rand(num_ids, device=self.device)
-
-#        # Update whether to apply wrench for the episode
-#        self.apply_wrench = torch.where(
-#            torch.rand(self.num_envs, device=self.device) <= self.cfg.wrench_prob_per_rollout,
-#            True,
-#            False)
 
         # Update DR ranges
         if self.cfg.enable_adr:
@@ -1432,26 +1396,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.stage.GetPrimAtPath("/World/Light").GetAttribute(
                     "inputs:intensity"
                 ).Set(np.random.uniform(1000., 4000.))
-                # # Define hue range for cooler colors (e.g., 180° to 300° in HSV)
-                # # Hue in colorsys is between 0 and 1, corresponding to 0° to 360°
-                # cool_hue_min = 0.5  # 180°
-                # cool_hue_max = 0.833  # 300°
-
-                # # Generate random hue within the cooler range
-                # hue = np.random.uniform(cool_hue_min, cool_hue_max)
-
-                # # Generate random saturation and value within desired ranges
-                # saturation = np.random.uniform(0.5, 1.0)  # Moderate to high saturation
-                # value = np.random.uniform(0.5, 1.0)       # Moderate to high brightness
-
-                # # Convert HSV to RGB
-                # r, g, b = hsv_to_rgb(hue, saturation, value)
-
-                # self.stage.GetPrimAtPath("/World/Light").GetAttribute(
-                #     "inputs:color"
-                # ).Set(
-                #     Gf.Vec3f(r, g, b)
-                # )
+                
 
             rand_attributes = [
                 "diffuse_texture",
@@ -1833,6 +1778,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 #self.object_vel, # NOTE: took this out because it's fairly privileged
                 # object goal
                 self.object_goal,
+                # one-hot encoding of object ID
+                self.multi_object_idx_onehot,
                 # object scales
                 self.object_scale,
                 # last action
@@ -1859,6 +1806,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.object_vel,
                 # object goal
                 self.object_goal,
+                # one-hot encoding of object ID
+                self.multi_object_idx_onehot,
                 # object scale
                 self.object_scale,
                 # last action

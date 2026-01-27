@@ -180,9 +180,9 @@ python train.py \
 python play_test.py \
   --task dextrah_tg2_inspirehand \
   --num_envs 8 \
-  --objects_dir test_object \
+  --objects_dir test_object_0 \
   --max_pose_angle 90 \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-20_22-43-34/nn/dextrah_lstm.pth
+  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-21_08-57-56/nn/dextrah_lstm.pth
 
 # batch training
 MULTI_OBJECTS_DIR=/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/multi_objects/USD \
@@ -197,3 +197,32 @@ WANDB_ACTIVATE=False \
 SUCCESS_FOR_ADR=0.4 \
 USE_CUDA_GRAPH=False \
 ./train_multi_objects.sh
+
+# initial trial on distillation (stereo transformer style)
+cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
+python -m torch.distributed.run --nproc_per_node=1 \
+  run_distillation.py \
+    --headless \
+    --task=dextrah_tg2_inspirehand \
+    --num_envs 8 \
+    --enable_cameras \
+    --teacher dextrah_lstm.pth \
+    env.distillation=True \
+    env.simulate_stereo=True \
+    env.objects_dir=test_object_0 \
+    env.enable_adr=False \
+    env.disable_arm_randomization=True
+
+# replay student policy
+cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
+python eval.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --enable_cameras \
+  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/<your_run>/nn/<student_ckpt>.pth \
+  --num_episodes 10 \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=test_object_0
+# optional recording
+  --record_data --max_records_per_file 100 --create_video
