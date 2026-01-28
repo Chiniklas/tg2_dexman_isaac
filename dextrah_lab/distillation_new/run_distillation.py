@@ -140,7 +140,7 @@ def main(env_cfg, agent_cfg: dict):
     if rank == 0:
         train_dir = "runs"
         experiment_name = (
-            "Dextrah-Kuka-Allegro"
+            "dextrah-tg2-inspirehand"
             + datetime.now().strftime("_%d-%H-%M-%S")
         )
         experiment_dir = os.path.join(train_dir, experiment_name)

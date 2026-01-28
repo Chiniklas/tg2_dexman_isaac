@@ -174,7 +174,7 @@ python train.py \
     agent.params.config.multi_gpu=False \
     agent.wandb_activate=False \
     env.success_for_adr=0.4 \
-    env.objects_dir=test_object \
+    env.objects_dir=test_object_0 \
     env.use_cuda_graph=False
 
 python play_test.py \
