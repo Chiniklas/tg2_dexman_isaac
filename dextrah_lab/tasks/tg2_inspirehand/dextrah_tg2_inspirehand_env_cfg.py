@@ -120,7 +120,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
                         "test_object_0",
                         "test_2",
                         "multi_objects",
-                        "_single_object"]
+                        "_single_object",
+                        "playback"]
 
     # Toggle for using cuda graph
     use_cuda_graph = False

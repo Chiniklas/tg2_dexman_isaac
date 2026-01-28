@@ -145,10 +145,10 @@ python play_test.py \
 python train.py \
   --task=dextrah_tg2_inspirehand \
   --seed 42 \
-  --num_envs 64 \
+  --num_envs 8 \
   --headless \
-  agent.params.config.minibatch_size=128 \
-  agent.params.config.central_value_config.minibatch_size=128 \
+  agent.params.config.minibatch_size=64 \
+  agent.params.config.central_value_config.minibatch_size=64 \
   agent.params.config.learning_rate=0.0001 \
   agent.params.config.horizon_length=16 \
   agent.params.config.mini_epochs=4 \
@@ -164,10 +164,10 @@ maybe num_envs 128, minibatch_size = 512
 python train.py \
     --task=dextrah_tg2_inspirehand \
     --seed 42 \
-    --num_envs 16 \
+    --num_envs 128 \
     --headless \
-    agent.params.config.minibatch_size=64 \
-    agent.params.config.central_value_config.minibatch_size=64 \
+    agent.params.config.minibatch_size=256 \
+    agent.params.config.central_value_config.minibatch_size=256 \
     agent.params.config.learning_rate=0.0001 \
     agent.params.config.horizon_length=16 \
     agent.params.config.mini_epochs=4 \
@@ -187,8 +187,8 @@ python play_test.py \
 # batch training
 MULTI_OBJECTS_DIR=/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/multi_objects/USD \
 NUM_ENVS=128 \
-MINIBATCH_SIZE=64 \
-CV_MINIBATCH_SIZE=64 \
+MINIBATCH_SIZE=256 \
+CV_MINIBATCH_SIZE=256 \
 LEARNING_RATE=0.0001 \
 HORIZON_LENGTH=16 \
 MINI_EPOCHS=4 \
