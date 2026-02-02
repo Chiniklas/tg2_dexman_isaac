@@ -286,8 +286,9 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     camera_rand_pos_range = 0.03
 
     # horizontal fov: 48, vertical fov is h:w ratio
-    horizontal_aperture = 21.02
-    focal_length = 23.59
+    # Pixel-unit aperture/focal length to match calibrated k1 scaled to 320x240.
+    horizontal_aperture = 320.0
+    focal_length = 180.88976951
     img_width = int(160 * 2)
     img_height = int(120 * 2)
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -300,18 +301,31 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         width=img_width,
         height=img_height,
     )
+    tiled_camera_right: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraRight",
+        offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_rot, convention="ros"),
+        data_types=["rgb", "depth"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=focal_length, focus_distance=400.0, horizontal_aperture=horizontal_aperture, clipping_range=(0.01, 2.)
+        ),
+        width=img_width,
+        height=img_height,
+    )
 
     fov = 2 * math.atan(horizontal_aperture / (2 * focal_length))
     focal_px = img_width * 0.5 / math.tan(fov / 2)
-    a = focal_px
-    b = img_width * 0.5
-    c = focal_px
-    d = img_height * 0.5
-    intrinsic_matrix = [
-        [a, 0., b],
-        [0., c, d],
-        [0., 0., 1.]
+    intrinsic_matrix_left = [
+        [180.88976951, 0.0, 156.40837904],
+        [0.0, 240.71976909, 135.74510646],
+        [0.0, 0.0, 1.0],
     ]
+    intrinsic_matrix_right = [
+        [181.13133648, 0.0, 176.34895392],
+        [0.0, 241.45535299, 147.53570008],
+        [0.0, 0.0, 1.0],
+    ]
+    # legacy single-K fallback (left)
+    # intrinsic_matrix = intrinsic_matrix_left
 
     # Contact sensor on hand links to fetch per-link contact forces
     palm_object_contact_sensor: ContactSensorCfg = ContactSensorCfg(

@@ -286,7 +286,7 @@ class PolicyEvaluator:
             
             self.rgb_buffers_left[even_indices] = obs['img_left'][even_indices]
             obs['img_left'] = self.rgb_buffers_left
-            obs['img_right'] = torch.flip(obs['img_right'], dims=(2,3))  # Flip right image
+            # right image now kept in native orientation
             self.rgb_buffers_right[even_indices] = obs['img_right'][even_indices]
             obs['img_right'] = self.rgb_buffers_right
         else:

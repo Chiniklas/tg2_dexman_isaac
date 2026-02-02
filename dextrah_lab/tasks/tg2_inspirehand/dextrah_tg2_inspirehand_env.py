@@ -336,10 +336,18 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.camera_right_pose = np.tile(
             self.right_to_left_pose, (self.num_envs, 1, 1)
         )
-        self.intrinsic_matrix = torch.tensor(
-            self.cfg.intrinsic_matrix,
+        intrinsic_left_cfg = getattr(self.cfg, "intrinsic_matrix_left", self.cfg.intrinsic_matrix)
+        intrinsic_right_cfg = getattr(self.cfg, "intrinsic_matrix_right", self.cfg.intrinsic_matrix)
+        self.intrinsic_matrix_left = torch.tensor(
+            intrinsic_left_cfg,
             device=self.device, dtype=torch.float64
         )
+        self.intrinsic_matrix_right = torch.tensor(
+            intrinsic_right_cfg,
+            device=self.device, dtype=torch.float64
+        )
+        # legacy single-K fallback
+        self.intrinsic_matrix = self.intrinsic_matrix_left
         
         # self.right_to_left_pose = np.array([
         #     [-0.99990465,  0.00241203,  0.01359653,  0.06590756],
@@ -478,8 +486,40 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
         # add cameras
         if self.cfg.distillation:
-            self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
-            self.scene.sensors["tiled_camera"] = self._tiled_camera
+            self._tiled_camera_left = TiledCamera(self.cfg.tiled_camera)
+            self.scene.sensors["tiled_camera_left"] = self._tiled_camera_left
+            if hasattr(self.cfg, "tiled_camera_right"):
+                self._tiled_camera_right = TiledCamera(self.cfg.tiled_camera_right)
+                self.scene.sensors["tiled_camera_right"] = self._tiled_camera_right
+            else:
+                self._tiled_camera_right = None
+            # legacy single-camera handle (left)
+            self._tiled_camera = self._tiled_camera_left
+            left_to_world = torch.from_numpy(self.camera_pose).to(self.device)
+            left_to_world_rot = torch.tensor(
+                R.from_matrix(left_to_world[:, :3, :3].cpu().numpy()).as_quat()[:, [3, 0, 1, 2]]
+            ).to(self.device)
+            self.left_pos[:] = left_to_world[:, :3, 3]
+            self.left_rot[:] = left_to_world_rot
+            self._tiled_camera_left.set_world_poses(
+                positions=left_to_world[:, :3, 3],
+                orientations=left_to_world_rot,
+                env_ids=self.robot._ALL_INDICES,
+                convention="ros"
+            )
+            if self._tiled_camera_right is not None:
+                right_to_world = torch.from_numpy(
+                    np.matmul(self.camera_pose, self.camera_right_pose)
+                ).to(self.device)
+                right_to_world_rot = torch.tensor(
+                    R.from_matrix(right_to_world[:, :3, :3].cpu().numpy()).as_quat()[:, [3, 0, 1, 2]]
+                ).to(self.device)
+                self._tiled_camera_right.set_world_poses(
+                    positions=right_to_world[:, :3, 3],
+                    orientations=right_to_world_rot,
+                    env_ids=self.robot._ALL_INDICES,
+                    convention="ros"
+                )
 
         # Determine obs sizes for policies and VF
         self._setup_policy_params()
@@ -721,7 +761,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         critic_obs = self.compute_critic_observations()
 
         if self.use_camera and not self.simulate_stereo:
-            depth_map = self._tiled_camera.data.output["depth"].clone()
+            depth_map = self._tiled_camera_left.data.output["depth"].clone()
             mask = depth_map.permute((0, 3, 1, 2)) > self.cfg.d_max
             depth_map[depth_map <= 1e-8] = 10
             depth_map[depth_map > self.cfg.d_max] = 0.
@@ -739,33 +779,32 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 "policy": student_policy_obs,
                 # "policy": teacher_policy_obs,
                 "img": depth_map.permute((0, 3, 1, 2)),
-                "rgb": self._tiled_camera.data.output["rgb"].clone().permute((0, 3, 1, 2)) / 255.,
+                "rgb": self._tiled_camera_left.data.output["rgb"].clone().permute((0, 3, 1, 2)) / 255.,
                 "expert_policy": teacher_policy_obs,
                 "critic": critic_obs,
                 "aux_info": aux_info,
                 "mask": mask
             }
         elif self.simulate_stereo:
-            left_rgb = self._tiled_camera.data.output["rgb"].clone() / 255.
-            left_depth = self._tiled_camera.data.output["depth"].clone()
+            if self._tiled_camera_right is None:
+                raise RuntimeError("simulate_stereo requires tiled_camera_right")
+            left_rgb = self._tiled_camera_left.data.output["rgb"].clone() / 255.
+            left_depth = self._tiled_camera_left.data.output["depth"].clone()
             left_mask = left_depth > self.cfg.d_max*10
             left_depth[left_depth <= 1e-8] = 10
             left_depth[left_depth > self.cfg.d_max] = 0.
             left_depth[left_depth < self.cfg.d_min] = 0.
+
+            right_rgb = self._tiled_camera_right.data.output["rgb"].clone() / 255.
+            right_depth = self._tiled_camera_right.data.output["depth"].clone()
+            right_mask = right_depth > self.cfg.d_max*10
+            right_depth[right_depth <= 1e-8] = 10
+            right_depth[right_depth > self.cfg.d_max] = 0.
+            right_depth[right_depth < self.cfg.d_min] = 0.
+
             right_to_world = torch.from_numpy(
                 np.matmul(self.camera_pose, self.camera_right_pose)
             ).to(self.device)
-            right_to_world_rot = torch.tensor(R.from_matrix(
-                right_to_world[:, :3, :3].cpu().numpy()
-            ).as_quat()[:, [3, 0, 1, 2]]).to(self.device)
-            self._tiled_camera.set_world_poses(
-                positions=right_to_world[:, :3, 3],
-                orientations=right_to_world_rot,
-                env_ids=self.robot._ALL_INDICES,
-                convention="ros"
-            )
-            self.sim.render()
-            self._tiled_camera.update(0, force_recompute=True)
             object_pos_world = torch.cat(
                 [
                     self.object_pos,
@@ -790,40 +829,11 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 object_pos_world.unsqueeze(-1)
             )[:, :3, :]
             obj_uv_right = torch.matmul(
-                self.intrinsic_matrix,
+                self.intrinsic_matrix_right,
                 obj_pos_right
             ).squeeze(-1)
             obj_uv_right[:, :2] /= obj_uv_right[:, 2:3]
-            # right image is flipped
-            obj_uv_right[:, 0] = self.cfg.img_width - obj_uv_right[:, 0]
-            obj_uv_right[:, 1] = self.cfg.img_height - obj_uv_right[:, 1]
 
-
-            # self.sim.render()
-            # self._tiled_camera.update(0, force_recompute=True)
-            right_rgb = self._tiled_camera.data.output["rgb"].clone() / 255.
-            right_depth = self._tiled_camera.data.output["depth"].clone()
-            right_mask = right_depth > self.cfg.d_max*10
-            right_depth[right_depth <= 1e-8] = 10
-            right_depth[right_depth > self.cfg.d_max] = 0.
-            right_depth[right_depth < self.cfg.d_min] = 0.
-            self._tiled_camera.set_world_poses(
-                positions=self.left_pos,
-                orientations=self.left_rot,
-                env_ids=self.robot._ALL_INDICES,
-                convention="ros"
-            )
-
-            object_pos_world = torch.cat(
-                [
-                    self.object_pos,
-                    torch.ones(
-                        self.object_pos.shape[0], 1,
-                        device=self.device,
-                        dtype=right_to_world.dtype
-                    )
-                ], dim=-1
-            )
             T_left_world = torch.eye(4, device=self.device, dtype=right_to_world.dtype).unsqueeze(0).repeat(
                 self.num_envs, 1, 1
             )
@@ -837,7 +847,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 object_pos_world.unsqueeze(-1)
             )[:, :3, :]
             obj_uv_left = torch.matmul(
-                self.intrinsic_matrix,
+                self.intrinsic_matrix_left,
                 obj_pos_left
             ).squeeze(-1)
             obj_uv_left[:, :2] /= obj_uv_left[:, 2:3]
@@ -1355,7 +1365,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             ).cpu().numpy()
             self.left_pos[env_ids] = new_pos + self.scene.env_origins[env_ids]
             self.left_rot[env_ids] = new_rots_quat
-            self._tiled_camera.set_world_poses(
+            self._tiled_camera_left.set_world_poses(
                 positions=new_pos + self.scene.env_origins[env_ids],
                 orientations=new_rots_quat,
                 env_ids=env_ids,
@@ -1378,6 +1388,21 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 'xyz', new_rots, degrees=True
             ).as_matrix()
             self.camera_right_pose[np_env_ids, :3, 3] = new_pos.cpu().numpy()
+            if self._tiled_camera_right is not None:
+                right_to_world = torch.from_numpy(
+                    np.matmul(self.camera_pose[np_env_ids], self.camera_right_pose[np_env_ids])
+                ).to(self.device)
+                right_to_world_rot = torch.tensor(
+                    R.from_matrix(right_to_world[:, :3, :3].cpu().numpy()).as_quat()[:, [3, 0, 1, 2]]
+                ).to(self.device)
+                self.right_pos[env_ids] = right_to_world[:, :3, 3]
+                self.right_rot[env_ids] = right_to_world_rot
+                self._tiled_camera_right.set_world_poses(
+                    positions=right_to_world[:, :3, 3],
+                    orientations=right_to_world_rot,
+                    env_ids=env_ids,
+                    convention="ros"
+                )
 
 
             if self.cfg.disable_dome_light_randomization:

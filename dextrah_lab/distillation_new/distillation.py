@@ -402,14 +402,14 @@ class Dagger:
                     aug_output = self.rgb_aug.apply(imgs, masks)
                     obs["img_left"] = aug_output["left_img"]
                     obs["img_right"] = aug_output["right_img"]
-                    obs['img_right'] = torch.flip(obs['img_right'], dims=(2,3))
+                    # right image now kept in native orientation
                 else:
                     if self.img_aug_type == "rgb":
                         obs["rgb"] = self.rgb_aug.apply(obs["rgb"], obs["mask"])
                         self.rgb_buffers[even_indices] = obs['rgb'][even_indices]
                         obs['rgb'] = self.rgb_buffers
             else:
-                obs['img_right'] = torch.flip(obs['img_right'], dims=(2,3))
+                # right image now kept in native orientation
 
 
             if self.viz_imgs:
@@ -851,4 +851,3 @@ class Dagger:
         with open(cfg_path, 'r') as f:
             config = yaml.safe_load(f)
         return config
-
