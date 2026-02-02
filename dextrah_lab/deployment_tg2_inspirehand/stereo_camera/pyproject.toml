@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stereo-camera"
+version = "0.1.0"
+description = "Utilities for capturing single and dual USB cameras with OpenCV."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "opencv-python",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "black"]
+
+[tool.setuptools]
+packages = ["stereo_camera", "stereo_camera.utils"]
