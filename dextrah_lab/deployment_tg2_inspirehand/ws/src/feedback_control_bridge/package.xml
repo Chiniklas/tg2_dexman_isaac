@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>feedback_control_bridge</name>
+  <version>0.0.1</version>
+  <description>Direct joint command bridge for TG2 arms.</description>
+  <maintainer email="">tg2</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>bodyctrl_msgs</depend>
+</package>

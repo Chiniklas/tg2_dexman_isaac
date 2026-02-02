@@ -1,0 +1,29 @@
+<launch>
+  <arg name="arm_side" default="right"/>
+  <arg name="command_topic" default="/arm/cmd_pos"/>
+  <arg name="status_topic" default="/arm/status"/>
+  <arg name="use_status" default="true"/>
+  <arg name="publish_joint_states" default="true"/>
+  <arg name="joint_state_topic" default="/joint_states"/>
+  <arg name="joint_state_frame_id" default=""/>
+  <arg name="input_joint_state_topic" default="/arm/command_joint_states"/>
+  <arg name="velocity_rpm" default=""/>
+  <arg name="min_velocity_rpm" default="0.1"/>
+  <arg name="current_limit" default="5.0"/>
+  <arg name="default_velocity_rpm" default="5.0"/>
+
+  <node pkg="feedback_control_bridge" type="feedback_control_bridge.py" name="feedback_control_bridge" output="screen">
+    <param name="arm_side" value="$(arg arm_side)"/>
+    <param name="command_topic" value="$(arg command_topic)"/>
+    <param name="status_topic" value="$(arg status_topic)"/>
+    <param name="use_status" value="$(arg use_status)"/>
+    <param name="publish_joint_states" value="$(arg publish_joint_states)"/>
+    <param name="joint_state_topic" value="$(arg joint_state_topic)"/>
+    <param name="joint_state_frame_id" value="$(arg joint_state_frame_id)"/>
+    <param name="input_joint_state_topic" value="$(arg input_joint_state_topic)"/>
+    <param name="velocity_rpm" value="$(arg velocity_rpm)"/>
+    <param name="min_velocity_rpm" value="$(arg min_velocity_rpm)"/>
+    <param name="current_limit" value="$(arg current_limit)"/>
+    <param name="default_velocity_rpm" value="$(arg default_velocity_rpm)"/>
+  </node>
+</launch>

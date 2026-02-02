@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>calibration</name>
+  <version>0.0.1</version>
+  <description>TG2 Inspirehand calibration scripts (ROS1).</description>
+  <maintainer email="">tg2</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2_msgs</depend>
+</package>

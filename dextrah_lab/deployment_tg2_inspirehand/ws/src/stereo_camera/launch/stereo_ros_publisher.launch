@@ -1,0 +1,25 @@
+<launch>
+  <arg name="left_config" default="ov9732_L"/>
+  <arg name="right_config" default="ov9732_R"/>
+  <arg name="left_topic" default="/stereo/left/image_raw"/>
+  <arg name="right_topic" default="/stereo/right/image_raw"/>
+  <arg name="left_frame" default="stereo_left"/>
+  <arg name="right_frame" default="stereo_right"/>
+  <arg name="flip" default="vertical"/>
+  <arg name="max_fails" default="5"/>
+  <arg name="reconnect_wait" default="1.0"/>
+  <arg name="rate" default=""/>
+
+  <node pkg="stereo_camera" type="stereo_ros_publisher.py" name="stereo_ros_publisher" output="screen">
+    <param name="left_config" value="$(arg left_config)"/>
+    <param name="right_config" value="$(arg right_config)"/>
+    <param name="left_topic" value="$(arg left_topic)"/>
+    <param name="right_topic" value="$(arg right_topic)"/>
+    <param name="left_frame" value="$(arg left_frame)"/>
+    <param name="right_frame" value="$(arg right_frame)"/>
+    <param name="flip" value="$(arg flip)"/>
+    <param name="max_fails" value="$(arg max_fails)"/>
+    <param name="reconnect_wait" value="$(arg reconnect_wait)"/>
+    <param name="rate" value="$(arg rate)"/>
+  </node>
+</launch>
