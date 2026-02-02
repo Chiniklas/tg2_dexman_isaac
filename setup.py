@@ -13,7 +13,24 @@
 # * https://setuptools.pypa.io/en/latest/setuptools.html#setup-cfg-only-projects
 
 # Third Party
-import setuptools
+from setuptools import find_packages, setup
 
-setuptools.setup(name='dextrah_lab', packages=['dextrah_lab'])
+STEREO_CAMERA_ROOT = "dextrah_lab/deployment_tg2_inspirehand/Stereo_camera_ov9732"
+STEREO_CAMERA_PKG = f"{STEREO_CAMERA_ROOT}/stereo_camera"
 
+base_packages = find_packages(exclude=("tests",))
+stereo_packages = find_packages(STEREO_CAMERA_ROOT, exclude=("tests",))
+
+setup(
+    name="dextrah_lab",
+    packages=base_packages + stereo_packages,
+    package_dir={
+        "": ".",
+        "stereo_camera": STEREO_CAMERA_PKG,
+    },
+    install_requires=[
+        "numpy",
+        "opencv-python",
+        "PyYAML",
+    ],
+)
