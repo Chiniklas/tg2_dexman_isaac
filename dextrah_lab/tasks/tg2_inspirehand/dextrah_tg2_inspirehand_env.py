@@ -102,6 +102,13 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.actuated_dof_indices = list()
         for joint_name in cfg.actuated_joint_names:
             self.actuated_dof_indices.append(self.robot.joint_names.index(joint_name))
+        # finger joints to hold at initial pose when requested
+        self.finger_actuated_indices = []
+        self.finger_joint_indices = []
+        for joint_name in getattr(cfg, "finger_joint_names", []):
+            if joint_name in cfg.actuated_joint_names:
+                self.finger_actuated_indices.append(cfg.actuated_joint_names.index(joint_name))
+                self.finger_joint_indices.append(self.robot.joint_names.index(joint_name))
 
         # actions are 1:1 with actuated joints
         self.cfg.num_actions = len(self.actuated_dof_indices)
@@ -294,72 +301,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # How many steps to print reward breakdowns for (debugging aid).
         self._reward_debug_steps_remaining = getattr(self.cfg, "debug_reward_steps", 0)
 
-        # original camera poses
-        self.camera_pos_orig = torch.tensor(
-            self.cfg.camera_pos
-        ).to(self.device).unsqueeze(0)
-        self.camera_rot_orig = np.array(self.cfg.camera_rot)
-        self.camera_rot_eul_orig = R.from_quat(
-            self.camera_rot_orig[[1, 2, 3, 0]]
-        ).as_euler('xyz', degrees=True)[None, :]
-        # tf = np.array([
-        #     9.979802254757542679e-01, 5.805126464282436838e-02, -2.579767882449228097e-02, -6.452117743594977251e-01,
-        #     2.867907587635045233e-02, -4.936231931159993508e-02, 9.983691061120923971e-01, -7.328016905360382749e-01,
-        #     5.668315593050039097e-02, -9.970924792142141779e-01, -5.092747518000630136e-02, 4.559887081479024329e-01,
-        #     0.000000000000000000e+00, 0.000000000000000000e+00, 0.000000000000000000e+00, 1.000000000000000000e+00
-        # ]).reshape(4,4)
-        tf = np.array([
-            7.416679444534866883e-02,-9.902696855667120213e-01,1.177507386359286923e-01,-7.236400044878017468e-01,
-            -1.274026398887237732e-01,1.076995435286611930e-01,9.859864987275952508e-01,-6.886495877727516479e-01,
-            -9.890742408692511090e-01,-8.812921292808308105e-02,-1.181752422362273985e-01,6.366771698474239516e-01,
-            0.000000000000000000e+00,0.000000000000000000e+00,0.000000000000000000e+00,1.000000000000000000e+00
-        ]).reshape(4,4)
-        self.camera_pose = np.tile(
-            tf, (self.num_envs, 1, 1)
-        )
-        self.right_to_left_pose = np.array([
-            [-1., 0., 0., 0.065],
-            [0., -1., 0., -0.062],
-            [0., 0., 1., 0.],
-            [0., 0., 0., 1.],
-        ])
-
-        self.camera_right_pos_orig = torch.tensor(
-            self.right_to_left_pose[:3, 3]
-        ).to(self.device).unsqueeze(0)
-        self.camera_right_rot_orig = R.from_matrix(
-            self.right_to_left_pose[:3, :3]
-        ).as_quat()
-        self.camera_right_rot_eul_orig = R.from_quat(
-            self.camera_right_rot_orig
-        ).as_euler('xyz', degrees=True)[None, :]
-        self.camera_right_pose = np.tile(
-            self.right_to_left_pose, (self.num_envs, 1, 1)
-        )
-        intrinsic_left_cfg = getattr(self.cfg, "intrinsic_matrix_left", self.cfg.intrinsic_matrix)
-        intrinsic_right_cfg = getattr(self.cfg, "intrinsic_matrix_right", self.cfg.intrinsic_matrix)
-        self.intrinsic_matrix_left = torch.tensor(
-            intrinsic_left_cfg,
-            device=self.device, dtype=torch.float64
-        )
-        self.intrinsic_matrix_right = torch.tensor(
-            intrinsic_right_cfg,
-            device=self.device, dtype=torch.float64
-        )
-        # legacy single-K fallback
-        self.intrinsic_matrix = self.intrinsic_matrix_left
-        
-        # self.right_to_left_pose = np.array([
-        #     [-0.99990465,  0.00241203,  0.01359653,  0.06590756],
-        #     [-0.00238818, -0.99999558,  0.00177028, -0.0547107 ],
-        #     [0.01360074,  0.00173764,  0.999906  , -0.00340657],
-        #     [0.        ,  0.        ,  0.        ,  1.        ]
-        # ])
-
-        self.left_pos = torch.zeros(self.num_envs, 3).to(self.device)
-        self.left_rot = torch.zeros(self.num_envs, 4).to(self.device)
-        self.right_pos = torch.zeros(self.num_envs, 3).to(self.device)
-        self.right_rot = torch.zeros(self.num_envs, 4).to(self.device)
+        self._ensure_camera_buffers()
 
         # Set the starting default joint friction coefficients
         friction_coeff = torch.tensor(self.cfg.starting_robot_dof_friction_coefficients,
@@ -413,6 +355,75 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.cfg.observation_space = self.cfg.num_observations
         self.cfg.action_space = self.cfg.num_actions
 
+    def _ensure_camera_buffers(self) -> None:
+        if hasattr(self, "camera_pose") and hasattr(self, "left_pos"):
+            return
+
+        # original camera poses
+        self.camera_pos_orig = torch.tensor(
+            self.cfg.camera_pos_left,
+            device=self.device,
+        ).unsqueeze(0)
+        self.camera_rot_orig = np.array(self.cfg.camera_rot_left)
+        self.camera_rot_eul_orig = R.from_quat(
+            self.camera_rot_orig[[1, 2, 3, 0]]
+        ).as_euler('xyz', degrees=True)[None, :]
+        # tf = np.array([
+        #     9.979802254757542679e-01, 5.805126464282436838e-02, -2.579767882449228097e-02, -6.452117743594977251e-01,
+        #     2.867907587635045233e-02, -4.936231931159993508e-02, 9.983691061120923971e-01, -7.328016905360382749e-01,
+        #     5.668315593050039097e-02, -9.970924792142141779e-01, -5.092747518000630136e-02, 4.559887081479024329e-01,
+        #     0.000000000000000000e+00, 0.000000000000000000e+00, 0.000000000000000000e+00, 1.000000000000000000e+00
+        # ]).reshape(4,4)
+        tf = np.array([
+            7.416679444534866883e-02,-9.902696855667120213e-01,1.177507386359286923e-01,-7.236400044878017468e-01,
+            -1.274026398887237732e-01,1.076995435286611930e-01,9.859864987275952508e-01,-6.886495877727516479e-01,
+            -9.890742408692511090e-01,-8.812921292808308105e-02,-1.181752422362273985e-01,6.366771698474239516e-01,
+            0.000000000000000000e+00,0.000000000000000000e+00,0.000000000000000000e+00,1.000000000000000000e+00
+        ]).reshape(4,4)
+        self.camera_pose = np.tile(
+            tf, (self.num_envs, 1, 1)
+        )
+        # Stereo calibration: left-to-right transform (T in mm -> meters).
+        self.right_to_left_pose = np.array([
+            [0.99998835, 0.00352318, -0.00329847, -0.06169578743],
+            [-0.00354673, 0.99996805, -0.00716339, 0.00073945444],
+            [0.00327312, 0.00717500, 0.99996890, -0.00253082306],
+            [0.0, 0.0, 0.0, 1.0],
+        ])
+
+        self.camera_right_pos_orig = torch.tensor(
+            self.right_to_left_pose[:3, 3],
+            device=self.device,
+        ).unsqueeze(0)
+        self.camera_right_rot_orig = R.from_matrix(
+            self.right_to_left_pose[:3, :3]
+        ).as_quat()
+        self.camera_right_rot_eul_orig = R.from_quat(
+            self.camera_right_rot_orig
+        ).as_euler('xyz', degrees=True)[None, :]
+        self.camera_right_pose = np.tile(
+            self.right_to_left_pose, (self.num_envs, 1, 1)
+        )
+        if self.cfg.distillation:
+            if not hasattr(self.cfg, "intrinsic_matrix_left") or not hasattr(self.cfg, "intrinsic_matrix_right"):
+                raise RuntimeError("Camera intrinsics missing: set intrinsic_matrix_left/right in the env cfg.")
+            self.intrinsic_matrix_left = torch.tensor(
+                self.cfg.intrinsic_matrix_left,
+                device=self.device, dtype=torch.float64
+            )
+            self.intrinsic_matrix_right = torch.tensor(
+                self.cfg.intrinsic_matrix_right,
+                device=self.device, dtype=torch.float64
+            )
+        else:
+            self.intrinsic_matrix_left = None
+            self.intrinsic_matrix_right = None
+
+        self.left_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self.left_rot = torch.zeros(self.num_envs, 4, device=self.device)
+        self.right_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self.right_rot = torch.zeros(self.num_envs, 4, device=self.device)
+
     def _set_pos_marker(self, pos):
         pos = pos + self.scene.env_origins
         self.pred_pos_markers.visualize(pos, self.object_rot)
@@ -422,6 +433,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.gt_pos_markers.visualize(pos, self.object_rot)
 
     def _setup_scene(self):
+        self._ensure_camera_buffers()
         # add robot, objects 
         # TODO: add goal objects?
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -484,42 +496,20 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+        
+        self._all_env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.int64)
         # add cameras
         if self.cfg.distillation:
-            self._tiled_camera_left = TiledCamera(self.cfg.tiled_camera)
+            if not hasattr(self.cfg, "tiled_camera_left") or not hasattr(self.cfg, "tiled_camera_right"):
+                raise RuntimeError("Expected tiled_camera_left and tiled_camera_right in env cfg when distillation=True.")
+            self._tiled_camera_left = TiledCamera(self.cfg.tiled_camera_left)
             self.scene.sensors["tiled_camera_left"] = self._tiled_camera_left
-            if hasattr(self.cfg, "tiled_camera_right"):
-                self._tiled_camera_right = TiledCamera(self.cfg.tiled_camera_right)
-                self.scene.sensors["tiled_camera_right"] = self._tiled_camera_right
-            else:
-                self._tiled_camera_right = None
-            # legacy single-camera handle (left)
-            self._tiled_camera = self._tiled_camera_left
-            left_to_world = torch.from_numpy(self.camera_pose).to(self.device)
-            left_to_world_rot = torch.tensor(
-                R.from_matrix(left_to_world[:, :3, :3].cpu().numpy()).as_quat()[:, [3, 0, 1, 2]]
-            ).to(self.device)
-            self.left_pos[:] = left_to_world[:, :3, 3]
-            self.left_rot[:] = left_to_world_rot
-            self._tiled_camera_left.set_world_poses(
-                positions=left_to_world[:, :3, 3],
-                orientations=left_to_world_rot,
-                env_ids=self.robot._ALL_INDICES,
-                convention="ros"
-            )
-            if self._tiled_camera_right is not None:
-                right_to_world = torch.from_numpy(
-                    np.matmul(self.camera_pose, self.camera_right_pose)
-                ).to(self.device)
-                right_to_world_rot = torch.tensor(
-                    R.from_matrix(right_to_world[:, :3, :3].cpu().numpy()).as_quat()[:, [3, 0, 1, 2]]
-                ).to(self.device)
-                self._tiled_camera_right.set_world_poses(
-                    positions=right_to_world[:, :3, 3],
-                    orientations=right_to_world_rot,
-                    env_ids=self.robot._ALL_INDICES,
-                    convention="ros"
-                )
+            self._tiled_camera_right = TiledCamera(self.cfg.tiled_camera_right)
+            self.scene.sensors["tiled_camera_right"] = self._tiled_camera_right
+            self.left_pos[:] = torch.tensor(self.cfg.camera_pos_left, device=self.device)
+            self.left_rot[:] = torch.tensor(self.cfg.camera_rot_left, device=self.device)
+            self.right_pos[:] = torch.tensor(self.cfg.camera_right_pos, device=self.device)
+            self.right_rot[:] = torch.tensor(self.cfg.camera_right_rot, device=self.device)
 
         # Determine obs sizes for policies and VF
         self._setup_policy_params()
@@ -1190,7 +1180,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
-            env_ids = self.robot._ALL_INDICES
+            env_ids = self._all_env_ids
 
         if self.cfg.disable_out_of_reach_done:
             if env_ids.shape[0] != self.num_envs:
@@ -1332,8 +1322,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 (self.local_adr_increment == self.global_min_adr_increment):
                 self.step_since_last_dr_change = 0
                 self.dextrah_adr.increase_ranges(increase_counter=True)
-                self.event_manager.reset(env_ids=self.robot._ALL_INDICES)
-                self.event_manager.apply(env_ids=self.robot._ALL_INDICES, mode="reset", global_env_step_count=0)
+                self.event_manager.reset(env_ids=self._all_env_ids)
+                self.event_manager.apply(env_ids=self._all_env_ids, mode="reset", global_env_step_count=0)
                 self.local_adr_increment = torch.tensor(self.dextrah_adr.num_increments(), device=self.device, dtype=torch.int64)
             else:
                 #print('not increasing DR ranges')
@@ -1391,10 +1381,10 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             if self._tiled_camera_right is not None:
                 right_to_world = torch.from_numpy(
                     np.matmul(self.camera_pose[np_env_ids], self.camera_right_pose[np_env_ids])
-                ).to(self.device)
+                ).to(self.device).float()
                 right_to_world_rot = torch.tensor(
                     R.from_matrix(right_to_world[:, :3, :3].cpu().numpy()).as_quat()[:, [3, 0, 1, 2]]
-                ).to(self.device)
+                ).to(self.device).float()
                 self.right_pos[env_ids] = right_to_world[:, :3, 3]
                 self.right_rot[env_ids] = right_to_world_rot
                 self._tiled_camera_right.set_world_poses(
@@ -1479,6 +1469,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                         if idx not in env_ids:
                             continue
                         for arm_shader in arm_shader_prim:
+                            if arm_shader is None or not arm_shader.IsValid():
+                                continue
                             arm_shader.GetAttribute("inputs:reflection_roughness_constant").Set(
                                 np.random.uniform(0.2, 1.)
                             )
@@ -1491,6 +1483,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                     for i in np_env_ids:
                         shader_path = f"/World/envs/env_{i}/table/Looks/OmniPBR/Shader"
                         shader_prim = self.stage.GetPrimAtPath(shader_path)
+                        if shader_prim is None or not shader_prim.IsValid():
+                            continue
                         shader_prim.GetAttribute("inputs:diffuse_texture").Set(
                             random.choice(self.table_texture_files)
                         )
@@ -1764,6 +1758,9 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 upper_limits=self.robot_dof_upper_limits[0],
             )
 
+        if getattr(self.cfg, "freeze_finger_targets", False) and self.finger_actuated_indices:
+            finger_targets = self.robot_start_joint_pos[:, self.finger_joint_indices]
+            joint_targets[:, self.finger_actuated_indices] = finger_targets
         self.joint_position_targets[:, self.actuated_dof_indices] = joint_targets
         self.dof_pos_targets[:, self.actuated_dof_indices] = joint_targets
         self.dof_vel_targets[:, self.actuated_dof_indices] =\

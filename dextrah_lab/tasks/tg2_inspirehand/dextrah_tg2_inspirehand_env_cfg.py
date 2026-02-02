@@ -207,6 +207,17 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         "thumb_joint_0",
         "thumb_joint_1",
     ]
+    # Finger joints to hold when freeze_finger_targets is enabled.
+    finger_joint_names = [
+        "index_joint_0",
+        "little_joint_0",
+        "middle_joint_0",
+        "ring_joint_0",
+        "thumb_joint_0",
+        "thumb_joint_1",
+    ]
+    # When enabled, keep finger position targets fixed at their initial pose.
+    freeze_finger_targets = False
     
     hand_body_names = [
         "palm",
@@ -278,41 +289,55 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         -9.890742408692511090e-01,-8.812921292808308105e-02,-1.181752422362273985e-01,6.366771698474239516e-01,
         0.000000000000000000e+00,0.000000000000000000e+00,0.000000000000000000e+00,1.000000000000000000e+00
     ]).reshape(4,4)
-    camera_pos = tf[:3, 3].tolist()
-    # camera_rot = [0.6887834, -0.7242703, -0.0299371, -0.0106609]
-    camera_rot = [ 0.51567701, -0.52073085,  0.53658829,  0.41831759]
+
+    # camera pse in world frame
+    ## left camera world pose
+    camera_pos_left = tf[:3, 3].tolist()
+    camera_rot_left = [0.51567701, -0.52073085, 0.53658829, 0.41831759]
+    # Right camera world pose computed from left tf and stereo extrinsics (T in meters).
+    camera_right_pos = [-0.729246048872728, -0.6832051000463363, 0.697932797054961]
+    camera_right_rot = [0.5191597604343846, -0.5191386386670903, 0.5363151978605117, 0.4163342713883073]
     del tf # this is hacky but it needs to be done because omega conf doesn't support np.ndarray as a primitive
     camera_rand_rot_range = 3
     camera_rand_pos_range = 0.03
 
-    # horizontal fov: 48, vertical fov is h:w ratio
-    # Pixel-unit aperture/focal length to match calibrated k1 scaled to 320x240.
-    horizontal_aperture = 320.0
-    focal_length = 180.88976951
-    img_width = int(160 * 2)
-    img_height = int(120 * 2)
-    tiled_camera: TiledCameraCfg = TiledCameraCfg(
-        prim_path="/World/envs/env_.*/Camera",
-        offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_rot, convention="ros"),
+    # Pixel-unit aperture/focal length scaled from 1280x720 calibration to 320x240.
+    # Original 1280x720 intrinsics:
+    #   K_left = [[723.55907804, 0, 625.63351615], [0, 722.15930726, 407.23531937], [0, 0, 1]]
+    #   K_right = [[724.52534592, 0, 705.39581567], [0, 724.36605896, 442.60710023], [0, 0, 1]]
+    img_width = 320
+    img_height = 240
+    horizontal_aperture = float(img_width)
+    left_focal_length = 180.88976951
+    right_focal_length = 181.13133648
+    tiled_camera_left: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/CameraLeft",
+        offset=TiledCameraCfg.OffsetCfg(pos=camera_pos_left, rot=camera_rot_left, convention="ros"),
         data_types=["rgb", "depth"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=focal_length, focus_distance=400.0, horizontal_aperture=horizontal_aperture, clipping_range=(0.01, 2.)
+            focal_length=left_focal_length,
+            focus_distance=400.0,
+            horizontal_aperture=horizontal_aperture,
+            clipping_range=(0.01, 2.),
         ),
         width=img_width,
         height=img_height,
     )
     tiled_camera_right: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/CameraRight",
-        offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_rot, convention="ros"),
+        offset=TiledCameraCfg.OffsetCfg(pos=camera_right_pos, rot=camera_right_rot, convention="ros"),
         data_types=["rgb", "depth"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=focal_length, focus_distance=400.0, horizontal_aperture=horizontal_aperture, clipping_range=(0.01, 2.)
+            focal_length=right_focal_length,
+            focus_distance=400.0,
+            horizontal_aperture=horizontal_aperture,
+            clipping_range=(0.01, 2.),
         ),
         width=img_width,
         height=img_height,
     )
 
-    fov = 2 * math.atan(horizontal_aperture / (2 * focal_length))
+    fov = 2 * math.atan(horizontal_aperture / (2 * left_focal_length))
     focal_px = img_width * 0.5 / math.tan(fov / 2)
     intrinsic_matrix_left = [
         [180.88976951, 0.0, 156.40837904],
