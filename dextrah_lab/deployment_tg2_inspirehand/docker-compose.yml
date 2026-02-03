@@ -17,6 +17,7 @@ services:
     volumes:
       - ./:/tiangong_infra_ws
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    privileged: true  # allow access to host camera devices (/dev/video*)
     extra_hosts:
       - "tiangong-noetic-ws:127.0.0.1"
     network_mode: host

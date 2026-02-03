@@ -25,3 +25,6 @@ dextrah_lab/assets/*
 !dextrah_lab/assets/tg2_inspirehand/**
 reference/
 # dextrah_lab/stored_policies/
+build/
+devel/
+.catkin_workspace

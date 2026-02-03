@@ -7,6 +7,7 @@ Publishes left/right Image messages from OV9732 cameras.
 from __future__ import annotations
 
 import argparse
+import sys
 import rospy
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -126,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-fails", type=int, default=5)
     parser.add_argument("--reconnect-wait", type=float, default=1.0)
     parser.add_argument("--rate", type=float, default=None, help="Publish rate limit (Hz)")
-    return parser.parse_args()
+    return parser.parse_args(rospy.myargv(sys.argv)[1:])
 
 
 def _param(name: str, default):

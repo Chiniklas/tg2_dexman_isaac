@@ -17,4 +17,9 @@ dependencies = [
 dev = ["ruff", "black"]
 
 [tool.setuptools]
-packages = ["stereo_camera", "stereo_camera.utils"]
+packages = [
+    "stereo_camera",
+    "stereo_camera.cameras",
+    "stereo_camera.utils",
+    "stereo_camera.StereoCameraCalibration",
+]

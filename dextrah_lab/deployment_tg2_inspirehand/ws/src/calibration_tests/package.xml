@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>calibration</name>
+  <name>calibration_tests</name>
   <version>0.0.1</version>
-  <description>TG2 Inspirehand calibration scripts (ROS1).</description>
+  <description>Test utilities for TG2 Inspirehand calibration pipelines (ROS1).</description>
   <maintainer email="tg2@example.com">tg2</maintainer>
   <license>MIT</license>
 
@@ -11,4 +11,5 @@
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
   <depend>tf2_msgs</depend>
+  <depend>cv_bridge</depend>
 </package>

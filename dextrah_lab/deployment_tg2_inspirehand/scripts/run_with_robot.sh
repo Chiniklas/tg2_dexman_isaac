@@ -7,7 +7,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUN_SH="${SCRIPT_DIR}/run.sh"
+COMPOSE_FILE="$SCRIPT_DIR/../docker-compose.yml"
+GPU_COMPOSE_FILE="$SCRIPT_DIR/../docker-compose.gpu.yml"
 
 say() { printf "\033[1;36m[run_with_robot]\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m[run_with_robot]\033[0m %s\n" "$*"; }
@@ -25,9 +26,11 @@ Options:
 
 Environment overrides:
   ROBOT_MASTER, ROBOT_MASTER_URI, ROS_ADVERTISE may be set instead of flags.
+  AUTO_VIDEO_DEVICES=1 (default) auto-adds /dev/video* devices to the container.
+  DOCKER_DEVICES="/dev/video0 /dev/video1" to explicitly add devices.
 
-The script exports ROS_MASTER_URI, ROS_HOSTNAME, and ROS_IP before deferring to
-run.sh, which handles GPU detection and launches the container.
+The script exports ROS_MASTER_URI, ROS_HOSTNAME, and ROS_IP and then launches
+the container directly (it does not require run.sh).
 USAGE
 }
 
@@ -99,10 +102,59 @@ say "Advertise address = ${ROS_ADVERTISE}"
 export ROS_MASTER_URI="$ROBOT_MASTER_URI"
 export ROS_HOSTNAME="$ROS_ADVERTISE"
 export ROS_IP="$ROS_ADVERTISE"
+export AUTO_VIDEO_DEVICES="${AUTO_VIDEO_DEVICES:-1}"
 
-if [[ ! -x "$RUN_SH" ]]; then
-  echo "Error: cannot execute ${RUN_SH}" >&2
-  exit 1
+xhost +si:localuser:$(whoami) >/dev/null 2>&1
+xhost +si:localuser:root >/dev/null 2>&1
+
+compose_args=("-f" "$COMPOSE_FILE")
+
+if [[ -f "$GPU_COMPOSE_FILE" ]]; then
+  runtimes="$(docker info --format '{{json .Runtimes}}' 2>/dev/null || echo '{}')"
+  if grep -q '"nvidia"' <<<"$runtimes"; then
+    compose_args+=("-f" "$GPU_COMPOSE_FILE")
+  else
+    printf 'Warning: NVIDIA container runtime not detected; running without GPU acceleration.\n' >&2
+  fi
 fi
 
-exec "$RUN_SH"
+run_args=(run --rm --service-ports)
+
+supports_compose_flag() {
+  docker compose run --help 2>/dev/null | grep -q -- "$1"
+}
+
+if [[ "${AUTO_VIDEO_DEVICES:-}" == "1" ]]; then
+  if supports_compose_flag "--device"; then
+    shopt -s nullglob
+    video_devices=(/dev/video*)
+    shopt -u nullglob
+    for dev in "${video_devices[@]}"; do
+      run_args+=(--device "$dev")
+    done
+  elif supports_compose_flag "--privileged"; then
+    printf 'Warning: docker compose run does not support --device; using --privileged for camera access.\n' >&2
+    run_args+=(--privileged)
+  else
+    printf 'Warning: docker compose run does not support --device or --privileged; skipping camera device passthrough.\n' >&2
+  fi
+fi
+
+if [[ -n "${DOCKER_DEVICES:-}" ]]; then
+  if supports_compose_flag "--device"; then
+    for dev in $DOCKER_DEVICES; do
+      if [[ -e "$dev" ]]; then
+        run_args+=(--device "$dev")
+      else
+        printf 'Warning: device not found: %s (skipping)\n' "$dev" >&2
+      fi
+    done
+  elif supports_compose_flag "--privileged"; then
+    printf 'Warning: docker compose run does not support --device; using --privileged for device access.\n' >&2
+    run_args+=(--privileged)
+  else
+    printf 'Warning: docker compose run does not support --device or --privileged; skipping device passthrough.\n' >&2
+  fi
+fi
+
+docker compose "${compose_args[@]}" "${run_args[@]}" workspace bash
