@@ -102,14 +102,6 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.actuated_dof_indices = list()
         for joint_name in cfg.actuated_joint_names:
             self.actuated_dof_indices.append(self.robot.joint_names.index(joint_name))
-        # finger joints to hold at initial pose when requested
-        self.finger_actuated_indices = []
-        self.finger_joint_indices = []
-        for joint_name in getattr(cfg, "finger_joint_names", []):
-            if joint_name in cfg.actuated_joint_names:
-                self.finger_actuated_indices.append(cfg.actuated_joint_names.index(joint_name))
-                self.finger_joint_indices.append(self.robot.joint_names.index(joint_name))
-
         # actions are 1:1 with actuated joints
         self.cfg.num_actions = len(self.actuated_dof_indices)
         self.num_actions = self.cfg.num_actions
@@ -1758,9 +1750,6 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 upper_limits=self.robot_dof_upper_limits[0],
             )
 
-        if getattr(self.cfg, "freeze_finger_targets", False) and self.finger_actuated_indices:
-            finger_targets = self.robot_start_joint_pos[:, self.finger_joint_indices]
-            joint_targets[:, self.finger_actuated_indices] = finger_targets
         self.joint_position_targets[:, self.actuated_dof_indices] = joint_targets
         self.dof_pos_targets[:, self.actuated_dof_indices] = joint_targets
         self.dof_vel_targets[:, self.actuated_dof_indices] =\

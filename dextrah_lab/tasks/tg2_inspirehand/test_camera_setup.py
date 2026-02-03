@@ -65,35 +65,36 @@ def main() -> None:
         env_cfg.valid_objects_dir.append(env_cfg.objects_dir)
     env_cfg.distillation = True
     env_cfg.simulate_stereo = True
-    env_cfg.action_mode = "delta"
-    env_cfg.freeze_finger_targets = True
+    env_cfg.action_mode = "absolute"
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     reset_out = env.reset()
     if isinstance(reset_out, tuple):
         _ = reset_out[0]
 
-    zero_actions = torch.zeros(
-        env.unwrapped.num_envs,
-        env.unwrapped.num_actions,
-        device=env.unwrapped.device,
-    )
+    robot = env.unwrapped.robot
+    sim = env.unwrapped.sim
+    scene = env.unwrapped.scene
+    hold_pos = env.unwrapped.robot_start_joint_pos.clone()
+    hold_vel = torch.zeros_like(hold_pos)
 
     print(
         "[INFO] Running with"
         f" num_envs={env.unwrapped.num_envs},"
-        f" num_actions={env.unwrapped.num_actions} (zero delta actions)."
+        f" num_actions={env.unwrapped.num_actions} (holding initial pose)."
     )
 
     step_count = 0
     print_every = max(1, args_cli.print_camera_every)
 
     while simulation_app.is_running():
-        step_out = env.step(zero_actions)
-        if len(step_out) == 5:
-            _, _, _, _, _ = step_out
-        else:
-            _, _, _, _ = step_out
+        # Hard-clamp the joints to the initial pose each frame to eliminate any drift/twitching.
+        robot.write_joint_state_to_sim(hold_pos, hold_vel)
+        robot.set_joint_position_target(hold_pos)
+        robot.set_joint_velocity_target(hold_vel)
+        scene.write_data_to_sim()
+        sim.step(render=True)
+        scene.update(dt=env.unwrapped.physics_dt)
 
         if step_count % print_every == 0:
             left_cam = env.unwrapped.scene.sensors.get("tiled_camera_left")

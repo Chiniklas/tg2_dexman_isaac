@@ -207,17 +207,6 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         "thumb_joint_0",
         "thumb_joint_1",
     ]
-    # Finger joints to hold when freeze_finger_targets is enabled.
-    finger_joint_names = [
-        "index_joint_0",
-        "little_joint_0",
-        "middle_joint_0",
-        "ring_joint_0",
-        "thumb_joint_0",
-        "thumb_joint_1",
-    ]
-    # When enabled, keep finger position targets fixed at their initial pose.
-    freeze_finger_targets = False
     
     hand_body_names = [
         "palm",
@@ -292,14 +281,14 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
 
     # camera pse in world frame
     ## left camera world pose
-    camera_pos_left = tf[:3, 3].tolist()
-    camera_rot_left = [0.51567701, -0.52073085, 0.53658829, 0.41831759]
+    camera_pos_left = [-0.5, -1.0, 0.8]
+    camera_rot_left = [-0.7071067811865476, 0.7071067811865476, 4.329780281177467e-17, 4.329780281177467e-17] # legacy: [0.51567701, -0.52073085, 0.53658829, 0.41831759]
     # Right camera world pose computed from left tf and stereo extrinsics (T in meters).
-    camera_right_pos = [-0.729246048872728, -0.6832051000463363, 0.697932797054961]
-    camera_right_rot = [0.5191597604343846, -0.5191386386670903, 0.5363151978605117, 0.4163342713883073]
+    camera_right_pos = [-0.56169578743, -1.00253082306, 0.79926054556]
+    camera_right_rot = [0.7096348962042189, -0.7045654624600626, -0.0024115218080837646, -8.809219448898967e-05]
     del tf # this is hacky but it needs to be done because omega conf doesn't support np.ndarray as a primitive
-    camera_rand_rot_range = 3
-    camera_rand_pos_range = 0.03
+    camera_rand_rot_range = 0 #default 3
+    camera_rand_pos_range = 0 # default 0.03
 
     # Pixel-unit aperture/focal length scaled from 1280x720 calibration to 320x240.
     # Original 1280x720 intrinsics:
