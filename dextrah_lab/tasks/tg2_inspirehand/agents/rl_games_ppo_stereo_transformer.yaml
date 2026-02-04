@@ -92,11 +92,11 @@ params:
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 16
-    minibatch_size: 16384
+    minibatch_size: 64
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
-    seq_length: 20
+    seq_length: 1 # default 20
     bounds_loss_coef: 0.0001
 
     # central_value_config:

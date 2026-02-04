@@ -47,7 +47,6 @@ import math
 import os
 from datetime import datetime
 import pathlib
-import torch.distributed as dist
 
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import IsaacAlgoObserver
@@ -74,26 +73,7 @@ from dextrah_lab.distillation_new.a2c_stereo_transformer import (
 @hydra_task_config(args_cli.task, "rl_games_cfg_entry_point")
 def main(env_cfg, agent_cfg: dict):
     """ Performs distillation. """
-    world_size = int(os.environ['WORLD_SIZE'])  # Total number of processes
-    rank = int(os.environ['RANK'])  # Global rank of this process
-    local_rank = int(os.environ['LOCAL_RANK']) # local rank of the process 
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
-
-    # parse configuration
-    # env_cfg = parse_env_cfg(
-    #     args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
-    # )
-    # agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
-
-    if args_cli.distributed:
-        agent_cfg["params"]["seed"] += app_launcher.global_rank
-        agent_cfg["params"]["config"]["device"] = f"cuda:{app_launcher.local_rank}"
-        agent_cfg["params"]["config"]["device_name"] = f"cuda:{app_launcher.local_rank}"
-        agent_cfg["params"]["config"]["multi_gpu"] = True
-        # update env config device
-        env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -137,23 +117,19 @@ def main(env_cfg, agent_cfg: dict):
     student_ckpt = None
     # student_ckpt = "/home/ritviks/workspace/git/distillation_results/new_obj_prims_seed_12.pth"
 
-    if rank == 0:
-        train_dir = "runs"
-        experiment_name = (
-            "dextrah-tg2-inspirehand"
-            + datetime.now().strftime("_%d-%H-%M-%S")
-        )
-        experiment_dir = os.path.join(train_dir, experiment_name)
-        nn_dir = os.path.join(experiment_dir, "nn")
-        summaries_dir = os.path.join(experiment_dir, "summaries")
+    train_dir = "runs"
+    experiment_name = (
+        "dextrah-tg2-inspirehand"
+        + datetime.now().strftime("_%d-%H-%M-%S")
+    )
+    experiment_dir = os.path.join(train_dir, experiment_name)
+    nn_dir = os.path.join(experiment_dir, "nn")
+    summaries_dir = os.path.join(experiment_dir, "summaries")
 
-        os.makedirs(train_dir, exist_ok=True)
-        os.makedirs(experiment_dir, exist_ok=True)
-        os.makedirs(nn_dir, exist_ok=True)
-        os.makedirs(summaries_dir, exist_ok=True)
-    else:
-        summaries_dir = None
-        nn_dir = None
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(experiment_dir, exist_ok=True)
+    os.makedirs(nn_dir, exist_ok=True)
+    os.makedirs(summaries_dir, exist_ok=True)
 
     dagger_config = {
         "student": {
@@ -174,8 +150,7 @@ def main(env_cfg, agent_cfg: dict):
 
     dagger = SafeDagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir)
     dagger.distill()
-    if rank == 0:
-        dagger.save("dextrah_student_safe_dagger")
+    dagger.save("dextrah_student_safe_dagger")
 
 
 if __name__ == "__main__":

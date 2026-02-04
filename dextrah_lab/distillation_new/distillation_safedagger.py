@@ -1,9 +1,4 @@
 import torch
-from torchvision import transforms
-import random
-import torch.distributed as dist
-from torch.optim.lr_scheduler import LambdaLR
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast, GradScaler
 import torchvision.utils as vutils
 import yaml
@@ -12,10 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import warp as wp
 import pathlib
-from PIL import Image
-import glob
 import time
-import math
 
 from rl_games.common import a2c_common 
 from rl_games.algos_torch import torch_ext 
@@ -28,7 +20,6 @@ from rl_games.common import vecenv
 from rl_games.algos_torch.running_mean_std import RunningMeanStd
 from rl_games.algos_torch.self_play_manager import SelfPlayManager
 from rl_games.algos_torch import torch_ext
-from rl_games.common import schedulers
 from rl_games.common.experience import ExperienceBuffer
 from rl_games.common.a2c_common import swap_and_flatten01
 from rl_games.algos_torch.a2c_continuous import A2CAgent
@@ -37,12 +28,7 @@ from datetime import datetime
 from tensorboardX import SummaryWriter
 import wandb
 
-from depth_augs import DepthAug
-from rgb_augs import RgbAug
 from typing import Dict
-
-from isaaclab.sensors import save_images_to_file
-
 
 def l2(model, target):
     """Computes the L2 norm between model and target.
@@ -98,20 +84,22 @@ def adjust_state_dict_keys(checkpoint_state_dict, model_state_dict):
 
 class SafeDagger:
     def __init__(self, env, config, summaries_dir, nn_dir):
-        self.world_size = int(os.environ['WORLD_SIZE'])  # Total number of processes
-        self.rank = int(os.environ['RANK'])  # Global rank of this process
-        self.local_rank = int(os.environ['LOCAL_RANK']) # local rank of the process 
-        torch.cuda.set_device(self.local_rank)
-        wp.set_device(f"cuda:{self.local_rank}")
+        self.world_size = 1
+        self.rank = 0
+        self.local_rank = 0
+        if torch.cuda.is_available():
+            torch.cuda.set_device(self.local_rank)
+            wp.set_device(f"cuda:{self.local_rank}")
+        else:
+            wp.set_device("cpu")
 
         self.env = env
         self.ov_env = env.env
         self.num_envs = self.ov_env.num_envs
         self.num_actions = self.ov_env.num_actions
-        self.device = self.local_rank
+        self.device = torch.device("cuda", self.local_rank) if torch.cuda.is_available() else torch.device("cpu")
         self.config = config
         self.student_network_params = self.load_param_dict(self.config["student"]["cfg"])["params"]
-        self.use_data_aug = self.config["student"]["data_aug"]
         self.teacher_network_params = self.load_param_dict(self.config["teacher"]["cfg"])["params"]
         self.student_network = self.load_networks(self.student_network_params)
         self.teacher_network = self.load_networks(self.teacher_network_params)
@@ -141,25 +129,8 @@ class SafeDagger:
             'normalize_input': self.normalize_input,
         }
         self.student_model = self.student_network.build(self.student_model_config).to(self.device)
-        for param in self.student_model.parameters():
-            dist.broadcast(param.data, src=0)
-        self.student_model_ddp = DDP(self.student_model, device_ids=[self.local_rank], find_unused_parameters=True)
         self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
-        self.warm_up_lr = 1e-5
-        self.peak_lr = 1e-3
-        params = [{"params": self.student_model_ddp.parameters(), "lr": self.warm_up_lr, "eps": 1e-8}]
-        # self.optimizer = torch.optim.Adam(params)
-        self.optimizer = torch.optim.Adam(self.student_model_ddp.parameters(), lr=1e-4, eps=1e-8)
-        self.warmup_epochs = 2000
-        self.max_epochs = 100_000
-        self.num_cycles = 1.
-        # self.scheduler = self.cosine_schedule_with_warmup(
-        #     self.optimizer,
-        #     num_warmup_steps=self.warmup_epochs,
-        #     num_training_steps=self.max_epochs,
-        #     num_cycles=self.num_cycles
-        # )
-        self.num_warmup_steps = 1000
+        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-4, eps=1e-8)
         self.num_iters = 100_000
 
         # load weights for student and teacher
@@ -203,6 +174,8 @@ class SafeDagger:
             parent_path = str(pathlib.Path(__file__).parent.resolve())
             summaries_dir = os.path.join(parent_path, summaries_dir)
             self.nn_dir = os.path.join(parent_path, nn_dir)
+            self.debug_dir = os.path.join(os.path.dirname(self.nn_dir), "debug")
+            os.makedirs(self.debug_dir, exist_ok=True)
             if self.use_wandb:
                 wandb.login(key=os.environ["WANDB_API_KEY"])
                 # wandb.tensorboard.patch(root_logdir=summaries_dir)
@@ -215,15 +188,22 @@ class SafeDagger:
                 )
         else:
             self.use_wandb = False
+            self.debug_dir = None
+        self.debug_save_interval_s = 1.0
+        sim_dt = getattr(self.ov_env.cfg, "sim_dt", None)
+        if sim_dt is None and hasattr(self.ov_env.cfg, "sim"):
+            sim_dt = getattr(self.ov_env.cfg.sim, "dt", 0.0)
+        decimation = getattr(self.ov_env.cfg, "decimation", 1)
+        self._debug_step_dt = float(sim_dt * decimation) if sim_dt is not None else 0.0
+        self._debug_sim_time = 0.0
+        self._debug_max_images_per_channel = 20
+        self._debug_saved_left = 0
+        self._debug_saved_right = 0
         self.scaler = GradScaler()
         wp.init()
-        self.depth_aug = DepthAug(f"cuda:{self.local_rank}")
-        self.use_depth_aug = self.ov_env.cfg.aug_depth
-        self.img_aug_type = self.ov_env.cfg.img_aug_type
         self.aux_coeff = self.ov_env.cfg.aux_coeff
-        self.depth_aug_cfg = self.ov_env.cfg.depth_randomization_cfg_dict
         self.stereo = self.ov_env.cfg.simulate_stereo
-        self.unsafe_l2_threshold = 0.1
+        self.unsafe_l2_threshold = 0.5
         self.viz_imgs = False
         if self.viz_imgs:
             self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 5))
@@ -249,47 +229,6 @@ class SafeDagger:
 
             self.fig.canvas.draw()
             plt.show(block=False)
-
-        if self.use_data_aug and self.img_aug_type == "rgb":
-            self.rgb_aug = RgbAug(
-                device=self.device,
-                all_env_inds=self.ov_env.robot._ALL_INDICES,
-                use_stereo=self.stereo,
-                background_cfg={
-                    "dir": os.path.join(
-                        str(pathlib.Path(__file__).parent.parent.resolve()),
-                        "assets", "background_imgs", "voc_resized"
-                    ),
-                    "height": self.ov_env.cfg.img_height,
-                    "width": self.ov_env.cfg.img_width,
-                    "aug_prob": 0.5
-                },
-                color_cfg={
-                    "aug_prob": 1.,
-                    "saturation_range": [0.5, 1.5],
-                    "contrast_range": [0.5, 1.5],
-                    "brightness_range": [0.5, 1.5],
-                    "hue_range": [-0.15, 0.15]
-                },
-                motion_blur_cfg={
-                    "aug_prob": 0.1,
-                    "kernel_sizes": [9, 11, 13, 15, 17],
-                    "angle_range": [0, 2*np.pi],
-                    "direction_range": [-1, 1]
-                }
-            )
-            voc_imgs_dir = os.path.join(
-                str(pathlib.Path(__file__).parent.parent.resolve()),
-                "assets", "background_imgs", "voc_resized"
-            )
-            voc_imgs = glob.glob(os.path.join(voc_imgs_dir, "*.jpg"))[:10]
-            self.background_imgs = [
-                Image.open(img_name).convert("RGB")
-                for img_name in voc_imgs
-            ]
-            self.background_img_transform = transforms.Compose([
-                transforms.ToTensor()
-            ])
 
         self.init_tensors()
 
@@ -371,34 +310,6 @@ class SafeDagger:
                 self.finetune_backbone = False
             else:
                 self.finetune_backbone = True
-
-            if self.img_aug_type == "depth" and self.use_depth_aug:
-                obs["img"] = self.augment_depth(obs["img"])
-                obs["img"][obs["img"] > self.ov_env.cfg.d_max] = 0.
-                obs["img"][obs["img"] < self.ov_env.cfg.d_min] = 0.
-
-            if self.use_data_aug and self.img_aug_type == "rgb":
-                if self.stereo:
-                    imgs = {
-                        "left_img": obs["img_left"],
-                        "right_img": obs["img_right"]
-                    }
-                    masks = {
-                        "left_mask": obs["mask_left"],
-                        "right_mask": obs["mask_right"]
-                    }
-                    aug_output = self.rgb_aug.apply(imgs, masks)
-                    obs["img_left"] = aug_output["left_img"]
-                    obs["img_right"] = aug_output["right_img"]
-                    # right image now kept in native orientation
-                else:
-                    if self.img_aug_type == "rgb":
-                        obs["rgb"] = self.rgb_aug.apply(obs["rgb"], obs["mask"])
-                        self.rgb_buffers[even_indices] = obs['rgb'][even_indices]
-                        obs['rgb'] = self.rgb_buffers
-            else:
-                # right image now kept in native orientation
-
 
             if self.viz_imgs:
                 if self.stereo:
@@ -493,6 +404,7 @@ class SafeDagger:
                 l2_loss_per_env = weighted_l2(
                     actions_student["mus"], actions_teacher["mus"], weights
                 )
+                l2_loss_mean = l2_loss_per_env.mean()
                 student_loss = (
                     self.loss(
                         actions_student["mus"], actions_teacher["mus"],
@@ -512,7 +424,7 @@ class SafeDagger:
             # self.ov_env._set_pos_marker(aux_out["object_pos"])
 
             if self.rank == 0:
-                self.log_information(log_counter, total_loss, aux_loss, beta)
+                self.log_information(log_counter, total_loss, aux_loss, beta, l2_loss_mean)
 
             log_counter += 1
             self.env_counter += 1
@@ -524,7 +436,6 @@ class SafeDagger:
                         self.student_model.parameters(), 1.0
                     )
                     self.optimizer.step()
-                    # self.scheduler.step()
                     self.optimizer.zero_grad()
                     for i, s in enumerate(self.student_hidden_states):
                         self.student_hidden_states[i] = s.detach()
@@ -534,7 +445,6 @@ class SafeDagger:
                 self.optimizer.zero_grad()
                 total_loss.backward()
                 self.optimizer.step()
-                # self.scheduler.step()
                 total_loss = 0.
             end_time = time.time()
             # print(f"Time taken for backward and step: {end_time - start_time} seconds")
@@ -547,6 +457,23 @@ class SafeDagger:
             obs, rew, out_of_reach, timed_out, info = self.env.step(
                 stepping_actions.detach()
             )
+
+            if self.rank == 0 and self.debug_dir is not None and self.stereo:
+                self._debug_sim_time += self._debug_step_dt
+                if self._debug_sim_time >= self.debug_save_interval_s:
+                    self._debug_sim_time -= self.debug_save_interval_s
+                    if self._debug_saved_left < self._debug_max_images_per_channel:
+                        left = obs["img_left"][0].detach().cpu()
+                        vutils.save_image(
+                            left, os.path.join(self.debug_dir, f"left_env0_step{log_counter:06d}.png")
+                        )
+                        self._debug_saved_left += 1
+                    if self._debug_saved_right < self._debug_max_images_per_channel:
+                        right = obs["img_right"][0].detach().cpu()
+                        vutils.save_image(
+                            right, os.path.join(self.debug_dir, f"right_env0_step{log_counter:06d}.png")
+                        )
+                        self._debug_saved_right += 1
 
             self.frame += self.num_envs
             self.current_rewards += rew.unsqueeze(-1)
@@ -561,7 +488,6 @@ class SafeDagger:
                         self.student_model.parameters(), 1.0
                     )
                     self.optimizer.step()
-                    # self.scheduler.step()
                     self.optimizer.zero_grad()
                     for i, s in enumerate(self.student_hidden_states):
                         self.student_hidden_states[i] = s.detach()
@@ -581,8 +507,6 @@ class SafeDagger:
                     s[:, all_done_indices, ...] *= 0.
 
             done_indices = all_done_indices[:]
-            if self.use_data_aug and self.img_aug_type == "rgb":
-                self.rgb_aug.reset(done_indices)
             self.game_rewards.update(self.current_rewards[done_indices])
             self.game_lengths.update(self.current_lengths[done_indices])
             not_dones = 1.0 - self.dones.float()
@@ -609,34 +533,7 @@ class SafeDagger:
         if self.rank == 0 and self.use_wandb:
             wandb.finish()
 
-    def cosine_schedule_with_warmup(self, optimizer, num_warmup_steps, num_training_steps, num_cycles=0.5, init_lr_frac= 0.01):
-        def lr_lambda(current_step):
-            if current_step < num_warmup_steps:
-                return init_lr_frac + (1 - init_lr_frac) * float(current_step) / float(max(1, num_warmup_steps))
-            progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * progress)))
-
-        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-    def augment_depth(self, depth_nchw):
-        depth_nhw = depth_nchw[:, 0]
-        depths = torch.clone(depth_nhw)
-        self.depth_aug.add_correlated_noise(
-            depth_nhw, depths, **self.depth_aug_cfg["correlated_noise"]
-        )
-        self.depth_aug.add_normal_noise(
-            depths, **self.depth_aug_cfg["normal_noise"]
-        )
-        self.depth_aug.add_pixel_dropout_and_randu(
-            depths, **self.depth_aug_cfg["pixel_dropout_and_randu"]
-        )
-        self.depth_aug.add_sticks(
-            depths, **self.depth_aug_cfg["sticks"]
-        )
-
-        return depths.unsqueeze(1)
-
-    def log_information(self, log_counter, total_loss, aux_loss=None, beta=None):
+    def log_information(self, log_counter, total_loss, aux_loss=None, beta=None, l2_loss_mean=None):
         student_loss = total_loss if aux_loss is None else total_loss - self.aux_coeff*sum(aux_loss)
         if beta is None:
             beta = 0.
@@ -659,6 +556,10 @@ class SafeDagger:
                 self.writer.add_scalar(
                     "beta", beta, self.frame
                 )
+                if l2_loss_mean is not None:
+                    self.writer.add_scalar(
+                        "l2_loss_mean", l2_loss_mean.detach().cpu().numpy(), self.frame
+                    )
                 if beta > 0.95:
                     perf = self.ov_env.in_success_region.float().mean().cpu().numpy()
                 else:
@@ -695,6 +596,8 @@ class SafeDagger:
                 print("Aux Loss: ", aux_loss)
             print("Total Loss: ", total_loss)
             print("Beta: ", beta)
+            if l2_loss_mean is not None:
+                print("L2 Loss Mean: ", l2_loss_mean)
             if self.game_rewards.current_size > 0:
                 print("\tMean Rewards: ", mean_rewards)
                 print("\tMean Length: ", mean_lengths)
@@ -764,7 +667,7 @@ class SafeDagger:
                 batch_dict["seq_length"] = 1
                 batch_dict["rnn_masks"] = None
             batch_dict["finetune_backbone"] = self.finetune_backbone
-            res_dict = self.student_model_ddp(batch_dict)
+            res_dict = self.student_model(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
             # self.ov_env._set_gt_pos_marker(gt_pos.repeat(self.num_envs, 1))

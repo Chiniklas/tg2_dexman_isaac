@@ -279,13 +279,25 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
         0.000000000000000000e+00,0.000000000000000000e+00,0.000000000000000000e+00,1.000000000000000000e+00
     ]).reshape(4,4)
 
-    # camera pse in world frame
+    # camera pose in world frame
     ## left camera world pose
+    # NOTE on rotation conventions (important for future tuning):
+    # - The camera offsets below are used with `convention="ros"` in TiledCameraCfg.
+    # - The UI "Orientation X/Y/Z" values are Euler XYZ in the UI camera frame, and
+    #   they do NOT map 1:1 to the config quaternions.
+    # - Empirically (from the legacy config), UI X=+90 deg corresponds to a quaternion
+    #   that is equivalent to Euler XYZ = -90 deg in the config convention.
+    # - In our current setup there is also an observed +50 deg offset, so the mapping
+    #   we use is: config_euler_x ≈ -(UI_x + 50 deg).
+    #   Example: UI X=65 deg -> config Euler XYZ = -115 deg -> wxyz = [0.5373, -0.8434, 0, 0].
+    # - The right camera is then derived from the left using the stereo calibration
+    #   (R, T) in `jetson_stereo.npz`: R_right = R_left * R_lr, t_right = t_left + R_left * T_lr.
+    # ANYWAY:
+    # The result we want is for the camera looking to the right and a little down at the table so the object will always be seen.
     camera_pos_left = [-0.5, -1.0, 0.8]
-    camera_rot_left = [-0.7071067811865476, 0.7071067811865476, 4.329780281177467e-17, 4.329780281177467e-17] # legacy: [0.51567701, -0.52073085, 0.53658829, 0.41831759]
-    # Right camera world pose computed from left tf and stereo extrinsics (T in meters).
-    camera_right_pos = [-0.56169578743, -1.00253082306, 0.79926054556]
-    camera_right_rot = [0.7096348962042189, -0.7045654624600626, -0.0024115218080837646, -8.809219448898967e-05]
+    camera_rot_left = [0.5372996083468239, -0.8433914458128857, 0.0, 0.0]  # Euler XYZ (-115, 0, 0) deg, wxyz
+    camera_right_pos = [-0.56169578743, -1.00260621, 0.8003994]
+    camera_right_rot = [0.540317838, -0.841457551, -0.00237342659, 0.000435944969]
     del tf # this is hacky but it needs to be done because omega conf doesn't support np.ndarray as a primitive
     camera_rand_rot_range = 0 #default 3
     camera_rand_pos_range = 0 # default 0.03
@@ -638,9 +650,9 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
 
     # Object spawning params
     x_center = -0.55
-    x_width = 0.5#0.4
+    x_width = 0.1 # default 0.5
     y_center = 0.1
-    y_width = 0.8 #0.5
+    y_width = 0.1  # default 0.5
 
     # DR Controls
     enable_adr = True

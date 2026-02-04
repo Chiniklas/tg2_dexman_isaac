@@ -1,6 +1,18 @@
 """Spawn the TG2-Inspirehand env, hold zero actions, and enable stereo cameras."""
-
+"""
+cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/tasks/tg2_inspirehand/
+python test_camera_setup.py \
+  --task dextrah_tg2_inspirehand \
+  --objects_dir test_object \
+  --num_envs 1 \
+  --print_camera_every 60 \
+  --enable_cameras \
+  --snapshot_every 60 \
+  --snapshot_max 20 \
+  --snapshot_dir debug_camera
+"""
 import argparse
+import os
 
 from isaaclab.app import AppLauncher
 
@@ -39,6 +51,24 @@ def main() -> None:
         default=60,
         help="Print camera output shapes every N steps.",
     )
+    parser.add_argument(
+        "--snapshot_every",
+        type=int,
+        default=0,
+        help="Save a stereo snapshot every N steps (0 disables).",
+    )
+    parser.add_argument(
+        "--snapshot_max",
+        type=int,
+        default=20,
+        help="Max snapshots to save per channel (left/right).",
+    )
+    parser.add_argument(
+        "--snapshot_dir",
+        type=str,
+        default="debug_camera",
+        help="Directory to save snapshots (relative to CWD).",
+    )
     AppLauncher.add_app_launcher_args(parser)
     args_cli = parser.parse_args()
 
@@ -47,6 +77,7 @@ def main() -> None:
 
     import gymnasium as gym
     import torch
+    import torchvision.utils as vutils
 
     import isaaclab_tasks  # noqa: F401
     from isaaclab_tasks.utils import parse_env_cfg
@@ -86,6 +117,13 @@ def main() -> None:
 
     step_count = 0
     print_every = max(1, args_cli.print_camera_every)
+    snapshot_every = max(0, args_cli.snapshot_every)
+    snapshot_dir = None
+    saved_left = 0
+    saved_right = 0
+    if snapshot_every > 0:
+        snapshot_dir = os.path.abspath(args_cli.snapshot_dir)
+        os.makedirs(snapshot_dir, exist_ok=True)
 
     while simulation_app.is_running():
         # Hard-clamp the joints to the initial pose each frame to eliminate any drift/twitching.
@@ -119,6 +157,32 @@ def main() -> None:
                     f" rgb={_describe_tensor(right_rgb)}"
                     f" depth={_describe_tensor(right_depth)}"
                 )
+
+        if snapshot_dir is not None and snapshot_every > 0 and step_count % snapshot_every == 0:
+            left_cam = env.unwrapped.scene.sensors.get("tiled_camera_left")
+            right_cam = env.unwrapped.scene.sensors.get("tiled_camera_right")
+            if left_cam is not None and saved_left < args_cli.snapshot_max:
+                left_rgb = left_cam.data.output.get("rgb")
+                if left_rgb is not None and left_rgb.numel() > 0:
+                    left = left_rgb[0, ..., :3]
+                    if left.dtype == torch.uint8:
+                        left = left.float() / 255.0
+                    left = left.permute(2, 0, 1).contiguous()
+                    vutils.save_image(
+                        left, os.path.join(snapshot_dir, f"left_env0_step{step_count:06d}.png")
+                    )
+                    saved_left += 1
+            if right_cam is not None and saved_right < args_cli.snapshot_max:
+                right_rgb = right_cam.data.output.get("rgb")
+                if right_rgb is not None and right_rgb.numel() > 0:
+                    right = right_rgb[0, ..., :3]
+                    if right.dtype == torch.uint8:
+                        right = right.float() / 255.0
+                    right = right.permute(2, 0, 1).contiguous()
+                    vutils.save_image(
+                        right, os.path.join(snapshot_dir, f"right_env0_step{step_count:06d}.png")
+                    )
+                    saved_right += 1
 
         step_count += 1
 

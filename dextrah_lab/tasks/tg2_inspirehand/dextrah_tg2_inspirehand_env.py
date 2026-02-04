@@ -228,7 +228,9 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             DextrahADR(self.event_manager, self.cfg.adr_cfg_dict, self.cfg.adr_custom_cfg_dict)
         self.step_since_last_dr_change = 0
         if self.cfg.distillation:
-            self.cfg.starting_adr_increments = self.cfg.num_adr_increments
+            # self.cfg.starting_adr_increments = self.cfg.num_adr_increments
+            self.cfg.starting_adr_increments = 0 #disable adr for distillation now
+            
         self.dextrah_adr.set_num_increments(self.cfg.starting_adr_increments)
         self.local_adr_increment = torch.tensor(
             self.cfg.starting_adr_increments,

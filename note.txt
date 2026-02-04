@@ -213,6 +213,19 @@ python -m torch.distributed.run --nproc_per_node=1 \
     env.enable_adr=False \
     env.disable_arm_randomization=True
 
+# safedagger variation
+cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
+python run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --enable_cameras \
+  --teacher dextrah_lstm.pth \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=test_object \
+  env.enable_adr=False \
+  env.disable_arm_randomization=True
+
 # replay student policy
 cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
 python eval.py \
@@ -223,6 +236,6 @@ python eval.py \
   --num_episodes 10 \
   env.distillation=True \
   env.simulate_stereo=True \
-  env.objects_dir=test_object_0
+  env.objects_dir=test_object
 # optional recording
   --record_data --max_records_per_file 100 --create_video
