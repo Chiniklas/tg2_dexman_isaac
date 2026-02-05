@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import warp as wp
 import pathlib
 import time
+import math
 
 from rl_games.common import a2c_common 
 from rl_games.algos_torch import torch_ext 
@@ -30,6 +31,12 @@ import wandb
 
 from typing import Dict
 
+# Imitation loss options (imitation_loss_type):
+# - "kl": KL(N_teacher || N_student) over action distributions.
+# - "nll": -log pi_student(a_teacher_sample) using teacher sampled actions.
+# - "mse": MSE between teacher sampled actions and student sampled actions.
+# - "l2": legacy weighted L2 on mus (by 1/sigma^2) + L2 on sigmas.
+
 def l2(model, target):
     """Computes the L2 norm between model and target.
     """
@@ -45,6 +52,28 @@ def rescale_actions(low, high, action):
     m = (high + low) / 2.0
     scaled_action = action * d + m
     return scaled_action
+
+def gaussian_kl(mu_student, sigma_student, mu_teacher, sigma_teacher, eps=1e-6):
+    """KL(N_teacher || N_student) per sample, summed over action dims."""
+    sigma_student = torch.clamp(sigma_student, min=eps)
+    sigma_teacher = torch.clamp(sigma_teacher, min=eps)
+    var_student = sigma_student ** 2
+    var_teacher = sigma_teacher ** 2
+    mu_term = (mu_teacher - mu_student) ** 2 / (2.0 * var_student)
+    sigma_term = torch.log(sigma_student / sigma_teacher) + var_teacher / (2.0 * var_student) - 0.5
+    kl = mu_term + sigma_term
+    return kl.sum(-1), mu_term.sum(-1), sigma_term.sum(-1)
+
+def gaussian_nll(mu_student, sigma_student, actions, eps=1e-6):
+    """Negative log-likelihood of actions under N(mu_student, sigma_student), summed over dims."""
+    sigma_student = torch.clamp(sigma_student, min=eps)
+    var_student = sigma_student ** 2
+    nll = 0.5 * (
+        ((actions - mu_student) ** 2) / var_student
+        + 2.0 * torch.log(sigma_student)
+        + math.log(2.0 * math.pi)
+    )
+    return nll.sum(-1)
 
 def adjust_state_dict_keys(checkpoint_state_dict, model_state_dict):
     adjusted_state_dict = {}
@@ -130,7 +159,12 @@ class SafeDagger:
         }
         self.student_model = self.student_network.build(self.student_model_config).to(self.device)
         self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
-        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-4, eps=1e-8)
+        self.imitation_loss_type = self.config.get("imitation_loss_type", "kl")
+        if self.imitation_loss_type not in {"kl", "nll", "l2", "mse"}:
+            raise ValueError(f"Unsupported imitation_loss_type: {self.imitation_loss_type}")
+        if self.rank == 0:
+            print(f"Using imitation loss: {self.imitation_loss_type}")
+        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=2e-4, eps=1e-8) # default lr = 1e-4
         self.num_iters = 100_000
 
         # load weights for student and teacher
@@ -203,7 +237,7 @@ class SafeDagger:
         wp.init()
         self.aux_coeff = self.ov_env.cfg.aux_coeff
         self.stereo = self.ov_env.cfg.simulate_stereo
-        self.unsafe_l2_threshold = 0.5
+        self.unsafe_l2_threshold = 0.5 # default 0.1
         self.viz_imgs = False
         if self.viz_imgs:
             self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 5))
@@ -405,14 +439,42 @@ class SafeDagger:
                     actions_student["mus"], actions_teacher["mus"], weights
                 )
                 l2_loss_mean = l2_loss_per_env.mean()
-                student_loss = (
-                    self.loss(
+                mu_loss = None
+                sigma_loss = None
+                if self.imitation_loss_type == "kl":
+                    kl_per_env, kl_mu_per_env, kl_sigma_per_env = gaussian_kl(
+                        actions_student["mus"],
+                        actions_student["sigmas"],
+                        actions_teacher["mus"],
+                        actions_teacher["sigmas"],
+                    )
+                    imitation_loss = self.reduce_loss(kl_per_env)
+                    mu_loss = self.reduce_loss(kl_mu_per_env)
+                    sigma_loss = self.reduce_loss(kl_sigma_per_env)
+                elif self.imitation_loss_type == "nll":
+                    nll_per_env = gaussian_nll(
+                        actions_student["mus"],
+                        actions_student["sigmas"],
+                        actions_teacher["actions"],
+                    )
+                    imitation_loss = self.reduce_loss(nll_per_env)
+                elif self.imitation_loss_type == "mse":
+                    mse_per_env = torch.mean(
+                        (actions_student["actions"] - actions_teacher["actions"]) ** 2, dim=-1
+                    )
+                    imitation_loss = self.reduce_loss(mse_per_env)
+                    mu_loss = imitation_loss
+                else:
+                    mu_loss = self.loss(
                         actions_student["mus"], actions_teacher["mus"],
                         fn="weighted_l2", weights=weights
-                    ) +
-                    self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
-                )
-                total_loss += student_loss + self.aux_coeff*sum(aux_loss)
+                    )
+                    sigma_loss = self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
+                    imitation_loss = mu_loss + sigma_loss
+                aux_sum = sum(aux_loss) if aux_loss else 0.0
+                aux_sum_tensor = aux_sum if torch.is_tensor(aux_sum) else torch.tensor(aux_sum, device=self.device)
+                total_loss_step = imitation_loss + self.aux_coeff * aux_sum_tensor
+                total_loss += total_loss_step
                 self.unsafe = self.check_unsafe(l2_loss_per_env=l2_loss_per_env, obs=obs)
                 beta = float(self.unsafe.float().mean().item())
             # pos = torch.tensor([
@@ -424,7 +486,17 @@ class SafeDagger:
             # self.ov_env._set_pos_marker(aux_out["object_pos"])
 
             if self.rank == 0:
-                self.log_information(log_counter, total_loss, aux_loss, beta, l2_loss_mean)
+                self.log_information(
+                    log_counter,
+                    total_loss_step,
+                    imitation_loss,
+                    aux_loss,
+                    aux_sum_tensor,
+                    beta,
+                    l2_loss_mean,
+                    mu_loss,
+                    sigma_loss,
+                )
 
             log_counter += 1
             self.env_counter += 1
@@ -533,8 +605,24 @@ class SafeDagger:
         if self.rank == 0 and self.use_wandb:
             wandb.finish()
 
-    def log_information(self, log_counter, total_loss, aux_loss=None, beta=None, l2_loss_mean=None):
-        student_loss = total_loss if aux_loss is None else total_loss - self.aux_coeff*sum(aux_loss)
+    def log_information(
+        self,
+        log_counter,
+        total_loss,
+        imitation_loss=None,
+        aux_loss=None,
+        aux_sum=None,
+        beta=None,
+        l2_loss_mean=None,
+        mu_loss=None,
+        sigma_loss=None,
+    ):
+        if imitation_loss is None:
+            imitation_loss = total_loss if aux_loss is None else total_loss - self.aux_coeff * sum(aux_loss)
+        if aux_sum is None:
+            aux_sum = sum(aux_loss) if aux_loss else 0.0
+        if aux_sum is not None and not torch.is_tensor(aux_sum):
+            aux_sum = torch.tensor(aux_sum, device=self.device)
         if beta is None:
             beta = 0.
 
@@ -551,8 +639,20 @@ class SafeDagger:
                     "total_loss", total_loss.detach().cpu().numpy(), self.frame
                 )
                 self.writer.add_scalar(
-                    "imitation_loss", student_loss.detach().cpu().numpy(), self.frame
+                    "imitation_loss", imitation_loss.detach().cpu().numpy(), self.frame
                 )
+                if aux_sum is not None:
+                    self.writer.add_scalar(
+                        "aux_loss_total", aux_sum.detach().cpu().numpy(), self.frame
+                    )
+                if mu_loss is not None:
+                    self.writer.add_scalar(
+                        "mu_loss", mu_loss.detach().cpu().numpy(), self.frame
+                    )
+                if sigma_loss is not None:
+                    self.writer.add_scalar(
+                        "sigma_loss", sigma_loss.detach().cpu().numpy(), self.frame
+                    )
                 self.writer.add_scalar(
                     "beta", beta, self.frame
                 )
@@ -570,12 +670,27 @@ class SafeDagger:
                 if self.use_wandb:
                     wandb.log({
                         "in_success_region": perf,
-                        "imitation_loss": student_loss.detach().cpu().numpy(),
+                        "imitation_loss": imitation_loss.detach().cpu().numpy(),
                         "total_loss": total_loss.detach().cpu().numpy(),
                         "lr": self.optimizer.param_groups[0]["lr"],
                         "beta": beta,
                         "iteration": self.frame
                     })
+                    if aux_sum is not None:
+                        wandb.log({
+                            "aux_loss_total": aux_sum.detach().cpu().numpy(),
+                            "iteration": self.frame
+                        })
+                    if mu_loss is not None:
+                        wandb.log({
+                            "mu_loss": mu_loss.detach().cpu().numpy(),
+                            "iteration": self.frame
+                        })
+                    if sigma_loss is not None:
+                        wandb.log({
+                            "sigma_loss": sigma_loss.detach().cpu().numpy(),
+                            "iteration": self.frame
+                        })
                 if self.is_aux:
                     for idx, name in enumerate(self.aux_loss_names):
                         self.writer.add_scalar(
@@ -591,7 +706,13 @@ class SafeDagger:
             print("="*10)
             print("ITERATION:", log_counter)
             print("LR: ", self.optimizer.param_groups[0]["lr"])
-            print("Imitation Loss: ", student_loss)
+            print("Imitation Loss: ", imitation_loss)
+            if aux_sum is not None:
+                print("Aux Loss (total): ", aux_sum)
+            if mu_loss is not None:
+                print("Mu Loss: ", mu_loss)
+            if sigma_loss is not None:
+                print("Sigma Loss: ", sigma_loss)
             if self.is_aux:
                 print("Aux Loss: ", aux_loss)
             print("Total Loss: ", total_loss)
@@ -610,6 +731,11 @@ class SafeDagger:
         if self.use_wandb:
             images = wandb.Image(image_grid, caption="Top: Network Pred, Bottom: GT")
             wandb.log({"predictions vs ground truth": images})
+
+    def reduce_loss(self, loss_per_env):
+        rnn_masks = None
+        losses, _ = torch_ext.apply_masks([loss_per_env.unsqueeze(1)], rnn_masks)
+        return losses[0]
 
     def check_unsafe(self, l2_loss_per_env=None, obs=None, out_of_reach=None, timed_out=None, info=None):
         """Placeholder: override with task-specific unsafe logic."""

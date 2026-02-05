@@ -158,9 +158,7 @@ python train.py \
   env.objects_dir=test_object \
   env.use_cuda_graph=False
 
-
-maybe num_envs 128, minibatch_size = 512
-
+# this one works best for me
 python train.py \
     --task=dextrah_tg2_inspirehand \
     --seed 42 \
