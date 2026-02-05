@@ -75,6 +75,11 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
     def __init__(self, cfg: DextrahTG2InspirehandEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        if self.cfg.distillation and self.cfg.distillation_episode_length_s is not None:
+            step_dt = self.cfg.sim_dt * self.cfg.decimation
+            if step_dt > 0:
+                self.max_episode_length = int(self.cfg.distillation_episode_length_s / step_dt)
+
         self.num_robot_dofs = self.robot.num_joints
         # Track whether any arm link is in contact with the table (per-env mask).
         self.arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -333,17 +338,17 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         if num_unique_objects < 1:
             raise ValueError(f"No objects found under assets/{self.cfg.objects_dir}/USD")
 
-        # Hardcode observation sizes (base + num_unique_objects).
+        # Hardcode observation sizes (base + one-hot length).
         # num_actuated = 13, num_hand_bodies = 6 -> student obs = 96
         self.cfg.num_student_observations = 78
-        # Teacher: base 86 + num_unique_objects (object one-hot)
-        self.cfg.num_teacher_observations = 86 + num_unique_objects
+        # Teacher: base 86 + 1 (constant one-hot placeholder)
+        self.cfg.num_teacher_observations = 86 + 1
         if self.cfg.distillation:
             self.cfg.num_observations = self.cfg.num_student_observations
         else:
             self.cfg.num_observations = self.cfg.num_teacher_observations
-        # Critic: base 132 + num_unique_objects (object one-hot)
-        self.cfg.num_states = 132 + num_unique_objects
+        # Critic: base 132 + 1 (constant one-hot placeholder)
+        self.cfg.num_states = 132 + 1
 
         self.cfg.state_space = self.cfg.num_states
         self.cfg.observation_space = self.cfg.num_observations
@@ -568,13 +573,21 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         if not sub_dirs:
             raise ValueError(f"No objects found under {objects_full_path}")
 
-        # Single-object training: pick the first object for all envs.
-        self.num_unique_objects = 1
-        self.multi_object_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.multi_object_idx_onehot = F.one_hot(
-            self.multi_object_idx, num_classes=self.num_unique_objects
-        ).float()
-        selected_object_name = sub_dirs[0]
+        if self.cfg.distillation:
+            # Track all available objects for multi-teacher distillation.
+            self.object_names = list(sub_dirs)
+            self.num_unique_objects = len(self.object_names)
+            # Deterministic assignment of object indices across envs.
+            object_indices = [i % self.num_unique_objects for i in range(self.num_envs)]
+        else:
+            # Single-object training: pick the first object for all envs.
+            self.object_names = [sub_dirs[0]]
+            self.num_unique_objects = 1
+            object_indices = [0 for _ in range(self.num_envs)]
+
+        self.multi_object_idx = torch.tensor(object_indices, dtype=torch.long, device=self.device)
+        # Constant one-hot placeholder (length 1) regardless of object identity.
+        self.multi_object_idx_onehot = torch.ones((self.num_envs, 1), dtype=torch.float, device=self.device)
 
         stage = omni.usd.get_context().get_stage()
         self.object_mat_prims = list()
@@ -616,7 +629,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         for i in range(self.num_envs):
             # TODO: check to see that the below config settings make sense
-            object_name = selected_object_name
+            object_name = self.object_names[object_indices[i]]
             object_usd_path = objects_full_path + "/" + object_name + "/" + object_name + ".usd"
             print('Object name', object_name)
             print('object usd path', object_usd_path)

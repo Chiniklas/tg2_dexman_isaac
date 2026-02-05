@@ -224,7 +224,19 @@ python run_distillation_safedagger.py \
   env.enable_adr=False \
   env.disable_arm_randomization=True
 
-# replay student policy
+# multi_teacher distillation
+python run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --enable_cameras \
+  --teacher multi_object_distillation \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False \
+  env.disable_arm_randomization=True
+
+# replay student policy (multi_object supported)
 cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
 python eval.py \
   --task=dextrah_tg2_inspirehand \

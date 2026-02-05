@@ -121,7 +121,9 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
                         "test_2",
                         "multi_objects",
                         "_single_object",
-                        "playback"]
+                        "playback",
+                        "distill_multi_objects"
+                        ]
 
     # Toggle for using cuda graph
     use_cuda_graph = False
@@ -130,6 +132,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     sim_dt = 1/120.
     decimation = 2 # 60 Hz
     episode_length_s = 10. #10.0
+    # Optional shorter episode length used only when distillation=True.
+    distillation_episode_length_s = 5.0
     num_sim_steps_to_render=2 # renders every 4 sim steps, so 60 Hz
     num_actions = 13 # 1:1 joint position targets for 7 arm + 6 hand DOF
     success_timeout = 2.
@@ -650,9 +654,9 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
 
     # Object spawning params
     x_center = -0.55
-    x_width = 0.1 # default 0.5
+    x_width = 0.5 # default 0.5
     y_center = 0.1
-    y_width = 0.1  # default 0.5
+    y_width = 0.8  # default 0.5
 
     # DR Controls
     enable_adr = True

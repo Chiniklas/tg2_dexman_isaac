@@ -3,6 +3,7 @@ from torch.cuda.amp import autocast, GradScaler
 import torchvision.utils as vutils
 import yaml
 import os
+import glob
 import numpy as np
 import matplotlib.pyplot as plt
 import warp as wp
@@ -158,7 +159,18 @@ class SafeDagger:
             'normalize_input': self.normalize_input,
         }
         self.student_model = self.student_network.build(self.student_model_config).to(self.device)
-        self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
+        self.teacher_models = None
+        self.teacher_model = None
+        self.teacher_ckpt_dir = None
+        self.multi_teacher = False
+        teacher_ckpt = self.config["teacher"]["ckpt"]
+        if teacher_ckpt is not None and os.path.isdir(teacher_ckpt):
+            self.teacher_ckpt_dir = teacher_ckpt
+            self.multi_teacher = True
+            self.teacher_models = self._build_teacher_pool(teacher_ckpt)
+            self.teacher_model = self.teacher_models[0]
+        else:
+            self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
         self.imitation_loss_type = self.config.get("imitation_loss_type", "kl")
         if self.imitation_loss_type not in {"kl", "nll", "l2", "mse"}:
             raise ValueError(f"Unsupported imitation_loss_type: {self.imitation_loss_type}")
@@ -170,7 +182,7 @@ class SafeDagger:
         # load weights for student and teacher
         if self.config["student"]["ckpt"] is not None:
             self.set_weights(self.config["student"]["ckpt"], "student")
-        if self.config["teacher"]["ckpt"] is not None:
+        if not self.multi_teacher and self.config["teacher"]["ckpt"] is not None:
             self.set_weights(self.config["teacher"]["ckpt"], "teacher")
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
@@ -295,8 +307,15 @@ class SafeDagger:
             self.num_seqs = self.horizon_length // self.seq_length
 
         if self.is_teacher_rnn:
-            self.teacher_hidden_states = self.teacher_model.get_default_rnn_state()
-            self.teacher_hidden_states = [s.to(self.device) for s in self.teacher_hidden_states]
+            if self.multi_teacher:
+                self.teacher_hidden_states_pool = []
+                for model in self.teacher_models:
+                    states = model.get_default_rnn_state()
+                    self.teacher_hidden_states_pool.append([s.to(self.device) for s in states])
+                self.teacher_hidden_states = None
+            else:
+                self.teacher_hidden_states = self.teacher_model.get_default_rnn_state()
+                self.teacher_hidden_states = [s.to(self.device) for s in self.teacher_hidden_states]
             # self.num_seqs = self.horizon_length // self.seq_length
 
         self.env_counter = torch.zeros(self.num_envs, dtype=torch.int).to(self.device)
@@ -324,7 +343,11 @@ class SafeDagger:
 
     def distill(self):
         self.student_model.train()
-        self.teacher_model.eval()
+        if self.multi_teacher:
+            for model in self.teacher_models:
+                model.eval()
+        else:
+            self.teacher_model.eval()
         # torch.set_float32_matmul_precision('high')
 
         obs = self.env.reset()[0]
@@ -524,7 +547,9 @@ class SafeDagger:
             stepping_actions = actions_student["actions"] if self.step_student_actions else actions_teacher["actions"]
             if self.unsafe.any():
                 stepping_actions = stepping_actions.clone()
-                stepping_actions[self.unsafe] = actions_teacher["actions"][self.unsafe]
+                stepping_actions[self.unsafe] = actions_teacher["actions"][self.unsafe].to(
+                    dtype=stepping_actions.dtype
+                )
 
             obs, rew, out_of_reach, timed_out, info = self.env.step(
                 stepping_actions.detach()
@@ -575,8 +600,12 @@ class SafeDagger:
                 self.env_counter[all_done_indices] = 0
 
             if self.is_teacher_rnn and len(all_done_indices) > 0:
-                for s in self.teacher_hidden_states:
-                    s[:, all_done_indices, ...] *= 0.
+                if self.multi_teacher:
+                    for states in self.teacher_hidden_states_pool:
+                        self._zero_rnn_states(states, all_done_indices)
+                else:
+                    for s in self.teacher_hidden_states:
+                        s[:, all_done_indices, ...] *= 0.
 
             done_indices = all_done_indices[:]
             self.game_rewards.update(self.current_rewards[done_indices])
@@ -750,6 +779,97 @@ class SafeDagger:
                 return torch.as_tensor(info["in_unsafe_region"], device=self.device, dtype=torch.bool)
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
+    def _build_teacher_pool(self, ckpt_root):
+        if not hasattr(self.ov_env, "object_names"):
+            raise ValueError("Environment does not expose object_names for multi-teacher loading.")
+        object_names = list(self.ov_env.object_names)
+        if len(object_names) == 0:
+            raise ValueError("No object names found for multi-teacher loading.")
+        ckpt_map = {}
+        missing = []
+        for name in object_names:
+            subdir = os.path.join(ckpt_root, name)
+            if not os.path.isdir(subdir):
+                missing.append(name)
+                continue
+            candidates = sorted(glob.glob(os.path.join(subdir, "*.pth")))
+            if len(candidates) == 0:
+                missing.append(name)
+                continue
+            ckpt_map[name] = candidates[0]
+        if missing:
+            missing_str = ", ".join(missing)
+            raise ValueError(f"Missing teacher checkpoints for objects: {missing_str} (root: {ckpt_root})")
+
+        models = []
+        for name in object_names:
+            model = self.teacher_network.build(self.teacher_model_config).to(self.device)
+            self.set_weights(ckpt_map[name], "teacher", model_override=model)
+            models.append(model)
+        return models
+
+    def _select_rnn_states(self, states, indices):
+        indices = indices.flatten()
+        selected = []
+        for s in states:
+            if s.dim() == 2:
+                selected.append(s.index_select(0, indices))
+            else:
+                selected.append(s.index_select(1, indices))
+        return selected
+
+    def _writeback_rnn_states(self, states, indices, new_states):
+        indices = indices.flatten()
+        for i, s in enumerate(states):
+            ns = new_states[i]
+            if ns.dtype != s.dtype:
+                ns = ns.to(dtype=s.dtype)
+            if s.dim() == 2:
+                s.index_copy_(0, indices, ns)
+            else:
+                s.index_copy_(1, indices, ns)
+
+    def _zero_rnn_states(self, states, indices):
+        if indices.numel() == 0:
+            return
+        indices = indices.flatten()
+        for s in states:
+            if s.dim() == 2:
+                s[indices] = 0
+            else:
+                s[:, indices, ...] = 0
+
+    def _get_actions_multi_teacher(self, obs):
+        mus = torch.zeros((self.num_envs, self.num_actions), device=self.device)
+        sigmas = torch.zeros_like(mus)
+        obj_indices = self.ov_env.multi_object_idx
+
+        for obj_idx, model in enumerate(self.teacher_models):
+            env_mask = obj_indices == obj_idx
+            if not torch.any(env_mask):
+                continue
+            idx = env_mask.nonzero(as_tuple=False).flatten()
+            batch_dict = {
+                "is_train": False,
+                "obs": obs[self.teacher_obs_type][idx],
+                "prev_actions": self.prev_actions_teacher[idx],
+            }
+            if self.is_teacher_rnn:
+                states = self._select_rnn_states(self.teacher_hidden_states_pool[obj_idx], idx)
+                batch_dict["rnn_states"] = states
+                batch_dict["seq_length"] = 1
+                batch_dict["rnn_masks"] = None
+            res_dict = model(batch_dict)
+            if self.is_teacher_rnn:
+                self._writeback_rnn_states(
+                    self.teacher_hidden_states_pool[obj_idx],
+                    idx,
+                    res_dict["rnn_states"],
+                )
+            mus[idx] = res_dict["mus"].to(dtype=mus.dtype)
+            sigmas[idx] = res_dict["sigmas"].to(dtype=sigmas.dtype)
+        return mus, sigmas
+
     def get_actions(self, obs, policy_type):
         aux = None
         if policy_type == "student":
@@ -806,20 +926,23 @@ class SafeDagger:
             if self.is_aux:
                 aux = res_dict["rnn_states"][1]
         else:
-            batch_dict = {
-                "is_train": False,
-                "obs": obs[self.teacher_obs_type],
-                "prev_actions": self.prev_actions_teacher,
-            }
-            if self.is_teacher_rnn:
-                batch_dict["rnn_states"] = self.teacher_hidden_states
-                batch_dict["seq_length"] = 1
-                batch_dict["rnn_masks"] = None
-            res_dict = self.teacher_model(batch_dict)
-            if self.is_teacher_rnn:
-                self.teacher_hidden_states = res_dict["rnn_states"]
-            mus = res_dict["mus"]
-            sigmas = res_dict["sigmas"]
+            if self.multi_teacher:
+                mus, sigmas = self._get_actions_multi_teacher(obs)
+            else:
+                batch_dict = {
+                    "is_train": False,
+                    "obs": obs[self.teacher_obs_type],
+                    "prev_actions": self.prev_actions_teacher,
+                }
+                if self.is_teacher_rnn:
+                    batch_dict["rnn_states"] = self.teacher_hidden_states
+                    batch_dict["seq_length"] = 1
+                    batch_dict["rnn_masks"] = None
+                res_dict = self.teacher_model(batch_dict)
+                if self.is_teacher_rnn:
+                    self.teacher_hidden_states = res_dict["rnn_states"]
+                mus = res_dict["mus"]
+                sigmas = res_dict["sigmas"]
         distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
         selected_action = distr.sample().squeeze()
         # clamp selected action between 1 and -1
@@ -843,7 +966,7 @@ class SafeDagger:
         )
         return losses[0]
 
-    def set_weights(self, ckpt, policy_type):
+    def set_weights(self, ckpt, policy_type, model_override=None):
         """Set the weights of the model."""
         weights = torch_ext.load_checkpoint(ckpt)
         if policy_type == "student":
@@ -856,7 +979,7 @@ class SafeDagger:
             # self.optimizer.load_state_dict(weights['optimizer'])
             # self.frame = weights.get('frame', 0)
         else:
-            model = self.teacher_model
+            model = model_override if model_override is not None else self.teacher_model
         model.load_state_dict(weights["model"])
         if self.normalize_input and 'running_mean_std' in weights:
             model.running_mean_std.load_state_dict(weights["running_mean_std"])

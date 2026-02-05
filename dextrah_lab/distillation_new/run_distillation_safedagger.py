@@ -143,6 +143,7 @@ def main(env_cfg, agent_cfg: dict):
             "ckpt": teacher_ckpt,
             "obs_type": "expert_policy",
         },
+        "imitation_loss_type": "l2",
         "play_policy": args_cli.play_policy,
     }
 
