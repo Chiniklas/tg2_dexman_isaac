@@ -172,13 +172,13 @@ python train.py \
     agent.params.config.multi_gpu=False \
     agent.wandb_activate=False \
     env.success_for_adr=0.4 \
-    env.objects_dir=test_object_0 \
+    env.objects_dir=test_object \
     env.use_cuda_graph=False
 
 python play_test.py \
   --task dextrah_tg2_inspirehand \
   --num_envs 8 \
-  --objects_dir test_object_0 \
+  --objects_dir test_object \
   --max_pose_angle 90 \
   --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-21_08-57-56/nn/dextrah_lstm.pth
 
@@ -246,6 +246,6 @@ python eval.py \
   --num_episodes 10 \
   env.distillation=True \
   env.simulate_stereo=True \
-  env.objects_dir=test_object
+  env.objects_dir=distill_multi_objects
 # optional recording
   --record_data --max_records_per_file 100 --create_video

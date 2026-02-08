@@ -75,12 +75,13 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
     def __init__(self, cfg: DextrahTG2InspirehandEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        self.num_robot_dofs = self.robot.num_joints
+        # Optional distillation-only episode cap (separate from base max_episode_length).
+        self.distill_max_episode_length = None
         if self.cfg.distillation and self.cfg.distillation_episode_length_s is not None:
             step_dt = self.cfg.sim_dt * self.cfg.decimation
             if step_dt > 0:
-                self.max_episode_length = int(self.cfg.distillation_episode_length_s / step_dt)
-
-        self.num_robot_dofs = self.robot.num_joints
+                self.distill_max_episode_length = int(self.cfg.distillation_episode_length_s / step_dt)
         # Track whether any arm link is in contact with the table (per-env mask).
         self.arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # Track hand-object contact counts per env.
@@ -1175,8 +1176,11 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         # Terminate rollout if maximum episode length reached
         if self.cfg.distillation:
+            max_len = self.distill_max_episode_length
+            if max_len is None:
+                max_len = self.max_episode_length
             time_out = torch.logical_or(
-                self.episode_length_buf >= self.max_episode_length - 1,
+                self.episode_length_buf >= max_len - 1,
                 self.time_in_success_region >= self.cfg.success_timeout
             )
         else:
