@@ -99,6 +99,21 @@ params:
     seq_length: 1 # default 20
     bounds_loss_coef: 0.0001
 
+  distillation:
+    imitation_loss_type: l2
+    imitation_target: null
+    loss_type: null
+    unsafe_mode: l2
+    unsafe_l2_threshold: 0.5
+    ood:
+      enabled: false
+      obs_key: policy
+      buffer_size: 100000
+      min_samples: 5000
+      update_interval: 1000
+      threshold_quantile: 0.99
+      diag_eps: 1e-4
+
     # central_value_config:
     #   minibatch_size: 32768
     #   mini_epochs: 4

@@ -32,11 +32,27 @@ import wandb
 
 from typing import Dict
 
+from ood_classifier import OODGaussianBuffer
+
 # Imitation loss options (imitation_loss_type):
 # - "kl": KL(N_teacher || N_student) over action distributions.
 # - "nll": -log pi_student(a_teacher_sample) using teacher sampled actions.
 # - "mse": MSE between teacher sampled actions and student sampled actions.
 # - "l2": legacy weighted L2 on mus (by 1/sigma^2) + L2 on sigmas.
+#
+# Optional debug-friendly config:
+# - imitation_target: "action_distribution" | "sampled_action"
+# - loss_type: "kl" | "nll" | "l2" | "mse"
+# If both are provided, they override imitation_loss_type.
+#
+# Optional OOD config (simple diagonal Gaussian density model on a buffer):
+# - ood.enabled: bool
+# - ood.obs_key: observation key to use for OOD features (default: student obs_type)
+# - ood.buffer_size: max number of feature vectors to store
+# - ood.min_samples: warm-start threshold; below this, always mark unsafe
+# - ood.update_interval: steps between refitting mean/var and threshold
+# - ood.threshold_quantile: quantile for OOD threshold on buffer scores
+# - ood.diag_eps: variance floor for stability
 
 def l2(model, target):
     """Computes the L2 norm between model and target.
@@ -113,7 +129,7 @@ def adjust_state_dict_keys(checkpoint_state_dict, model_state_dict):
 
 
 class SafeDagger:
-    def __init__(self, env, config, summaries_dir, nn_dir):
+    def __init__(self, env, config, summaries_dir, nn_dir, eval_env=None):
         self.world_size = 1
         self.rank = 0
         self.local_rank = 0
@@ -125,10 +141,19 @@ class SafeDagger:
 
         self.env = env
         self.ov_env = env.env
+        self.eval_env = eval_env
         self.num_envs = self.ov_env.num_envs
         self.num_actions = self.ov_env.num_actions
         self.device = torch.device("cuda", self.local_rank) if torch.cuda.is_available() else torch.device("cpu")
         self.config = config
+        self.eval_every = int(self.config.get("eval_every", 0) or 0)
+        self.eval_num_episodes = int(self.config.get("eval_num_episodes", 5) or 0)
+        self.eval_max_steps = self.config.get("eval_max_steps", None)
+        if self.rank == 0:
+            print(
+                f"SafeDagger eval_every={self.eval_every}, eval_num_episodes={self.eval_num_episodes}",
+                flush=True,
+            )
         self.student_network_params = self.load_param_dict(self.config["student"]["cfg"])["params"]
         self.teacher_network_params = self.load_param_dict(self.config["teacher"]["cfg"])["params"]
         self.student_network = self.load_networks(self.student_network_params)
@@ -171,12 +196,12 @@ class SafeDagger:
             self.teacher_model = self.teacher_models[0]
         else:
             self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
-        self.imitation_loss_type = self.config.get("imitation_loss_type", "kl")
+        self.imitation_loss_type = self._resolve_imitation_loss_type()
         if self.imitation_loss_type not in {"kl", "nll", "l2", "mse"}:
             raise ValueError(f"Unsupported imitation_loss_type: {self.imitation_loss_type}")
         if self.rank == 0:
             print(f"Using imitation loss: {self.imitation_loss_type}")
-        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=2e-4, eps=1e-8) # default lr = 1e-4
+        self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-4, eps=1e-8) # default lr = 1e-4
         self.num_iters = 100_000
 
         # load weights for student and teacher
@@ -187,6 +212,11 @@ class SafeDagger:
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
+        self.ood_classifier = OODGaussianBuffer(
+            self.config.get("ood", {}),
+            default_obs_key=self.student_obs_type,
+            rank=self.rank,
+        )
         self.is_rnn = self.student_model.is_rnn()
         self.is_teacher_rnn = self.teacher_model.is_rnn()
         if self.is_rnn:
@@ -249,7 +279,8 @@ class SafeDagger:
         wp.init()
         self.aux_coeff = self.ov_env.cfg.aux_coeff
         self.stereo = self.ov_env.cfg.simulate_stereo
-        self.unsafe_l2_threshold = 0.5 # default 0.1
+        self.unsafe_mode = self.config.get("unsafe_mode", "l2")
+        self.unsafe_l2_threshold = float(self.config.get("unsafe_l2_threshold", 0.5))
         self.viz_imgs = False
         if self.viz_imgs:
             self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 5))
@@ -351,6 +382,7 @@ class SafeDagger:
         # torch.set_float32_matmul_precision('high')
 
         obs = self.env.reset()[0]
+        self.ood_classifier.init_buffer(obs)
 
         log_counter = 0
         total_loss = 0.
@@ -358,6 +390,19 @@ class SafeDagger:
         self.optimizer.zero_grad()
 
         num_iters = self.num_iters
+        if self.rank == 0:
+            if self.eval_every > 0 and self.eval_num_episodes > 0:
+                print(
+                    f"Eval enabled: every {self.eval_every} iters, "
+                    f"{self.eval_num_episodes} episodes per eval.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Eval disabled (eval_every={self.eval_every}, "
+                    f"eval_num_episodes={self.eval_num_episodes}).",
+                    flush=True,
+                )
         while log_counter < num_iters:
             beta = 0.0
             if self.play_policy:
@@ -631,6 +676,24 @@ class SafeDagger:
                     )
                     self.save(ckpt_path)
 
+            if (
+                self.eval_every > 0
+                and self.eval_num_episodes > 0
+                and log_counter % self.eval_every == 0
+                and log_counter > 0
+            ):
+                if self.rank == 0:
+                    print(f"Running eval at iter {log_counter}...", flush=True)
+                eval_mean, eval_std = self.evaluate_student(self.eval_num_episodes)
+                if self.rank == 0 and eval_mean is not None:
+                    self.writer.add_scalar("eval/lift_success", eval_mean, self.frame)
+                    self.writer.add_scalar("eval/lift_success_std", eval_std, self.frame)
+                    self.writer.flush()
+                    print(f"Eval lift_success: {eval_mean:.3f} ± {eval_std:.3f}", flush=True)
+                if self.eval_env is None:
+                    obs = self.env.reset()[0]
+                    self.init_tensors()
+
         if self.rank == 0 and self.use_wandb:
             wandb.finish()
 
@@ -767,7 +830,15 @@ class SafeDagger:
         return losses[0]
 
     def check_unsafe(self, l2_loss_per_env=None, obs=None, out_of_reach=None, timed_out=None, info=None):
-        """Placeholder: override with task-specific unsafe logic."""
+        """Unsafe logic controlled by unsafe_mode: none | l2 | ood."""
+        if self.unsafe_mode == "none":
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if self.unsafe_mode == "ood":
+            if self.ood_classifier is not None and self.ood_classifier.enabled:
+                unsafe = self.ood_classifier.check_ood(obs, self.device)
+                if unsafe is not None:
+                    return unsafe
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if l2_loss_per_env is not None:
             return l2_loss_per_env > self.unsafe_l2_threshold
         if isinstance(info, dict):
@@ -955,6 +1026,102 @@ class SafeDagger:
             "aux": aux
         }
 
+    def _get_student_actions_eval(self, obs, prev_actions, hidden_states):
+        batch_dict = {
+            "is_train": False,
+            "obs": obs[self.student_obs_type],
+            "prev_actions": prev_actions,
+        }
+        if "img" in obs:
+            batch_dict["img"] = obs["img"]
+            batch_dict["rgb_data"] = obs["rgb"]
+            batch_dict["rgb"] = obs["rgb"]
+        if "img_left" in obs:
+            batch_dict["img_left"] = obs["img_left"]
+            batch_dict["img_right"] = obs["img_right"]
+        if self.is_rnn:
+            batch_dict["rnn_states"] = hidden_states
+            batch_dict["seq_length"] = 1
+            batch_dict["rnn_masks"] = None
+        batch_dict["finetune_backbone"] = False
+        res_dict = self.student_model(batch_dict)
+        mus = res_dict["mus"]
+        sigmas = res_dict["sigmas"]
+        if self.is_rnn:
+            if self.is_aux:
+                hidden_states = [s for s in res_dict["rnn_states"][0]]
+            else:
+                hidden_states = [s for s in res_dict["rnn_states"]]
+        distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
+        selected_action = distr.sample().squeeze()
+        selected_action = torch.clamp(selected_action, -1., 1.)
+        return selected_action.detach(), hidden_states
+
+    def evaluate_student(self, num_episodes):
+        if num_episodes <= 0:
+            return None, None
+        eval_env = self.eval_env if self.eval_env is not None else self.env
+        eval_ov_env = eval_env.env
+        if eval_ov_env.num_envs != self.num_envs:
+            if self.rank == 0:
+                print(
+                    "Skipping eval: eval_env num_envs must match training num_envs "
+                    f"({eval_ov_env.num_envs} vs {self.num_envs})."
+                )
+            return None, None
+        num_envs = eval_ov_env.num_envs
+        prev_actions = torch.zeros(
+            (num_envs, self.num_actions_student),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        was_training = self.student_model.training
+        self.student_model.eval()
+        max_steps = self.eval_max_steps
+        if max_steps is None:
+            max_steps = getattr(eval_ov_env, "distill_max_episode_length", None)
+        if max_steps is None:
+            max_steps = getattr(eval_ov_env, "max_episode_length", None)
+        if max_steps is None:
+            max_steps = 1000
+        success_rates = []
+        with torch.no_grad():
+            for _ in range(num_episodes):
+                obs = eval_env.reset()[0]
+                dones = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
+                if self.is_rnn:
+                    hidden_states = [s.to(self.device) for s in self.student_model.get_default_rnn_state()]
+                else:
+                    hidden_states = None
+                prev_actions.zero_()
+                steps = 0
+                while steps < max_steps and not dones.all():
+                    actions, hidden_states = self._get_student_actions_eval(
+                        obs, prev_actions, hidden_states
+                    )
+                    obs, reward, out_of_reach, timed_out, info = eval_env.step(actions)
+                    dones = out_of_reach | timed_out
+                    prev_actions = actions.detach()
+                    if self.is_rnn and dones.any():
+                        self._zero_rnn_states(hidden_states, dones.nonzero(as_tuple=False))
+                    steps += 1
+                table_center_z = eval_ov_env.cfg.table_cfg.init_state.pos[2]
+                table_top_z = table_center_z + 0.5 * eval_ov_env.cfg.table_size_z
+                lift_height_thresh = table_top_z + getattr(eval_ov_env.cfg, "object_height_thresh", 0.0)
+                lift_success = eval_ov_env.object_pos[:, 2] > lift_height_thresh
+                try:
+                    lift_weight = eval_ov_env.dextrah_adr.get_custom_param_value(
+                        "reward_weights", "lift_weight"
+                    )
+                except Exception:
+                    lift_weight = 1.0
+                if lift_weight == 0.0:
+                    lift_success = torch.zeros_like(lift_success)
+                success_rates.append(lift_success.float().mean().item())
+        if was_training:
+            self.student_model.train()
+        return float(np.mean(success_rates)), float(np.std(success_rates))
+
     def loss(self, student_result, target_result, fn="l2", weights=None):
         if fn == "l2":
             loss = l2(student_result, target_result)
@@ -965,6 +1132,34 @@ class SafeDagger:
             [loss.unsqueeze(1)], rnn_masks
         )
         return losses[0]
+
+    def _resolve_imitation_loss_type(self):
+        target = self.config.get("imitation_target", None)
+        loss_type = self.config.get("loss_type", None)
+        if target is None and loss_type is None:
+            return self.config.get("imitation_loss_type", "kl")
+        if target is None or loss_type is None:
+            raise ValueError(
+                "Both imitation_target and loss_type must be set together "
+                "(e.g., --imitation_target action_distribution --loss_type l2)."
+            )
+        target = str(target).lower()
+        loss_type = str(loss_type).lower()
+        if target not in {"action_distribution", "sampled_action"}:
+            raise ValueError(f"Unsupported imitation_target: {target}")
+        if loss_type not in {"kl", "nll", "l2", "mse"}:
+            raise ValueError(f"Unsupported loss_type: {loss_type}")
+        if target == "action_distribution" and loss_type not in {"kl", "nll", "l2"}:
+            raise ValueError(
+                "loss_type 'mse' requires imitation_target 'sampled_action'."
+            )
+        if target == "sampled_action" and loss_type not in {"mse"}:
+            raise ValueError(
+                "sampled_action only supports loss_type 'mse' in this implementation."
+            )
+        if self.rank == 0:
+            print(f"Using imitation_target={target}, loss_type={loss_type}")
+        return loss_type
 
     def set_weights(self, ckpt, policy_type, model_override=None):
         """Set the weights of the model."""

@@ -230,12 +230,14 @@ python run_distillation_safedagger.py \
   --num_envs 8 \
   --enable_cameras \
   --teacher multi_object_distillation \
+  --imitation_target action_distribution \
+  --loss_type l2
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
   env.enable_adr=False \
   env.disable_arm_randomization=True
-
+ 
 # replay student policy (multi_object supported)
 cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
 python eval.py \
@@ -249,3 +251,66 @@ python eval.py \
   env.objects_dir=distill_multi_objects
 # optional recording
   --record_data --max_records_per_file 100 --create_video
+
+# ablation training
+python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --enable_cameras \
+  --teacher multi_object_distillation \
+  --imitation_target action_distribution \
+  --loss_type l2 \
+  --unsafe_mode none \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False \
+  env.disable_arm_randomization=True
+
+# 2- vanilla safe dagger
+python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --enable_cameras \
+  --teacher multi_object_distillation \
+  --imitation_target action_distribution \
+  --loss_type l2 \
+  --unsafe_mode l2 \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False \
+  env.disable_arm_randomization=True
+
+# 3- safe dagger with ood classifier
+python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --enable_cameras \
+  --teacher multi_object_distillation \
+  --imitation_target action_distribution \
+  --loss_type l2 \
+  --unsafe_mode ood \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False \
+  env.disable_arm_randomization=True
+
+# auto eval
+python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --enable_cameras \
+  --headless \
+  --teacher multi_object_distillation \
+  --imitation_target action_distribution \
+  --loss_type l2 \
+  --unsafe_mode l2 \
+  --eval_every 5000 \
+  --eval_num_episodes 2 \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False \
+  env.disable_arm_randomization=True
