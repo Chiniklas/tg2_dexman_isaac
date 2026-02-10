@@ -409,8 +409,20 @@ class PolicyEvaluator:
             if self.record_data and self.data_recorder is not None and self.data_recorder.recording_step_counter > 0:
                 self.data_recorder.save_and_create_videos()
             
-            # Get final success rate from the environment
-            success_rate = self.ov_env.in_success_region.float().mean().item()
+            # Get final lift success rate from the environment
+            table_center_z = self.ov_env.cfg.table_cfg.init_state.pos[2]
+            table_top_z = table_center_z + 0.5 * self.ov_env.cfg.table_size_z
+            lift_height_thresh = table_top_z + getattr(self.ov_env.cfg, "object_height_thresh", 0.0)
+            lift_success = self.ov_env.object_pos[:, 2] > lift_height_thresh
+            try:
+                lift_weight = self.ov_env.dextrah_adr.get_custom_param_value(
+                    "reward_weights", "lift_weight"
+                )
+            except Exception:
+                lift_weight = 1.0
+            if lift_weight == 0.0:
+                lift_success = torch.zeros_like(lift_success)
+            success_rate = lift_success.float().mean().item()
             
             self.episode_rewards.append(episode_reward)
             self.episode_lengths.append(episode_length)
@@ -419,14 +431,14 @@ class PolicyEvaluator:
             print(f"Episode {episode + 1}/{num_episodes}")
             print(f"Reward: {episode_reward:.2f}")
             print(f"Length: {episode_length}")
-            print(f"Success: {success_rate:.2f}")
+            print(f"Lift Success: {success_rate:.2f}")
             print("-" * 50)
             
         # Print final statistics
         print("\nEvaluation Results:")
         print(f"Average Reward: {np.mean(self.episode_rewards):.2f} ± {np.std(self.episode_rewards):.2f}")
         print(f"Average Length: {np.mean(self.episode_lengths):.2f} ± {np.std(self.episode_lengths):.2f}")
-        print(f"Success Rate: {np.mean(self.success_rates):.2f} ± {np.std(self.success_rates):.2f}")
+        print(f"Lift Success Rate: {np.mean(self.success_rates):.2f} ± {np.std(self.success_rates):.2f}")
         
     def load_networks(self, params):
         """Load network builder."""

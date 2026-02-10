@@ -239,7 +239,9 @@ def main(env_cfg, agent_cfg: dict):
 
     dagger = SafeDagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir, eval_env=eval_env)
     dagger.distill()
-    dagger.save("dextrah_student_safe_dagger")
+    final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_safe_dagger.pth")
+    if getattr(dagger, "rank", 0) == 0:
+        dagger.save(final_ckpt)
 
 
 if __name__ == "__main__":

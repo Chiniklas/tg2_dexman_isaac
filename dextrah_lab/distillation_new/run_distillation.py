@@ -175,7 +175,8 @@ def main(env_cfg, agent_cfg: dict):
     dagger = Dagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir)
     dagger.distill()
     if rank == 0:
-        dagger.save("dextrah_student_stereo_transformer")
+        final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_stereo_transformer.pth")
+        dagger.save(final_ckpt)
 
 
 if __name__ == "__main__":

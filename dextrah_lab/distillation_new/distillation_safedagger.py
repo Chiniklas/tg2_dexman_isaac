@@ -684,12 +684,15 @@ class SafeDagger:
             ):
                 if self.rank == 0:
                     print(f"Running eval at iter {log_counter}...", flush=True)
-                eval_mean, eval_std = self.evaluate_student(self.eval_num_episodes)
-                if self.rank == 0 and eval_mean is not None:
-                    self.writer.add_scalar("eval/lift_success", eval_mean, self.frame)
-                    self.writer.add_scalar("eval/lift_success_std", eval_std, self.frame)
+                eval_lift, eval_reward = self.evaluate_student(self.eval_num_episodes)
+                if self.rank == 0 and eval_lift is not None:
+                    self.writer.add_scalar("eval/lift_success", eval_lift, self.frame)
+                    self.writer.add_scalar("eval/avg_reward", eval_reward, self.frame)
                     self.writer.flush()
-                    print(f"Eval lift_success: {eval_mean:.3f} ± {eval_std:.3f}", flush=True)
+                    print(
+                        f"Eval lift_success: {eval_lift:.3f} | avg_reward: {eval_reward:.3f}",
+                        flush=True,
+                    )
                 if self.eval_env is None:
                     obs = self.env.reset()[0]
                     self.init_tensors()
@@ -1085,6 +1088,7 @@ class SafeDagger:
         if max_steps is None:
             max_steps = 1000
         success_rates = []
+        reward_means = []
         with torch.no_grad():
             for _ in range(num_episodes):
                 obs = eval_env.reset()[0]
@@ -1095,6 +1099,7 @@ class SafeDagger:
                     hidden_states = None
                 prev_actions.zero_()
                 steps = 0
+                reward_sum = torch.zeros((num_envs,), device=self.device, dtype=torch.float32)
                 while steps < max_steps and not dones.all():
                     actions, hidden_states = self._get_student_actions_eval(
                         obs, prev_actions, hidden_states
@@ -1104,7 +1109,11 @@ class SafeDagger:
                     prev_actions = actions.detach()
                     if self.is_rnn and dones.any():
                         self._zero_rnn_states(hidden_states, dones.nonzero(as_tuple=False))
+                    reward_sum += reward
                     steps += 1
+                # If we hit the max step cap, treat remaining envs as done for reward aggregation.
+                if steps >= max_steps:
+                    dones = torch.ones_like(dones)
                 table_center_z = eval_ov_env.cfg.table_cfg.init_state.pos[2]
                 table_top_z = table_center_z + 0.5 * eval_ov_env.cfg.table_size_z
                 lift_height_thresh = table_top_z + getattr(eval_ov_env.cfg, "object_height_thresh", 0.0)
@@ -1118,9 +1127,10 @@ class SafeDagger:
                 if lift_weight == 0.0:
                     lift_success = torch.zeros_like(lift_success)
                 success_rates.append(lift_success.float().mean().item())
+                reward_means.append(reward_sum.mean().item())
         if was_training:
             self.student_model.train()
-        return float(np.mean(success_rates)), float(np.std(success_rates))
+        return float(np.mean(success_rates)), float(np.mean(reward_means))
 
     def loss(self, student_result, target_result, fn="l2", weights=None):
         if fn == "l2":
