@@ -32,7 +32,7 @@ import wandb
 
 from typing import Dict
 
-from ood_classifier import OODGaussianBuffer
+from ood_classifier import OODGaussianBuffer, OODPCABuffer, OODMLPBuffer
 
 # Imitation loss options (imitation_loss_type):
 # - "kl": KL(N_teacher || N_student) over action distributions.
@@ -212,11 +212,7 @@ class SafeDagger:
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
-        self.ood_classifier = OODGaussianBuffer(
-            self.config.get("ood", {}),
-            default_obs_key=self.student_obs_type,
-            rank=self.rank,
-        )
+        self.ood_classifier = self._build_ood_classifier(self.config.get("ood", {}))
         self.is_rnn = self.student_model.is_rnn()
         self.is_teacher_rnn = self.teacher_model.is_rnn()
         if self.is_rnn:
@@ -457,6 +453,12 @@ class SafeDagger:
                 # obs['img_left'][:] = real_img_left #[:, torch.arange(3 - 1, -1, -1), :, :]
                 # obs['img_right'][:] = real_img_right #[:, torch.arange(3 - 1, -1, -1), :, :]
                 actions_student = self.get_actions(obs, "student")
+                if actions_student.get("embeds") is not None:
+                    embeds = actions_student["embeds"].detach()
+                    obs["ood_embed"] = embeds
+                    obs["ood_policy_embed"] = torch.cat(
+                        [obs[self.student_obs_type], embeds], dim=-1
+                    )
 
                 aux_loss = list() if self.is_aux else [0.]
                 if actions_student["aux"] is not None:
@@ -853,6 +855,19 @@ class SafeDagger:
                 return torch.as_tensor(info["in_unsafe_region"], device=self.device, dtype=torch.bool)
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
+    def _build_ood_classifier(self, cfg):
+        ood_cfg = cfg or {}
+        ood_type = str(ood_cfg.get("type", "gaussian")).lower()
+        if ood_type == "gaussian":
+            klass = OODGaussianBuffer
+        elif ood_type == "pca":
+            klass = OODPCABuffer
+        elif ood_type == "mlp":
+            klass = OODMLPBuffer
+        else:
+            raise ValueError(f"Unsupported ood.type: {ood_type}")
+        return klass(ood_cfg, default_obs_key=self.student_obs_type, rank=self.rank)
+
     def _build_teacher_pool(self, ckpt_root):
         if not hasattr(self.ov_env, "object_names"):
             raise ValueError("Environment does not expose object_names for multi-teacher loading.")
@@ -946,6 +961,7 @@ class SafeDagger:
 
     def get_actions(self, obs, policy_type):
         aux = None
+        embeds = None
         if policy_type == "student":
             # real_world_idx = 1
             # real_world_names = ["obs.pth", "obs2.pth"]
@@ -990,15 +1006,24 @@ class SafeDagger:
             res_dict = self.student_model(batch_dict)
             mus = res_dict["mus"]
             sigmas = res_dict["sigmas"]
+            rnn_states = res_dict.get("rnn_states", None)
+            if isinstance(rnn_states, (tuple, list)) and len(rnn_states) >= 3:
+                if torch.is_tensor(rnn_states[2]):
+                    embeds = rnn_states[2]
             # self.ov_env._set_gt_pos_marker(gt_pos.repeat(self.num_envs, 1))
             # breakpoint()
             if self.is_rnn:
-                if self.is_aux:
-                    self.student_hidden_states = [s for s in res_dict["rnn_states"][0]]
+                if isinstance(rnn_states, (tuple, list)):
+                    states = rnn_states[0]
                 else:
-                    self.student_hidden_states = [s for s in res_dict["rnn_states"]]
+                    states = rnn_states
+                if self.is_aux and isinstance(states, (tuple, list)):
+                    self.student_hidden_states = [s for s in states]
+                elif states is not None:
+                    self.student_hidden_states = [s for s in states]
             if self.is_aux:
-                aux = res_dict["rnn_states"][1]
+                if isinstance(rnn_states, (tuple, list)) and len(rnn_states) >= 2:
+                    aux = rnn_states[1]
         else:
             if self.multi_teacher:
                 mus, sigmas = self._get_actions_multi_teacher(obs)
@@ -1026,7 +1051,8 @@ class SafeDagger:
             "mus": mus,
             "sigmas": sigmas,
             "actions": selected_action,
-            "aux": aux
+            "aux": aux,
+            "embeds": embeds,
         }
 
     def _get_student_actions_eval(self, obs, prev_actions, hidden_states):
@@ -1093,6 +1119,7 @@ class SafeDagger:
             for _ in range(num_episodes):
                 obs = eval_env.reset()[0]
                 dones = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
+                ever_lifted = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
                 if self.is_rnn:
                     hidden_states = [s.to(self.device) for s in self.student_model.get_default_rnn_state()]
                 else:
@@ -1111,22 +1138,23 @@ class SafeDagger:
                         self._zero_rnn_states(hidden_states, dones.nonzero(as_tuple=False))
                     reward_sum += reward
                     steps += 1
+                    table_center_z = eval_ov_env.cfg.table_cfg.init_state.pos[2]
+                    table_top_z = table_center_z + 0.5 * eval_ov_env.cfg.table_size_z
+                    lift_height_thresh = table_top_z + getattr(eval_ov_env.cfg, "object_height_thresh", 0.0)
+                    lift_success = eval_ov_env.object_pos[:, 2] > lift_height_thresh
+                    try:
+                        lift_weight = eval_ov_env.dextrah_adr.get_custom_param_value(
+                            "reward_weights", "lift_weight"
+                        )
+                    except Exception:
+                        lift_weight = 1.0
+                    if lift_weight == 0.0:
+                        lift_success = torch.zeros_like(lift_success)
+                    ever_lifted = ever_lifted | lift_success
                 # If we hit the max step cap, treat remaining envs as done for reward aggregation.
                 if steps >= max_steps:
                     dones = torch.ones_like(dones)
-                table_center_z = eval_ov_env.cfg.table_cfg.init_state.pos[2]
-                table_top_z = table_center_z + 0.5 * eval_ov_env.cfg.table_size_z
-                lift_height_thresh = table_top_z + getattr(eval_ov_env.cfg, "object_height_thresh", 0.0)
-                lift_success = eval_ov_env.object_pos[:, 2] > lift_height_thresh
-                try:
-                    lift_weight = eval_ov_env.dextrah_adr.get_custom_param_value(
-                        "reward_weights", "lift_weight"
-                    )
-                except Exception:
-                    lift_weight = 1.0
-                if lift_weight == 0.0:
-                    lift_success = torch.zeros_like(lift_success)
-                success_rates.append(lift_success.float().mean().item())
+                success_rates.append(ever_lifted.float().mean().item())
                 reward_means.append(reward_sum.mean().item())
         if was_training:
             self.student_model.train()

@@ -182,6 +182,17 @@ python play_test.py \
   --max_pose_angle 90 \
   --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-21_08-57-56/nn/dextrah_lstm.pth
 
+# evaluation lift
+python eval.py \
+  --task dextrah_tg2_inspirehand \
+  --num_envs 8 \
+  --objects_dir test_object \
+  --max_pose_angle 90 \
+  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/multi_object_distillation/1wdf56lx/dextrah_lstm.pth \
+  --eval_episodes 200 \
+  --headless
+# for the plane the ever lifted metric show 64.5% success_for_adr
+
 # batch training
 MULTI_OBJECTS_DIR=/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/multi_objects/USD \
 NUM_ENVS=128 \
