@@ -808,4 +808,3 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     # This is used for data recording.
     disable_out_of_reach_done = False
     disable_dome_light_randomization = False
-    disable_arm_randomization = False

@@ -219,8 +219,7 @@ python -m torch.distributed.run --nproc_per_node=1 \
     env.distillation=True \
     env.simulate_stereo=True \
     env.objects_dir=test_object_0 \
-    env.enable_adr=False \
-    env.disable_arm_randomization=True
+    env.enable_adr=False
 
 # safedagger variation
 cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
@@ -232,8 +231,7 @@ python run_distillation_safedagger.py \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=test_object \
-  env.enable_adr=False \
-  env.disable_arm_randomization=True
+  env.enable_adr=False
 
 # multi_teacher distillation
 python run_distillation_safedagger.py \
@@ -246,8 +244,7 @@ python run_distillation_safedagger.py \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
-  env.enable_adr=False \
-  env.disable_arm_randomization=True
+  env.enable_adr=False
  
 # replay student policy (multi_object supported)
 cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
@@ -274,12 +271,11 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   --loss_type l2 \
   --unsafe_mode none \
   --eval_every 1000 \
-  --eval_num_episodes 5 \
+  --eval_num_episodes 3 \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
-  env.enable_adr=False \
-  env.disable_arm_randomization=True
+  env.enable_adr=False
 
 # 2- vanilla safe dagger
 python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
@@ -295,8 +291,7 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
-  env.enable_adr=False \
-  env.disable_arm_randomization=True
+  env.enable_adr=False
 
 # 3- safe dagger with ood classifier
 python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
@@ -312,6 +307,4 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
-  env.enable_adr=False \
-  env.disable_arm_randomization=True
-
+  env.enable_adr=False

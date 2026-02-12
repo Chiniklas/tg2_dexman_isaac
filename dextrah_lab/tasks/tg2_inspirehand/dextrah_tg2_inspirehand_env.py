@@ -1474,8 +1474,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                         disp_name
                     ).Set(value)
 
-            if not self.cfg.disable_arm_randomization:
-                with Sdf.ChangeBlock():
+            with Sdf.ChangeBlock():
                     for idx, arm_shader_prim in enumerate(self.arm_mat_prims):
                         if idx not in env_ids:
                             continue

@@ -350,6 +350,7 @@ class PolicyEvaluator:
             episode_reward = 0
             episode_length = 0
             dones = torch.zeros((self.num_envs,), dtype=torch.uint8, device=self.device)
+            ever_lifted = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
             self.env_counter = torch.zeros(self.num_envs, dtype=torch.int).to(self.device)
             
             # Reset RNN states at the start of each episode
@@ -362,6 +363,30 @@ class PolicyEvaluator:
                 
                 obs, reward, out_of_reach, timed_out, info = self.env.step(action)
                 dones = out_of_reach | timed_out
+
+                table_center_z = self.ov_env.cfg.table_cfg.init_state.pos[2]
+                table_top_z = table_center_z + 0.5 * self.ov_env.cfg.table_size_z
+                lift_height_thresh = table_top_z + getattr(self.ov_env.cfg, "object_height_thresh", 0.0)
+                lift_success = self.ov_env.object_pos[:, 2] > lift_height_thresh
+                if hasattr(self.ov_env, "good_grasp_mask") and self.ov_env.good_grasp_mask is not None:
+                    contact_mask = self.ov_env.good_grasp_mask.to(device=self.device, dtype=torch.bool)
+                elif (
+                    hasattr(self.ov_env, "object_contact_counts")
+                    and self.ov_env.object_contact_counts is not None
+                ):
+                    contact_mask = self.ov_env.object_contact_counts.to(device=self.device) > 0.0
+                else:
+                    contact_mask = torch.ones_like(lift_success, dtype=torch.bool)
+                lift_success = lift_success & contact_mask
+                try:
+                    lift_weight = self.ov_env.dextrah_adr.get_custom_param_value(
+                        "reward_weights", "lift_weight"
+                    )
+                except Exception:
+                    lift_weight = 1.0
+                if lift_weight == 0.0:
+                    lift_success = torch.zeros_like(lift_success)
+                ever_lifted = ever_lifted | lift_success
                 
                 # Record step if video recording is enabled
                 if self.record_data and self.data_recorder is not None:
@@ -404,8 +429,8 @@ class PolicyEvaluator:
             if self.record_data and self.data_recorder is not None and self.data_recorder.recording_step_counter > 0:
                 self.data_recorder.save_and_create_videos()
             
-            # Get final success rate from the environment
-            success_rate = self.ov_env.in_success_region.float().mean().item()
+            # Match inline eval metric: ever lifted at least once during the episode.
+            success_rate = ever_lifted.float().mean().item()
             
             self.episode_rewards.append(episode_reward)
             self.episode_lengths.append(episode_length)
@@ -414,14 +439,14 @@ class PolicyEvaluator:
             print(f"Episode {episode + 1}/{num_episodes}")
             print(f"Reward: {episode_reward:.2f}")
             print(f"Length: {episode_length}")
-            print(f"Success: {success_rate:.2f}")
+            print(f"Lift Success (ever): {success_rate:.2f}")
             print("-" * 50)
             
         # Print final statistics
         print("\nEvaluation Results:")
         print(f"Average Reward: {np.mean(self.episode_rewards):.2f} ± {np.std(self.episode_rewards):.2f}")
         print(f"Average Length: {np.mean(self.episode_lengths):.2f} ± {np.std(self.episode_lengths):.2f}")
-        print(f"Success Rate: {np.mean(self.success_rates):.2f} ± {np.std(self.success_rates):.2f}")
+        print(f"Lift Success Rate (ever): {np.mean(self.success_rates):.2f} ± {np.std(self.success_rates):.2f}")
         
     def load_networks(self, params):
         """Load network builder."""
@@ -443,7 +468,6 @@ def main(env_cfg, agent_cfg: dict):
     # Disable reset and randomization for data recording
     if args_cli.record_data:
       env_cfg.disable_out_of_reach_done = True
-      env_cfg.disable_arm_randomization = True
       env_cfg.disable_dome_light_randomization = True
 
     # Create environment

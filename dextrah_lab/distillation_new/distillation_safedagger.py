@@ -693,13 +693,15 @@ class SafeDagger:
             ):
                 if self.rank == 0:
                     print(f"Running eval at iter {log_counter}...", flush=True)
-                eval_lift, eval_reward = self.evaluate_student(self.eval_num_episodes)
+                eval_lift, eval_reward, eval_unsafe = self.evaluate_student(self.eval_num_episodes)
                 if self.rank == 0 and eval_lift is not None:
                     self.writer.add_scalar("eval/lift_success", eval_lift, self.frame)
                     self.writer.add_scalar("eval/avg_reward", eval_reward, self.frame)
+                    self.writer.add_scalar("eval/in_unsafe_zone", eval_unsafe, self.frame)
                     self.writer.flush()
                     print(
-                        f"Eval lift_success: {eval_lift:.3f} | avg_reward: {eval_reward:.3f}",
+                        f"Eval lift_success: {eval_lift:.3f} | avg_reward: {eval_reward:.3f} | "
+                        f"in_unsafe_zone: {eval_unsafe:.3f}",
                         flush=True,
                     )
                 if self.eval_env is None:
@@ -1095,7 +1097,7 @@ class SafeDagger:
 
     def evaluate_student(self, num_episodes):
         if num_episodes <= 0:
-            return None, None
+            return None, None, None
         eval_env = self.eval_env if self.eval_env is not None else self.env
         eval_ov_env = eval_env.env
         if eval_ov_env.num_envs != self.num_envs:
@@ -1104,7 +1106,7 @@ class SafeDagger:
                     "Skipping eval: eval_env num_envs must match training num_envs "
                     f"({eval_ov_env.num_envs} vs {self.num_envs})."
                 )
-            return None, None
+            return None, None, None
         num_envs = eval_ov_env.num_envs
         prev_actions = torch.zeros(
             (num_envs, self.num_actions_student),
@@ -1122,11 +1124,13 @@ class SafeDagger:
             max_steps = 1000
         success_rates = []
         reward_means = []
+        unsafe_rates = []
         with torch.no_grad():
             for _ in range(num_episodes):
                 obs = eval_env.reset()[0]
                 dones = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
                 ever_lifted = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
+                ever_unsafe_terminated = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
                 if self.is_rnn:
                     hidden_states = [s.to(self.device) for s in self.student_model.get_default_rnn_state()]
                 else:
@@ -1140,6 +1144,7 @@ class SafeDagger:
                     )
                     obs, reward, out_of_reach, timed_out, info = eval_env.step(actions)
                     dones = out_of_reach | timed_out
+                    ever_unsafe_terminated = ever_unsafe_terminated | out_of_reach
                     prev_actions = actions.detach()
                     if self.is_rnn and dones.any():
                         self._zero_rnn_states(hidden_states, dones.nonzero(as_tuple=False))
@@ -1149,6 +1154,16 @@ class SafeDagger:
                     table_top_z = table_center_z + 0.5 * eval_ov_env.cfg.table_size_z
                     lift_height_thresh = table_top_z + getattr(eval_ov_env.cfg, "object_height_thresh", 0.0)
                     lift_success = eval_ov_env.object_pos[:, 2] > lift_height_thresh
+                    if hasattr(eval_ov_env, "good_grasp_mask") and eval_ov_env.good_grasp_mask is not None:
+                        contact_mask = eval_ov_env.good_grasp_mask.to(device=self.device, dtype=torch.bool)
+                    elif (
+                        hasattr(eval_ov_env, "object_contact_counts")
+                        and eval_ov_env.object_contact_counts is not None
+                    ):
+                        contact_mask = eval_ov_env.object_contact_counts.to(device=self.device) > 0.0
+                    else:
+                        contact_mask = torch.ones_like(lift_success, dtype=torch.bool)
+                    lift_success = lift_success & contact_mask
                     try:
                         lift_weight = eval_ov_env.dextrah_adr.get_custom_param_value(
                             "reward_weights", "lift_weight"
@@ -1163,9 +1178,14 @@ class SafeDagger:
                     dones = torch.ones_like(dones)
                 success_rates.append(ever_lifted.float().mean().item())
                 reward_means.append(reward_sum.mean().item())
+                unsafe_rates.append(ever_unsafe_terminated.float().mean().item())
         if was_training:
             self.student_model.train()
-        return float(np.mean(success_rates)), float(np.mean(reward_means))
+        return (
+            float(np.mean(success_rates)),
+            float(np.mean(reward_means)),
+            float(np.mean(unsafe_rates)),
+        )
 
     def loss(self, student_result, target_result, fn="l2", weights=None):
         if fn == "l2":

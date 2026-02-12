@@ -8,22 +8,22 @@ class OODGaussianBuffer:
         self.enabled = bool(cfg.get("enabled", False))
         self.obs_key = cfg.get("obs_key", None)
         self.default_obs_key = default_obs_key
+        self.buffer_size = int(cfg.get("buffer_size", 100_000))
         self.min_samples = int(cfg.get("min_samples", 5_000))
         self.update_interval = int(cfg.get("update_interval", 1_000))
         self.threshold_quantile = float(cfg.get("threshold_quantile", 0.75))
         self.diag_eps = float(cfg.get("diag_eps", 1e-4))
+        self.threshold_samples = int(cfg.get("threshold_samples", 0))
         self.rank = rank
 
         self.initialized = False
+        self.buffer = None
+        self.buf_idx = 0
+        self.buf_count = 0
         self.steps = 0
         self.mean = None
         self.var = None
         self.threshold = None
-        # Welford running stats (global, no forgetting)
-        self._count = 0
-        self._mean = None
-        self._m2 = None
-        self._p2 = P2Quantile(self.threshold_quantile)
 
     def set_default_obs_key(self, key):
         self.default_obs_key = key
@@ -32,19 +32,26 @@ class OODGaussianBuffer:
         if not self.enabled or self.initialized:
             return
         feats = self._extract_features(obs)
+        feat_dim = feats.reshape(feats.shape[0], -1).shape[1]
+        self.buffer = torch.empty(
+            (self.buffer_size, feat_dim), dtype=torch.float32, device="cpu"
+        )
+        self.buf_idx = 0
+        self.buf_count = 0
         self.steps = 0
         self.mean = None
         self.var = None
         self.threshold = None
-        self._count = 0
-        self._mean = None
-        self._m2 = None
-        self._p2 = P2Quantile(self.threshold_quantile)
         self.initialized = True
         if self.rank == 0:
             print(
-                f"OOD enabled: min_samples={self.min_samples}, "
-                f"update_interval={self.update_interval}, quantile={self.threshold_quantile}"
+                "OOD Gaussian enabled: buffer_size={}, min_samples={}, update_interval={}, "
+                "quantile={}".format(
+                    self.buffer_size,
+                    self.min_samples,
+                    self.update_interval,
+                    self.threshold_quantile,
+                )
             )
 
     def check_ood(self, obs, device):
@@ -57,7 +64,7 @@ class OODGaussianBuffer:
         self.steps += 1
         if self.steps % self.update_interval == 0:
             self._refit_stats()
-        if self._count < self.min_samples or self.threshold is None:
+        if self.buf_count < self.min_samples or self.threshold is None:
             return torch.ones(feats.shape[0], dtype=torch.bool, device=device)
         feats_cpu = feats.detach().to("cpu").reshape(feats.shape[0], -1)
         scores = self._score_from_stats(feats_cpu, self.mean, self.var)
@@ -77,134 +84,36 @@ class OODGaussianBuffer:
 
     def _update_buffer(self, feats):
         feats_cpu = feats.detach().to("cpu").reshape(feats.shape[0], -1)
-        self._update_welford(feats_cpu)
-        self._update_p2(feats_cpu)
+        num = feats_cpu.shape[0]
+        if num >= self.buffer_size:
+            feats_cpu = feats_cpu[-self.buffer_size:]
+            num = feats_cpu.shape[0]
+        end = self.buf_idx + num
+        if end <= self.buffer_size:
+            self.buffer[self.buf_idx:end] = feats_cpu
+        else:
+            first = self.buffer_size - self.buf_idx
+            self.buffer[self.buf_idx:] = feats_cpu[:first]
+            self.buffer[: end % self.buffer_size] = feats_cpu[first:]
+        self.buf_idx = end % self.buffer_size
+        self.buf_count = min(self.buffer_size, self.buf_count + num)
 
     def _refit_stats(self):
-        if self._count < self.min_samples:
+        if self.buffer is None or self.buf_count < self.min_samples:
             return
-        mean = self._mean
-        var = (self._m2 / max(self._count - 1, 1)) + self.diag_eps
-        self.mean = mean
-        self.var = var
-        if self._p2 is None or not self._p2.ready or self._count < self.min_samples:
-            return
-        self.threshold = self._p2.value
+        data = self.buffer[: self.buf_count]
+        self.mean = data.mean(dim=0)
+        self.var = data.var(dim=0, unbiased=False) + self.diag_eps
+        score_data = data
+        if self.threshold_samples > 0 and score_data.shape[0] > self.threshold_samples:
+            idx = torch.randint(0, score_data.shape[0], (self.threshold_samples,))
+            score_data = score_data[idx]
+        scores = self._score_from_stats(score_data, self.mean, self.var)
+        self.threshold = torch.quantile(scores, self.threshold_quantile).item()
 
     def _score_from_stats(self, feats, mean, var):
         diff = feats - mean
         return 0.5 * ((diff * diff) / var + torch.log(var)).sum(dim=-1)
-
-    def _update_welford(self, feats_cpu):
-        # feats_cpu: (N, D) on CPU
-        if feats_cpu.numel() == 0:
-            return
-        batch = feats_cpu.to(dtype=torch.float32)
-        bsz = batch.shape[0]
-        if self._count == 0:
-            self._count = bsz
-            self._mean = batch.mean(dim=0)
-            diff = batch - self._mean
-            self._m2 = (diff * diff).sum(dim=0)
-            return
-        batch_mean = batch.mean(dim=0)
-        diff = batch - batch_mean
-        batch_m2 = (diff * diff).sum(dim=0)
-        total = self._count + bsz
-        delta = batch_mean - self._mean
-        self._mean = self._mean + delta * (bsz / total)
-        self._m2 = self._m2 + batch_m2 + (delta * delta) * (self._count * bsz / total)
-        self._count = total
-
-    def _update_p2(self, feats_cpu):
-        if self._p2 is None:
-            return
-        if self._mean is None or self._m2 is None or self._count < 2:
-            return
-        mean = self._mean
-        var = (self._m2 / max(self._count - 1, 1)) + self.diag_eps
-        scores = self._score_from_stats(feats_cpu, mean, var)
-        for s in scores.tolist():
-            self._p2.add(float(s))
-
-
-class P2Quantile:
-    def __init__(self, q):
-        if not (0.0 < q < 1.0):
-            raise ValueError(f"q must be in (0, 1), got {q}")
-        self.q = float(q)
-        self._init = []
-        self.n = None
-        self.np = None
-        self.dn = None
-        self.qv = None
-        self.ready = False
-        self.value = None
-
-    def add(self, x):
-        if not self.ready:
-            self._init.append(float(x))
-            if len(self._init) == 5:
-                self._init.sort()
-                self.qv = list(self._init)
-                self.n = [1, 2, 3, 4, 5]
-                p = self.q
-                self.np = [
-                    1.0,
-                    1.0 + 2.0 * p,
-                    1.0 + 4.0 * p,
-                    3.0 + 2.0 * p,
-                    5.0,
-                ]
-                self.dn = [0.0, p / 2.0, p, (1.0 + p) / 2.0, 1.0]
-                self.ready = True
-                self.value = self.qv[2]
-            return
-
-        x = float(x)
-        if x < self.qv[0]:
-            self.qv[0] = x
-            k = 0
-        elif x < self.qv[1]:
-            k = 0
-        elif x < self.qv[2]:
-            k = 1
-        elif x < self.qv[3]:
-            k = 2
-        elif x <= self.qv[4]:
-            k = 3
-        else:
-            self.qv[4] = x
-            k = 3
-
-        for i in range(k + 1, 5):
-            self.n[i] += 1
-        for i in range(5):
-            self.np[i] += self.dn[i]
-
-        for i in range(1, 4):
-            d = self.np[i] - self.n[i]
-            if (d >= 1.0 and self.n[i + 1] - self.n[i] > 1) or (
-                d <= -1.0 and self.n[i - 1] - self.n[i] < -1
-            ):
-                d_sign = 1 if d >= 0 else -1
-                qhat = self.qv[i] + d_sign / (self.n[i + 1] - self.n[i - 1]) * (
-                    (self.n[i] - self.n[i - 1] + d_sign)
-                    * (self.qv[i + 1] - self.qv[i])
-                    / (self.n[i + 1] - self.n[i])
-                    + (self.n[i + 1] - self.n[i] - d_sign)
-                    * (self.qv[i] - self.qv[i - 1])
-                    / (self.n[i] - self.n[i - 1])
-                )
-                if self.qv[i - 1] < qhat < self.qv[i + 1]:
-                    self.qv[i] = qhat
-                else:
-                    self.qv[i] = self.qv[i] + d_sign * (
-                        (self.qv[i + d_sign] - self.qv[i]) / (self.n[i + d_sign] - self.n[i])
-                    )
-                self.n[i] += d_sign
-
-        self.value = self.qv[2]
 
 
 class OODPCABuffer:
