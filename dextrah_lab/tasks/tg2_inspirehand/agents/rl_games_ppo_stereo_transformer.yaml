@@ -104,15 +104,25 @@ params:
     imitation_target: null
     loss_type: null
     unsafe_mode: l2
-    unsafe_l2_threshold: 0.5
+    unsafe_l2_threshold: 3.0
     ood:
       enabled: false
-      obs_key: policy
+      type: gaussian
+      obs_key: policy # defines which obs does the classifier see
       buffer_size: 100000
       min_samples: 5000
       update_interval: 1000
       threshold_quantile: 0.99
       diag_eps: 1e-4
+      hidden_sizes: [256, 128]
+      lr: 0.001
+      weight_decay: 1.0e-6
+      batch_size: 1024
+      train_steps: 100
+      noise_std: 0.1
+      threshold_samples: 50000
+      dropout_prob: 0.1
+      device: cpu
 
     # central_value_config:
     #   minibatch_size: 32768

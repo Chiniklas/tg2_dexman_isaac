@@ -378,7 +378,6 @@ class SafeDagger:
         # torch.set_float32_matmul_precision('high')
 
         obs = self.env.reset()[0]
-        self.ood_classifier.init_buffer(obs)
 
         log_counter = 0
         total_loss = 0.
@@ -459,6 +458,14 @@ class SafeDagger:
                     obs["ood_policy_embed"] = torch.cat(
                         [obs[self.student_obs_type], embeds], dim=-1
                     )
+                if (
+                    self.ood_classifier is not None
+                    and self.ood_classifier.enabled
+                    and not self.ood_classifier.initialized
+                ):
+                    key = self.ood_classifier.obs_key or self.ood_classifier.default_obs_key
+                    if key is not None and key in obs:
+                        self.ood_classifier.init_buffer(obs)
 
                 aux_loss = list() if self.is_aux else [0.]
                 if actions_student["aux"] is not None:

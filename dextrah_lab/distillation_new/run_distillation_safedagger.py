@@ -210,11 +210,11 @@ def main(env_cfg, agent_cfg: dict):
         "unsafe_l2_threshold": distill_cfg.get("unsafe_l2_threshold", 0.5),
         "ood": {
             "enabled": False,
-            "type": "gaussian",
+            "type": "gaussian", # gaussian # pca # mlp
             "obs_key": "ood_policy_embed",
-            "min_samples": 5_000,
-            "update_interval": 1_000,
-            "threshold_quantile": 0.99,
+            "min_samples": 10_000,
+            "update_interval": 500,
+            "threshold_quantile": 0.80,
             "diag_eps": 1e-4,
         },
         "play_policy": args_cli.play_policy,
