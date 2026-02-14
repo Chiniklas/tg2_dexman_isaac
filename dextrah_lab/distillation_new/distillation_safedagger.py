@@ -149,9 +149,13 @@ class SafeDagger:
         self.eval_every = int(self.config.get("eval_every", 0) or 0)
         self.eval_num_episodes = int(self.config.get("eval_num_episodes", 5) or 0)
         self.eval_max_steps = self.config.get("eval_max_steps", None)
+        self.eval_lift_hold_s = max(0.0, float(self.config.get("eval_lift_hold_s", 0.5) or 0.0))
         if self.rank == 0:
             print(
-                f"SafeDagger eval_every={self.eval_every}, eval_num_episodes={self.eval_num_episodes}",
+                "SafeDagger "
+                f"eval_every={self.eval_every}, "
+                f"eval_num_episodes={self.eval_num_episodes}, "
+                f"eval_lift_hold_s={self.eval_lift_hold_s}",
                 flush=True,
             )
         self.student_network_params = self.load_param_dict(self.config["student"]["cfg"])["params"]
@@ -239,6 +243,7 @@ class SafeDagger:
             self.value_size, self.games_to_track
         ).to(self.device)
         self.game_lengths = torch_ext.AverageMeter(1, self.games_to_track).to(self.device)
+        self.game_unsafe_terminated = torch_ext.AverageMeter(1, self.games_to_track).to(self.device)
 
         if self.rank == 0:
             self.writer = SummaryWriter(summaries_dir)
@@ -315,6 +320,9 @@ class SafeDagger:
         )
         self.current_lengths = torch.zeros(
             self.num_envs, dtype=torch.float32, device=self.device
+        )
+        self.current_unsafe_terminated = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
         )
         self.dones = torch.ones(
             (self.num_envs,), dtype=torch.uint8, device=self.device
@@ -629,6 +637,7 @@ class SafeDagger:
             self.frame += self.num_envs
             self.current_rewards += rew.unsqueeze(-1)
             self.current_lengths += 1
+            self.current_unsafe_terminated = self.current_unsafe_terminated | out_of_reach
             self.dones = out_of_reach | timed_out
             all_done_indices = self.dones.nonzero(as_tuple=False)
 
@@ -664,9 +673,11 @@ class SafeDagger:
             done_indices = all_done_indices[:]
             self.game_rewards.update(self.current_rewards[done_indices])
             self.game_lengths.update(self.current_lengths[done_indices])
+            self.game_unsafe_terminated.update(self.current_unsafe_terminated[done_indices].float())
             not_dones = 1.0 - self.dones.float()
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
+            self.current_unsafe_terminated = self.current_unsafe_terminated & self.dones.logical_not()
             self.actions_teacher[done_indices] *= 0.
             if len(done_indices) > 0:
                 self.unsafe[done_indices] = False
@@ -697,11 +708,11 @@ class SafeDagger:
                 if self.rank == 0 and eval_lift is not None:
                     self.writer.add_scalar("eval/lift_success", eval_lift, self.frame)
                     self.writer.add_scalar("eval/avg_reward", eval_reward, self.frame)
-                    self.writer.add_scalar("eval/in_unsafe_zone", eval_unsafe, self.frame)
+                    self.writer.add_scalar("eval/unsafe_episode_rate", eval_unsafe, self.frame)
                     self.writer.flush()
                     print(
                         f"Eval lift_success: {eval_lift:.3f} | avg_reward: {eval_reward:.3f} | "
-                        f"in_unsafe_zone: {eval_unsafe:.3f}",
+                        f"unsafe_episode_rate: {eval_unsafe:.3f}",
                         flush=True,
                     )
                 if self.eval_env is None:
@@ -735,6 +746,8 @@ class SafeDagger:
         if self.game_rewards.current_size > 0:
             mean_rewards = self.game_rewards.get_mean()
             mean_lengths = self.game_lengths.get_mean()
+            mean_unsafe_terminated = self.game_unsafe_terminated.get_mean()
+            unsafe_episode_rate = float(np.asarray(mean_unsafe_terminated).reshape(-1)[0])
             self.mean_rewards = mean_rewards[0]
             for i in range(self.value_size):
                 rewards_name = "rewards" if i == 0 else "rewards{0}".format(i)
@@ -762,6 +775,12 @@ class SafeDagger:
                 self.writer.add_scalar(
                     "beta", beta, self.frame
                 )
+                self.writer.add_scalar(
+                    "train/unsafe_episode_rate", unsafe_episode_rate, self.frame
+                )
+                self.writer.add_scalar(
+                    "train/intervention_rate", beta, self.frame
+                )
                 if l2_loss_mean is not None:
                     self.writer.add_scalar(
                         "l2_loss_mean", l2_loss_mean.detach().cpu().numpy(), self.frame
@@ -780,6 +799,8 @@ class SafeDagger:
                         "total_loss": total_loss.detach().cpu().numpy(),
                         "lr": self.optimizer.param_groups[0]["lr"],
                         "beta": beta,
+                        "train/unsafe_episode_rate": unsafe_episode_rate,
+                        "train/intervention_rate": beta,
                         "iteration": self.frame
                     })
                     if aux_sum is not None:
@@ -829,6 +850,7 @@ class SafeDagger:
                 print("\tMean Rewards: ", mean_rewards)
                 print("\tMean Length: ", mean_lengths)
                 print("\tin_success_region: ", perf)
+                print("\tunsafe_episode_rate: ", mean_unsafe_terminated)
 
     def log_img(self, pred_images, gt_images):
         combined_images = torch.cat((pred_images, gt_images), dim=0)
@@ -1108,6 +1130,19 @@ class SafeDagger:
                 )
             return None, None, None
         num_envs = eval_ov_env.num_envs
+        sim_dt = getattr(eval_ov_env.cfg, "sim_dt", None)
+        if sim_dt is None and hasattr(eval_ov_env.cfg, "sim"):
+            sim_dt = getattr(eval_ov_env.cfg.sim, "dt", None)
+        decimation = getattr(eval_ov_env.cfg, "decimation", 1)
+        step_dt = float(sim_dt * decimation) if sim_dt is not None else 0.0
+        hold_steps = 1
+        if self.eval_lift_hold_s > 0.0 and step_dt > 0.0:
+            hold_steps = max(1, int(math.ceil(self.eval_lift_hold_s / step_dt)))
+        if self.rank == 0:
+            print(
+                f"Eval lift hold gate: {hold_steps} steps (~{self.eval_lift_hold_s:.3f}s target, dt={step_dt:.5f}s)",
+                flush=True,
+            )
         prev_actions = torch.zeros(
             (num_envs, self.num_actions_student),
             dtype=torch.float32,
@@ -1138,6 +1173,7 @@ class SafeDagger:
                 prev_actions.zero_()
                 steps = 0
                 reward_sum = torch.zeros((num_envs,), device=self.device, dtype=torch.float32)
+                lift_hold_counts = torch.zeros((num_envs,), device=self.device, dtype=torch.long)
                 while steps < max_steps and not dones.all():
                     actions, hidden_states = self._get_student_actions_eval(
                         obs, prev_actions, hidden_states
@@ -1172,6 +1208,13 @@ class SafeDagger:
                         lift_weight = 1.0
                     if lift_weight == 0.0:
                         lift_success = torch.zeros_like(lift_success)
+                    active_envs = ~dones
+                    lift_hold_counts = torch.where(
+                        active_envs & lift_success,
+                        lift_hold_counts + 1,
+                        torch.where(active_envs, torch.zeros_like(lift_hold_counts), lift_hold_counts),
+                    )
+                    lift_success = lift_hold_counts >= hold_steps
                     ever_lifted = ever_lifted | lift_success
                 # If we hit the max step cap, treat remaining envs as done for reward aggregation.
                 if steps >= max_steps:

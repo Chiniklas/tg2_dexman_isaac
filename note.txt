@@ -270,7 +270,7 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   --imitation_target action_distribution \
   --loss_type l2 \
   --unsafe_mode none \
-  --eval_every 1000 \
+  --eval_every 2500 \
   --eval_num_episodes 3 \
   env.distillation=True \
   env.simulate_stereo=True \
@@ -286,8 +286,8 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   --imitation_target action_distribution \
   --loss_type l2 \
   --unsafe_mode l2 \
-  --eval_every 1000 \
-  --eval_num_episodes 5 \
+  --eval_every 2500 \
+  --eval_num_episodes 3 \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
@@ -303,8 +303,16 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   --loss_type l2 \
   --unsafe_mode ood \
   --eval_every 1000 \
-  --eval_num_episodes 5 \
+  --eval_num_episodes 3 \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
   env.enable_adr=False
+
+to determine eval folder
+python .../run_distillation_safedagger.py \
+  ... \
+  env.objects_dir=distill_multi_objects \
+  --eval_every 1000 \
+  --eval_num_episodes 5 \
+  --eval_objects_dir your_eval_objects_folder

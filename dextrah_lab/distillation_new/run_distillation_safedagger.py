@@ -1,6 +1,7 @@
 """Script to perform student-teacher distillation"""
 
 import argparse
+import copy
 import sys
 
 from isaaclab.app import AppLauncher
@@ -47,6 +48,24 @@ parser.add_argument(
     type=int,
     default=None,
     help="Max steps per eval episode before moving on (default: env limit).",
+)
+parser.add_argument(
+    "--eval_lift_hold_s",
+    type=float,
+    default=None,
+    help=(
+        "Inline eval lift gate hold duration in seconds. "
+        "Object must stay above lift threshold (with grasp/contact) for this long."
+    ),
+)
+parser.add_argument(
+    "--eval_objects_dir",
+    type=str,
+    default=None,
+    help=(
+        "Object assets folder for inline evaluation. "
+        "If unset, eval uses the training env/object folder."
+    ),
 )
 parser.add_argument(
     "--imitation_target",
@@ -137,6 +156,22 @@ def main(env_cfg, agent_cfg: dict):
                 "Inline eval uses the training environment; ignoring --eval_num_envs "
                 f"({args_cli.eval_num_envs} != {env_cfg.scene.num_envs})."
             )
+        if args_cli.eval_objects_dir:
+            eval_env_cfg = copy.deepcopy(env_cfg)
+            eval_env_cfg.scene.num_envs = env_cfg.scene.num_envs
+            eval_env_cfg.objects_dir = args_cli.eval_objects_dir
+            if (
+                hasattr(eval_env_cfg, "valid_objects_dir")
+                and isinstance(eval_env_cfg.valid_objects_dir, list)
+                and args_cli.eval_objects_dir not in eval_env_cfg.valid_objects_dir
+            ):
+                eval_env_cfg.valid_objects_dir.append(args_cli.eval_objects_dir)
+            eval_env = gym.make(args_cli.task, cfg=eval_env_cfg, render_mode=None)
+            print(
+                f"Inline eval objects_dir={args_cli.eval_objects_dir} "
+                f"(train objects_dir={env_cfg.objects_dir})",
+                flush=True,
+            )
 
     parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
     agent_cfg_folder = "dextrah_lab/tasks/tg2_inspirehand/agents"
@@ -221,6 +256,7 @@ def main(env_cfg, agent_cfg: dict):
         "eval_every": args_cli.eval_every,
         "eval_num_episodes": args_cli.eval_num_episodes,
         "eval_max_steps": args_cli.eval_max_steps,
+        "eval_lift_hold_s": distill_cfg.get("eval_lift_hold_s", 0.5),
     }
     if isinstance(distill_cfg.get("ood", None), dict):
         dagger_config["ood"].update(distill_cfg["ood"])
@@ -234,6 +270,8 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["ood"]["enabled"] = True
         elif args_cli.unsafe_mode in {"none", "l2"}:
             dagger_config["ood"]["enabled"] = False
+    if args_cli.eval_lift_hold_s is not None:
+        dagger_config["eval_lift_hold_s"] = args_cli.eval_lift_hold_s
 
     model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)
 
