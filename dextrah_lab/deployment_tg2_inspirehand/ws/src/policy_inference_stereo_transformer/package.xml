@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>policy_inference_stereo_transformer</name>
+  <version>0.0.1</version>
+  <description>ROS1 stereo transformer policy inference bridge for TG2 deployment.</description>
+  <maintainer email="tg2@example.com">tg2</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+</package>

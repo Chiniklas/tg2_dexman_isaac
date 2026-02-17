@@ -229,3 +229,43 @@ Notes:
 ### Outputs
 
 - `robot_cam_<camera>_calibration.txt` (robot→camera 4x4 transform).
+
+## Policy Inference (Stereo Transformer)
+
+New ROS1 package: `policy_inference_stereo_transformer`
+
+This node subscribes to:
+- `/stereo/left/image_raw` (`sensor_msgs/Image`)
+- `/stereo/right/image_raw` (`sensor_msgs/Image`)
+- `/policy/proprio` (`std_msgs/Float32MultiArray`, length `159`)
+
+It publishes:
+- `/policy/action` (`std_msgs/Float32MultiArray`)
+- `/arm/command_joint_states` (`sensor_msgs/JointState`, optional) for `feedback_control_bridge`
+  - Default mapping uses `joint_action_indices=[0,1,2,3,4,5,6]` for right-arm commands.
+
+Launch:
+
+```bash
+roslaunch policy_inference_stereo_transformer policy_inference_stereo_transformer.launch \
+  checkpoint_path:=/path/to/dextrah_student_stereo_transformer.pth \
+  device:=cuda
+```
+
+Useful overrides:
+
+```bash
+roslaunch policy_inference_stereo_transformer policy_inference_stereo_transformer.launch \
+  cfg_path:=/tiangong_infra_ws/ws/src/tg2_dexman_isaac/dextrah_lab/tasks/dextrah_kuka_allegro/agents/rl_games_ppo_stereo_transformer.yaml \
+  left_topic:=/stereo/left/image_raw \
+  right_topic:=/stereo/right/image_raw \
+  proprio_topic:=/policy/proprio \
+  action_topic:=/policy/action \
+  joint_command_topic:=/arm/command_joint_states \
+  num_proprio_obs:=159 \
+  num_actions:=11 \
+  image_width:=320 \
+  image_height:=240 \
+  deterministic:=true \
+  rate:=20
+```
