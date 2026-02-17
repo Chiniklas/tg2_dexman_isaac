@@ -341,7 +341,7 @@ def main(argv: Iterable[str]) -> int:
     parser.add_argument("--joint-state-topic", type=str, default="/tg2/joint_states")
     parser.add_argument("--pose-command-topic", type=str, default="/tg2_inspirehand_fabric/pose_commands")
     parser.add_argument("--tf-topic", type=str, default="/tf")
-    parser.add_argument("--tag-frame-id", type=str, default="tag36h11:0")
+    parser.add_argument("--tag-frame-id", type=str, default="tag25h9:0")
     parser.add_argument("--home-pose", nargs=6, help="Home pose: x y z yaw pitch roll (ZYX, radians).")
     parser.add_argument("--target-pose", nargs=6, help="Target pose: x y z yaw pitch roll (ZYX, radians).")
     parser.add_argument("--num-steps", type=int, default=30, help="Number of interpolated setpoints.")

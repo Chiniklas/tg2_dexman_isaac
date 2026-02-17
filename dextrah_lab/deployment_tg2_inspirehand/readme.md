@@ -123,7 +123,7 @@ rostopic hz /stereo/right/image_raw
 Visualization test (side-by-side viewer for left/right streams):
 
 ```bash
-python3 /tiangong_infra_ws/ws/src/calibration_tests/tests/test_stereo_camera_node.py \
+python3 /tiangong_infra_ws/ws/src/calibration/tests/test_stereo_camera_node.py \
   --left-topic /stereo/left/image_raw \
   --right-topic /stereo/right/image_raw \
   --no-stereo

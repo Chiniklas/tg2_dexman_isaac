@@ -115,7 +115,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--right-topic", default="/stereo/right/image_raw")
     parser.add_argument("--left-config", default="ov9732_L")
     parser.add_argument("--right-config", default="ov9732_R")
-    parser.add_argument("--flip", default="vertical", choices=["none", "vertical", "horizontal", "both"])
+    parser.add_argument("--flip", default="none", choices=["none", "vertical", "horizontal", "both"])
     parser.add_argument("--scale", type=float, default=0.6, help="Preview downscale factor.")
     parser.add_argument("--no-stereo", action="store_true", help="Do not launch the stereo ROS publisher.")
     return parser.parse_args()
