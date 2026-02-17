@@ -105,6 +105,28 @@ params:
     loss_type: null
     unsafe_mode: l2
     unsafe_l2_threshold: 3.0 # default 3.0
+    unsafe_l2_threshold_mode: fixed # fixed | anneal
+    # threshold annealing settings
+    unsafe_l2_threshold_start: 3.0
+    unsafe_l2_threshold_end: 2.0
+    unsafe_l2_threshold_anneal_iters: 100000
+    
+    failure_predictor:
+      enabled: false
+      obs_key: ood_policy_embed
+      hidden_sizes: [256, 128]
+      lr: 0.001
+      dropout: 0.0
+      buffer_size: 100000
+      batch_size: 1024
+      min_samples: 10000 # default 10000
+      update_interval: 250
+      train_steps: 5
+      horizon_steps: 15
+      failure_threshold: 0.6
+      include_current_step: false
+      pos_weight: 2.0
+      device: cuda
     ood:
       enabled: false
       type: gaussian

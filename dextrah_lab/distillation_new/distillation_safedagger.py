@@ -33,6 +33,7 @@ import wandb
 from typing import Dict
 
 from ood_classifier import OODGaussianBuffer, OODPCABuffer, OODMLPBuffer
+from failure_predictor import FailurePredictor
 
 # Imitation loss options (imitation_loss_type):
 # - "kl": KL(N_teacher || N_student) over action distributions.
@@ -53,6 +54,12 @@ from ood_classifier import OODGaussianBuffer, OODPCABuffer, OODMLPBuffer
 # - ood.update_interval: steps between refitting mean/var and threshold
 # - ood.threshold_quantile: quantile for OOD threshold on buffer scores
 # - ood.diag_eps: variance floor for stability
+#
+# Optional failure predictor config (state-action risk model):
+# - failure_predictor.enabled: bool
+# - failure_predictor.obs_key: observation key used by predictor (default: student obs_type)
+# - failure_predictor.failure_threshold: intervention threshold in [0, 1]
+# - failure_predictor.horizon_steps: failure-within-horizon labeling window
 
 def l2(model, target):
     """Computes the L2 norm between model and target.
@@ -217,6 +224,9 @@ class SafeDagger:
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
         self.ood_classifier = self._build_ood_classifier(self.config.get("ood", {}))
+        self.failure_predictor = self._build_failure_predictor(
+            self.config.get("failure_predictor", {})
+        )
         self.is_rnn = self.student_model.is_rnn()
         self.is_teacher_rnn = self.teacher_model.is_rnn()
         if self.is_rnn:
@@ -282,6 +292,47 @@ class SafeDagger:
         self.stereo = self.ov_env.cfg.simulate_stereo
         self.unsafe_mode = self.config.get("unsafe_mode", "l2")
         self.unsafe_l2_threshold = float(self.config.get("unsafe_l2_threshold", 0.5))
+        self.unsafe_l2_threshold_mode = str(
+            self.config.get("unsafe_l2_threshold_mode", "fixed")
+        ).lower()
+        self.unsafe_l2_threshold_start = float(
+            self.config.get("unsafe_l2_threshold_start", self.unsafe_l2_threshold)
+        )
+        self.unsafe_l2_threshold_end = float(
+            self.config.get("unsafe_l2_threshold_end", self.unsafe_l2_threshold)
+        )
+        anneal_iters_cfg = self.config.get(
+            "unsafe_l2_threshold_anneal_iters", self.num_iters
+        )
+        self.unsafe_l2_threshold_anneal_iters = (
+            int(anneal_iters_cfg) if anneal_iters_cfg is not None else self.num_iters
+        )
+        if self.unsafe_l2_threshold_anneal_iters <= 0:
+            self.unsafe_l2_threshold_anneal_iters = self.num_iters
+        if self.unsafe_l2_threshold_mode not in {"fixed", "anneal", "linear"}:
+            raise ValueError(
+                f"Unsupported unsafe_l2_threshold_mode: {self.unsafe_l2_threshold_mode}"
+            )
+        if self.rank == 0 and self.unsafe_mode == "l2":
+            if self.unsafe_l2_threshold_mode in {"anneal", "linear"}:
+                print(
+                    "Unsafe L2 threshold annealing enabled: "
+                    f"start={self.unsafe_l2_threshold_start}, "
+                    f"end={self.unsafe_l2_threshold_end}, "
+                    f"anneal_iters={self.unsafe_l2_threshold_anneal_iters}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Unsafe L2 threshold fixed at {self.unsafe_l2_threshold}",
+                    flush=True,
+                )
+        if self.rank == 0 and self.unsafe_mode == "failure_predictor":
+            if self.failure_predictor is None or not self.failure_predictor.enabled:
+                print(
+                    "Warning: unsafe_mode=failure_predictor but failure predictor is disabled.",
+                    flush=True,
+                )
         self.viz_imgs = False
         if self.viz_imgs:
             self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 5))
@@ -460,6 +511,7 @@ class SafeDagger:
                 # obs['img_left'][:] = real_img_left #[:, torch.arange(3 - 1, -1, -1), :, :]
                 # obs['img_right'][:] = real_img_right #[:, torch.arange(3 - 1, -1, -1), :, :]
                 actions_student = self.get_actions(obs, "student")
+                obs["ood_policy_embed"] = obs[self.student_obs_type]
                 if actions_student.get("embeds") is not None:
                     embeds = actions_student["embeds"].detach()
                     obs["ood_embed"] = embeds
@@ -560,7 +612,13 @@ class SafeDagger:
                 aux_sum_tensor = aux_sum if torch.is_tensor(aux_sum) else torch.tensor(aux_sum, device=self.device)
                 total_loss_step = imitation_loss + self.aux_coeff * aux_sum_tensor
                 total_loss += total_loss_step
-                self.unsafe = self.check_unsafe(l2_loss_per_env=l2_loss_per_env, obs=obs)
+                current_l2_threshold = self._current_unsafe_l2_threshold(log_counter)
+                self.unsafe = self.check_unsafe(
+                    l2_loss_per_env=l2_loss_per_env,
+                    obs=obs,
+                    l2_threshold=current_l2_threshold,
+                    student_action=actions_student["actions"],
+                )
                 beta = float(self.unsafe.float().mean().item())
             # pos = torch.tensor([
             #     [self.ov_env.cfg.x_center+self.ov_env.cfg.x_width/2, self.ov_env.cfg.y_center+self.ov_env.cfg.y_width/2, 0.5],
@@ -581,6 +639,7 @@ class SafeDagger:
                     l2_loss_mean,
                     mu_loss,
                     sigma_loss,
+                    current_l2_threshold,
                 )
 
             log_counter += 1
@@ -613,9 +672,27 @@ class SafeDagger:
                     dtype=stepping_actions.dtype
                 )
 
+            prev_obs = obs
             obs, rew, out_of_reach, timed_out, info = self.env.step(
                 stepping_actions.detach()
             )
+            if self.failure_predictor is not None and self.failure_predictor.enabled:
+                done_mask = out_of_reach | timed_out
+                if isinstance(info, dict):
+                    fp_info = dict(info)
+                else:
+                    fp_info = {}
+                fp_info.setdefault("out_of_reach", out_of_reach)
+                fp_info.setdefault("timed_out", timed_out)
+                fp_loss = self.failure_predictor.add_step(
+                    obs=prev_obs,
+                    action=stepping_actions.detach(),
+                    reward=rew,
+                    done=done_mask,
+                    info=fp_info,
+                )
+                if self.rank == 0 and fp_loss is not None:
+                    self.writer.add_scalar("failure_predictor/loss", float(fp_loss), self.frame)
 
             if self.rank == 0 and self.debug_dir is not None and self.stereo:
                 self._debug_sim_time += self._debug_step_dt
@@ -733,6 +810,7 @@ class SafeDagger:
         l2_loss_mean=None,
         mu_loss=None,
         sigma_loss=None,
+        unsafe_l2_threshold=None,
     ):
         if imitation_loss is None:
             imitation_loss = total_loss if aux_loss is None else total_loss - self.aux_coeff * sum(aux_loss)
@@ -785,6 +863,10 @@ class SafeDagger:
                     self.writer.add_scalar(
                         "l2_loss_mean", l2_loss_mean.detach().cpu().numpy(), self.frame
                     )
+                if unsafe_l2_threshold is not None:
+                    self.writer.add_scalar(
+                        "unsafe_l2_threshold", float(unsafe_l2_threshold), self.frame
+                    )
                 if beta > 0.95:
                     perf = self.ov_env.in_success_region.float().mean().cpu().numpy()
                 else:
@@ -801,6 +883,7 @@ class SafeDagger:
                         "beta": beta,
                         "train/unsafe_episode_rate": unsafe_episode_rate,
                         "train/intervention_rate": beta,
+                        "unsafe_l2_threshold": float(unsafe_l2_threshold) if unsafe_l2_threshold is not None else self.unsafe_l2_threshold,
                         "iteration": self.frame
                     })
                     if aux_sum is not None:
@@ -846,6 +929,8 @@ class SafeDagger:
             print("Beta: ", beta)
             if l2_loss_mean is not None:
                 print("L2 Loss Mean: ", l2_loss_mean)
+            if unsafe_l2_threshold is not None:
+                print("Unsafe L2 Threshold: ", float(unsafe_l2_threshold))
             if self.game_rewards.current_size > 0:
                 print("\tMean Rewards: ", mean_rewards)
                 print("\tMean Length: ", mean_lengths)
@@ -865,8 +950,17 @@ class SafeDagger:
         losses, _ = torch_ext.apply_masks([loss_per_env.unsqueeze(1)], rnn_masks)
         return losses[0]
 
-    def check_unsafe(self, l2_loss_per_env=None, obs=None, out_of_reach=None, timed_out=None, info=None):
-        """Unsafe logic controlled by unsafe_mode: none | l2 | ood."""
+    def check_unsafe(
+        self,
+        l2_loss_per_env=None,
+        obs=None,
+        out_of_reach=None,
+        timed_out=None,
+        info=None,
+        l2_threshold=None,
+        student_action=None,
+    ):
+        """Unsafe logic controlled by unsafe_mode: none | l2 | ood | failure_predictor."""
         if self.unsafe_mode == "none":
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if self.unsafe_mode == "ood":
@@ -875,8 +969,15 @@ class SafeDagger:
                 if unsafe is not None:
                     return unsafe
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if self.unsafe_mode == "failure_predictor":
+            if self.failure_predictor is not None and self.failure_predictor.enabled:
+                unsafe = self.failure_predictor.should_intervene(obs, student_action)
+                if unsafe is not None:
+                    return unsafe.to(device=self.device, dtype=torch.bool)
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if l2_loss_per_env is not None:
-            return l2_loss_per_env > self.unsafe_l2_threshold
+            threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
+            return l2_loss_per_env > threshold
         if isinstance(info, dict):
             if "unsafe" in info:
                 return torch.as_tensor(info["unsafe"], device=self.device, dtype=torch.bool)
@@ -885,6 +986,25 @@ class SafeDagger:
             if "in_unsafe_region" in info:
                 return torch.as_tensor(info["in_unsafe_region"], device=self.device, dtype=torch.bool)
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+    def _current_unsafe_l2_threshold(self, log_counter):
+        if self.unsafe_l2_threshold_mode in {"anneal", "linear"}:
+            denom = max(1, self.unsafe_l2_threshold_anneal_iters)
+            progress = min(max(float(log_counter), 0.0), float(denom)) / float(denom)
+            return self.unsafe_l2_threshold_start + progress * (
+                self.unsafe_l2_threshold_end - self.unsafe_l2_threshold_start
+            )
+        return self.unsafe_l2_threshold
+
+    def _build_failure_predictor(self, cfg):
+        fp_cfg = cfg or {}
+        device = str(fp_cfg.get("device", self.device))
+        return FailurePredictor(
+            fp_cfg,
+            device=device,
+            default_obs_key=self.student_obs_type,
+            rank=self.rank,
+        )
 
     def _build_ood_classifier(self, cfg):
         ood_cfg = cfg or {}

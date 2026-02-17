@@ -46,6 +46,9 @@ class FailurePredictor:
         self.batch_size = int(cfg.get("batch_size", 1024))
         self.min_samples = int(cfg.get("min_samples", 10_000))
         self.update_interval = int(cfg.get("update_interval", 1_000))
+        self.train_steps = int(cfg.get("train_steps", 1))
+        if self.train_steps <= 0:
+            self.train_steps = 1
 
         # Failure labeling config
         self.horizon_steps = int(cfg.get("horizon_steps", 1))
@@ -75,7 +78,8 @@ class FailurePredictor:
             print(
                 "FailurePredictor enabled: "
                 f"buffer_size={self.buffer_size}, min_samples={self.min_samples}, "
-                f"update_interval={self.update_interval}, horizon_steps={self.horizon_steps}, "
+                f"update_interval={self.update_interval}, train_steps={self.train_steps}, "
+                f"horizon_steps={self.horizon_steps}, "
                 f"include_current_step={self.include_current_step}"
             )
 
@@ -83,7 +87,7 @@ class FailurePredictor:
     def add_step(self, obs, action, reward=None, done=None, info=None):
         """Add a batched env step and update horizon-to-failure labels."""
         if not self.enabled:
-            return
+            return None
         x = self._build_input(obs, action)
         num_envs = x.shape[0]
         if self._num_envs is None:
@@ -129,32 +133,33 @@ class FailurePredictor:
 
         self._steps += 1
         if self._steps % self.update_interval == 0:
-            self.train_step()
+            return self.train_step()
+        return None
 
     def train_step(self):
-        """Train one step on a random batch (if enough data)."""
+        """Train one or more minibatch steps (if enough data)."""
         if not self.enabled or not self._initialized:
             return None
-        valid_mask = self._buffer_labeled.clone()
-        if self._buf_count < self.buffer_size:
-            valid_mask[self._buf_count :] = False
-        labeled_indices = torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
+        labeled_indices = self._get_labeled_indices()
         if labeled_indices.numel() < self.min_samples:
             return None
-        sample_sel = torch.randint(0, labeled_indices.numel(), (self.batch_size,))
-        idx = labeled_indices[sample_sel]
-        x = self._buffer_x[idx].to(self.device)
-        y = self._buffer_y[idx].to(self.device)
-        logits = self._model(x).squeeze(-1)
-        if self.pos_weight is not None:
-            pos_weight = torch.tensor(float(self.pos_weight), device=self.device)
-            loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
-        else:
-            loss = F.binary_cross_entropy_with_logits(logits, y)
-        self._optim.zero_grad()
-        loss.backward()
-        self._optim.step()
-        return loss.detach().item()
+        losses = []
+        for _ in range(self.train_steps):
+            sample_sel = torch.randint(0, labeled_indices.numel(), (self.batch_size,))
+            idx = labeled_indices[sample_sel]
+            x = self._buffer_x[idx].to(self.device)
+            y = self._buffer_y[idx].to(self.device)
+            logits = self._model(x).squeeze(-1)
+            if self.pos_weight is not None:
+                pos_weight = torch.tensor(float(self.pos_weight), device=self.device)
+                loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
+            else:
+                loss = F.binary_cross_entropy_with_logits(logits, y)
+            self._optim.zero_grad()
+            loss.backward()
+            self._optim.step()
+            losses.append(float(loss.detach().item()))
+        return float(sum(losses) / len(losses))
 
     def predict_risk(self, obs, action) -> torch.Tensor:
         """Return failure probability per env."""
@@ -168,6 +173,8 @@ class FailurePredictor:
     def should_intervene(self, obs, action) -> Optional[torch.Tensor]:
         """Return boolean mask for intervention based on predicted risk."""
         if not self.enabled:
+            return None
+        if self._get_labeled_indices().numel() < self.min_samples:
             return None
         probs = self.predict_risk(obs, action)
         if probs is None:
@@ -333,3 +340,11 @@ class FailurePredictor:
         if key is None or key not in obs:
             return 1
         return obs[key].shape[0]
+
+    def _get_labeled_indices(self):
+        if self._buffer_labeled is None:
+            return torch.empty((0,), dtype=torch.long, device="cpu")
+        valid_mask = self._buffer_labeled.clone()
+        if self._buf_count < self.buffer_size:
+            valid_mask[self._buf_count :] = False
+        return torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)

@@ -316,3 +316,40 @@ python .../run_distillation_safedagger.py \
   --eval_every 1000 \
   --eval_num_episodes 5 \
   --eval_objects_dir your_eval_objects_folder
+
+# threshold annealing run(for vanilla safedagger)
+python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 32 \
+  --enable_cameras \
+  --teacher multi_object_distillation \
+  --imitation_target action_distribution \
+  --loss_type kl \
+  --unsafe_mode l2 \
+  --unsafe_l2_threshold_mode anneal \
+  --unsafe_l2_threshold_start 3.0 \
+  --unsafe_l2_threshold_end 1.0 \
+  --unsafe_l2_threshold_anneal_iters 100000 \
+  --eval_every 2500 \
+  --eval_num_episodes 3 \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False
+
+# 4- safe dagger with failure predictor
+python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dextrah_tg2_inspirehand \
+  --num_envs 32 \
+  --enable_cameras \
+  --teacher multi_object_distillation \
+  --imitation_target action_distribution \
+  --loss_type kl \
+  --unsafe_mode failure_predictor \
+  --eval_every 2500 \
+  --eval_num_episodes 3 \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False
+# seems to be not working

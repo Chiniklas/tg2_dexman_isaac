@@ -85,8 +85,33 @@ parser.add_argument(
     "--unsafe_mode",
     type=str,
     default=None,
-    choices=["none", "l2", "ood"],
+    choices=["none", "l2", "ood", "failure_predictor"],
     help="Unsafe gating mode override.",
+)
+parser.add_argument(
+    "--unsafe_l2_threshold_mode",
+    type=str,
+    default=None,
+    choices=["fixed", "anneal"],
+    help="L2 unsafe threshold mode: fixed or linear anneal.",
+)
+parser.add_argument(
+    "--unsafe_l2_threshold_start",
+    type=float,
+    default=None,
+    help="Starting L2 unsafe threshold when annealing is enabled.",
+)
+parser.add_argument(
+    "--unsafe_l2_threshold_end",
+    type=float,
+    default=None,
+    help="Ending L2 unsafe threshold when annealing is enabled.",
+)
+parser.add_argument(
+    "--unsafe_l2_threshold_anneal_iters",
+    type=int,
+    default=None,
+    help="Number of training iterations over which to anneal the L2 unsafe threshold.",
 )
 
 # append AppLauncher cli args
@@ -214,14 +239,19 @@ def main(env_cfg, agent_cfg: dict):
     experiment_dir = os.path.join(train_dir, experiment_name)
     nn_dir = os.path.join(experiment_dir, "nn")
     summaries_dir = os.path.join(experiment_dir, "summaries")
+    params_dir = os.path.join(experiment_dir, "params")
 
     os.makedirs(train_dir, exist_ok=True)
     os.makedirs(experiment_dir, exist_ok=True)
     os.makedirs(nn_dir, exist_ok=True)
     os.makedirs(summaries_dir, exist_ok=True)
+    os.makedirs(params_dir, exist_ok=True)
+    print(f"[INFO] Distillation logs in directory: {os.path.abspath(experiment_dir)}")
 
     with open(student_cfg, "r") as f:
         student_cfg_yaml = yaml.safe_load(f) or {}
+    with open(teacher_cfg, "r") as f:
+        teacher_cfg_yaml = yaml.safe_load(f) or {}
     distill_cfg = (
         student_cfg_yaml.get("params", {}).get("distillation", {}) if isinstance(student_cfg_yaml, dict) else {}
     )
@@ -243,6 +273,33 @@ def main(env_cfg, agent_cfg: dict):
         "loss_type": distill_cfg.get("loss_type", None),
         "unsafe_mode": distill_cfg.get("unsafe_mode", "l2"),
         "unsafe_l2_threshold": distill_cfg.get("unsafe_l2_threshold", 0.5),
+        "unsafe_l2_threshold_mode": distill_cfg.get("unsafe_l2_threshold_mode", "fixed"),
+        "unsafe_l2_threshold_start": distill_cfg.get(
+            "unsafe_l2_threshold_start", distill_cfg.get("unsafe_l2_threshold", 0.5)
+        ),
+        "unsafe_l2_threshold_end": distill_cfg.get(
+            "unsafe_l2_threshold_end", distill_cfg.get("unsafe_l2_threshold", 0.5)
+        ),
+        "unsafe_l2_threshold_anneal_iters": distill_cfg.get(
+            "unsafe_l2_threshold_anneal_iters", None
+        ),
+        "failure_predictor": {
+            "enabled": False,
+            "obs_key": "ood_policy_embed",
+            "hidden_sizes": [256, 128],
+            "lr": 1e-3,
+            "dropout": 0.0,
+            "buffer_size": 100_000,
+            "batch_size": 1024,
+            "min_samples": 10_000,
+            "update_interval": 1_000,
+            "train_steps": 1,
+            "horizon_steps": 1,
+            "failure_threshold": 0.5,
+            "include_current_step": False,
+            "pos_weight": None,
+            "device": "cpu",
+        },
         "ood": {
             "enabled": False,
             "type": "gaussian", # gaussian # pca # mlp
@@ -258,6 +315,8 @@ def main(env_cfg, agent_cfg: dict):
         "eval_max_steps": args_cli.eval_max_steps,
         "eval_lift_hold_s": distill_cfg.get("eval_lift_hold_s", 0.5),
     }
+    if isinstance(distill_cfg.get("failure_predictor", None), dict):
+        dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])
     if isinstance(distill_cfg.get("ood", None), dict):
         dagger_config["ood"].update(distill_cfg["ood"])
     if args_cli.imitation_target is not None:
@@ -266,12 +325,51 @@ def main(env_cfg, agent_cfg: dict):
         dagger_config["loss_type"] = args_cli.loss_type
     if args_cli.unsafe_mode is not None:
         dagger_config["unsafe_mode"] = args_cli.unsafe_mode
-        if args_cli.unsafe_mode == "ood":
-            dagger_config["ood"]["enabled"] = True
-        elif args_cli.unsafe_mode in {"none", "l2"}:
-            dagger_config["ood"]["enabled"] = False
+    mode = dagger_config["unsafe_mode"]
+    if mode == "ood":
+        dagger_config["ood"]["enabled"] = True
+        dagger_config["failure_predictor"]["enabled"] = False
+    elif mode == "failure_predictor":
+        dagger_config["failure_predictor"]["enabled"] = True
+        dagger_config["ood"]["enabled"] = False
+    elif mode in {"none", "l2"}:
+        dagger_config["ood"]["enabled"] = False
+        dagger_config["failure_predictor"]["enabled"] = False
+    if args_cli.unsafe_l2_threshold_mode is not None:
+        dagger_config["unsafe_l2_threshold_mode"] = args_cli.unsafe_l2_threshold_mode
+    if args_cli.unsafe_l2_threshold_start is not None:
+        dagger_config["unsafe_l2_threshold_start"] = args_cli.unsafe_l2_threshold_start
+    if args_cli.unsafe_l2_threshold_end is not None:
+        dagger_config["unsafe_l2_threshold_end"] = args_cli.unsafe_l2_threshold_end
+    if args_cli.unsafe_l2_threshold_anneal_iters is not None:
+        dagger_config["unsafe_l2_threshold_anneal_iters"] = args_cli.unsafe_l2_threshold_anneal_iters
     if args_cli.eval_lift_hold_s is not None:
         dagger_config["eval_lift_hold_s"] = args_cli.eval_lift_hold_s
+
+    # Save run metadata/config snapshots in the same style as rl_games train logs.
+    run_meta = {
+        "timestamp": datetime.now().isoformat(),
+        "entrypoint": os.path.abspath(__file__),
+        "cwd": os.getcwd(),
+        "task": args_cli.task,
+        "experiment_dir": os.path.abspath(experiment_dir),
+        "student_cfg_path": student_cfg,
+        "teacher_cfg_path": teacher_cfg,
+        "args_cli": vars(args_cli),
+        "hydra_args": hydra_args,
+    }
+    dump_yaml(os.path.join(params_dir, "env.yaml"), env_cfg)
+    dump_pickle(os.path.join(params_dir, "env.pkl"), env_cfg)
+    dump_yaml(os.path.join(params_dir, "student_agent.yaml"), student_cfg_yaml)
+    dump_pickle(os.path.join(params_dir, "student_agent.pkl"), student_cfg_yaml)
+    dump_yaml(os.path.join(params_dir, "teacher_agent.yaml"), teacher_cfg_yaml)
+    dump_pickle(os.path.join(params_dir, "teacher_agent.pkl"), teacher_cfg_yaml)
+    dump_yaml(os.path.join(params_dir, "dagger.yaml"), dagger_config)
+    dump_pickle(os.path.join(params_dir, "dagger.pkl"), dagger_config)
+    dump_yaml(os.path.join(params_dir, "run_meta.yaml"), run_meta)
+    dump_pickle(os.path.join(params_dir, "run_meta.pkl"), run_meta)
+    with open(os.path.join(params_dir, "hydra_overrides.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(hydra_args))
 
     model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)
 
