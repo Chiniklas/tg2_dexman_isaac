@@ -14,6 +14,7 @@ Deployment-specific difference:
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -80,7 +81,16 @@ class AprilTagDetectorNode:
         self.log_camera_pose = bool(rospy.get_param("~log_camera_pose", True))
         self.debug_view = bool(rospy.get_param("~debug_view", False))
         self.debug_window_name = rospy.get_param("~debug_window_name", "AprilTag Detection")
+        self.input_reflip = rospy.get_param("~input_reflip", "none").strip().lower()
         self.debug_display_flip = rospy.get_param("~debug_display_flip", "none").strip().lower()
+        if self.input_reflip not in {"none", "vertical", "horizontal", "both"}:
+            raise ValueError("~input_reflip must be one of: none, vertical, horizontal, both")
+        if self.debug_display_flip not in {"none", "vertical", "horizontal", "both"}:
+            raise ValueError("~debug_display_flip must be one of: none, vertical, horizontal, both")
+        self._debug_frame_count = 0
+        self._debug_fps = 0.0
+        self._debug_t_prev = time.time()
+        self._checked_intrinsic_vs_image = False
 
         self.bridge = CvBridge()
 
@@ -120,6 +130,14 @@ class AprilTagDetectorNode:
             self.tag_dictionary_name,
             self.tag_size,
             self.intrinsics_npz,
+        )
+        rospy.loginfo(
+            "Detection uses image after input_reflip=%s. debug_display_flip=%s is visualization-only.",
+            self.input_reflip,
+            self.debug_display_flip,
+        )
+        rospy.loginfo(
+            "Pipeline: raw image -> input_reflip -> detect/solvePnP -> publish TF/poses -> debug display flip."
         )
 
     @staticmethod
@@ -247,21 +265,54 @@ class AprilTagDetectorNode:
             yaw = 0.0
         return float(np.degrees(roll)), float(np.degrees(pitch)), float(np.degrees(yaw))
 
-    def _apply_debug_display_flip(self, frame: np.ndarray) -> np.ndarray:
-        if self.debug_display_flip == "vertical":
+    @staticmethod
+    def _apply_flip(frame: np.ndarray, mode: str) -> np.ndarray:
+        if mode == "vertical":
             return cv2.flip(frame, 0)
-        if self.debug_display_flip == "horizontal":
+        if mode == "horizontal":
             return cv2.flip(frame, 1)
-        if self.debug_display_flip == "both":
+        if mode == "both":
             return cv2.flip(frame, -1)
         return frame
+
+    def _apply_debug_display_flip(self, frame: np.ndarray) -> np.ndarray:
+        return self._apply_flip(frame, self.debug_display_flip)
+
+    def _flip_point_for_display(self, x: int, y: int, width: int, height: int) -> tuple[int, int]:
+        if self.debug_display_flip == "vertical":
+            return x, height - 1 - y
+        if self.debug_display_flip == "horizontal":
+            return width - 1 - x, y
+        if self.debug_display_flip == "both":
+            return width - 1 - x, height - 1 - y
+        return x, y
 
     def _image_cb(self, msg: Image) -> None:
         if self.camera_matrix is None or self.dist_coeffs is None:
             rospy.logwarn_throttle(5.0, "No intrinsics loaded; skipping tag detection.")
             return
 
+        if not self._checked_intrinsic_vs_image:
+            cx = float(self.camera_matrix[0, 2])
+            cy = float(self.camera_matrix[1, 2])
+            w = float(msg.width)
+            h = float(msg.height)
+            if w > 0 and h > 0:
+                if abs(cx - (w * 0.5)) > (0.2 * w) or abs(cy - (h * 0.5)) > (0.2 * h):
+                    rospy.logwarn(
+                        "Possible intrinsic/image mismatch: image=%dx%d but principal point=(%.1f, %.1f). "
+                        "Check stream resolution/flip against calibration file.",
+                        msg.width,
+                        msg.height,
+                        cx,
+                        cy,
+                    )
+            self._checked_intrinsic_vs_image = True
+
         frame, gray = self._to_gray(msg)
+        if self.input_reflip != "none":
+            frame = self._apply_flip(frame, self.input_reflip)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corners, ids, _ = self._detect(gray)
 
         pose_array = PoseArray()
@@ -269,6 +320,7 @@ class AprilTagDetectorNode:
         pose_array.header.frame_id = self.camera_frame or msg.header.frame_id
         ids_msg = Int32MultiArray()
         ids_msg.data = []
+        pending_text: list[tuple[str, int, int, tuple[int, int, int]]] = []
 
         if ids is not None and len(ids) > 0:
             cv2.aruco.drawDetectedMarkers(frame, corners, ids)
@@ -304,6 +356,15 @@ class AprilTagDetectorNode:
                 rot, _ = cv2.Rodrigues(rvec)
                 roll_deg, pitch_deg, yaw_deg = self._rotation_matrix_to_rpy_deg(rot)
                 quat_wxyz = self._rotation_matrix_to_quaternion_wxyz(rot)
+                cxy = marker_corners.reshape(-1, 2).mean(axis=0).astype(int)
+                pending_text.append(
+                    (
+                        f"id={tag_id} d={distance:.2f}m z={position[2]:.2f}m",
+                        int(cxy[0]) - 40,
+                        int(cxy[1]) - 10,
+                        (0, 255, 0),
+                    )
+                )
 
                 pose = Pose()
                 pose.position.x = float(position[0])
@@ -370,7 +431,44 @@ class AprilTagDetectorNode:
             self.tag_ids_pub.publish(ids_msg)
 
         if self.debug_view:
-            cv2.imshow(self.debug_window_name, self._apply_debug_display_flip(frame))
+            self._debug_frame_count += 1
+            t_now = time.time()
+            dt = t_now - self._debug_t_prev
+            if dt >= 0.5:
+                self._debug_fps = self._debug_frame_count / dt
+                self._debug_frame_count = 0
+                self._debug_t_prev = t_now
+
+            status = (
+                f"{self.family_label}"
+                + (f":{self.tag_id_filter}" if self.tag_id_filter >= 0 else ":*")
+                + f" | detections={len(ids_msg.data)} | fps={self._debug_fps:.1f}"
+            )
+            frame_display = self._apply_debug_display_flip(frame)
+            h, w = frame_display.shape[:2]
+            for text, x, y, color in pending_text:
+                tx, ty = self._flip_point_for_display(x, y, w, h)
+                cv2.putText(
+                    frame_display,
+                    text,
+                    (tx, ty),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+            cv2.putText(
+                frame_display,
+                status,
+                (8, 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imshow(self.debug_window_name, frame_display)
             cv2.waitKey(1)
 
 

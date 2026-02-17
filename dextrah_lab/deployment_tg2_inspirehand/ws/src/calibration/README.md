@@ -34,7 +34,9 @@ This package contains camera-to-robot calibration scripts and test utilities for
 1. Start stereo camera publisher:
 
 ```bash
-roslaunch stereo_camera stereo_ros_publisher.launch
+roslaunch stereo_camera stereo_ros_publisher.launch \
+  width:=1280 \
+  height:=720
 ```
 
 2. Start AprilTag detector (example):
@@ -43,11 +45,12 @@ roslaunch stereo_camera stereo_ros_publisher.launch
 rosrun calibration april_tag_detector.py \
   _image_topic:=/stereo/left/image_raw \
   _tag_family:=tag25h9 \
-  _tag_id:=0 \
+  _tag_id:=-1 \
   _tag_size:=0.10 \
   _camera_frame:=stereo_left \
   _intrinsics_npz:=/tiangong_infra_ws/ws/src/stereo_camera/tests/calibration/jetson_stereo.npz \
   _intrinsics_camera:=left \
+  _input_reflip:=none \
   _debug_view:=true \
   _debug_display_flip:=none
 ```
@@ -56,7 +59,16 @@ Notes:
 - `_intrinsics_npz` is required.
 - If loading `_intrinsics_npz` fails, the detector raises an error and exits (no `/camera_info` fallback).
 - Detector default family is `tag25h9`.
+- Detector default `tag_id` is `-1` (detect all tag IDs).
+- `input_reflip` is applied before detection/pose. Use it only to undo upstream image flips.
 - `debug_display_flip` only affects the debug window rendering; detection/pose uses the original image.
+- Use stream settings matching calibration intrinsics. For `jetson_stereo.npz`, validate first with `flip:=none` and `1280x720`.
+- Resolution must match the calibration file. Example: if `jetson_stereo.npz` was calibrated at `1280x720` but the stream runs at `320x240`, pose scale can be wrong (distance often appears ~4x too large).
+- Quick check:
+  - `rostopic echo -n 1 /stereo/left/image_raw | grep -E "width|height"`
+- If mismatched:
+  - relaunch stereo publisher with matching size (`width:=1280 height:=720`), or
+  - recalibrate and use an intrinsics file generated for the current stream resolution.
 
 3. Run calibration:
 
@@ -79,10 +91,44 @@ Output:
 ```bash
 cd /tiangong_infra_ws/ws/src/calibration/tests
 python3 test_stereo_camera_node.py --left-topic /stereo/left/image_raw --right-topic /stereo/right/image_raw
-python3 test_april_tag_detection.py --tag-family tag25h9 --tag-id 0 --tag-size 0.10
+
+python3 test_april_tag_detection.py --tag-family tag25h9 --tag-id -1 --tag-size 0.10
+
 python3 test_pure_apriltag_detection.py --tag-family tag25h9 --tag-id -1 --tag-size 0.10 \
   --intrinsics-npz /tiangong_infra_ws/ws/src/stereo_camera/tests/calibration/jetson_stereo.npz \
   --intrinsics-camera left
 ```
 
 Use `--no-stereo` if camera publisher is already running. Use `--no-camera-info` if real `CameraInfo` is already available.
+
+## Pure Test (Direct Camera Access)
+
+`test_pure_apriltag_detection.py` opens the camera devices directly (`/dev/video*`), so it cannot run at the same time as `stereo_ros_publisher`.
+
+Stop ROS stereo publisher first:
+
+```bash
+pkill -f stereo_ros_publisher.py
+```
+
+Then run:
+
+```bash
+cd /tiangong_infra_ws/ws/src/calibration/tests
+python3 test_pure_apriltag_detection.py \
+  --left-config ov9732_L \
+  --width 1280 \
+  --height 720 \
+  --tag-family tag25h9 \
+  --tag-id -1 \
+  --tag-size 0.10 \
+  --flip none \
+  --intrinsics-npz /tiangong_infra_ws/ws/src/stereo_camera/tests/calibration/jetson_stereo.npz \
+  --intrinsics-camera left
+```
+
+If camera open fails, check which process is holding the devices:
+
+```bash
+lsof /dev/video0 /dev/video2
+```

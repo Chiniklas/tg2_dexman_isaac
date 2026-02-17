@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
-"""
-Launch the stereo camera stream and verify AprilTag detection via TF.
+"""Integration test: launch stereo camera + AprilTag detector and wait for detections.
 
-This helper script:
-1. Optionally launches the stereo ROS publisher (left/right image streams).
-2. Launches the AprilTag detector node.
-3. Optionally publishes CameraInfo for visualization tools (detector itself uses intrinsics from .npz).
-4. Listens on /tf for the requested tag frame and exits when detected.
+This script intentionally launches both components:
+1. `stereo_ros_publisher.py`
+2. `april_tag_detector.py`
 
-Usage (from a sourced ROS1 environment with `roscore` running):
-    python test_april_tag_detection.py \
-      --image-topic /stereo/left/image_raw \
-      --camera-info-topic /stereo/left/camera_info \
-      --tag-family tag25h9 --tag-id 0 --tag-size 0.10
+Then it monitors detection topics and exits success when the requested tag appears.
 """
 
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import signal
 import subprocess
@@ -27,113 +19,45 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import rospy
-from sensor_msgs.msg import CameraInfo, Image
-from tf2_msgs.msg import TFMessage
+from sensor_msgs.msg import Image
+from std_msgs.msg import Int32MultiArray
 
 
-class CameraInfoPublisher:
-    def __init__(
-        self,
-        image_topic: str,
-        camera_info_topic: str,
-        camera_frame: str,
-        hfov_deg: float,
-        intrinsic_k: Optional[np.ndarray] = None,
-        intrinsic_d: Optional[np.ndarray] = None,
-    ) -> None:
-        self._camera_info_topic = camera_info_topic
-        self._camera_frame = camera_frame
-        self._hfov_deg = hfov_deg
-        self._intrinsic_k = intrinsic_k
-        self._intrinsic_d = intrinsic_d
-        self._pub = rospy.Publisher(camera_info_topic, CameraInfo, queue_size=1, latch=True)
-        self._sub = rospy.Subscriber(image_topic, Image, self._image_cb, queue_size=1)
-        self._published = False
+class StreamInfoWatcher:
+    """Track incoming image dimensions for debug/status output."""
 
-    def _image_cb(self, msg: Image) -> None:
-        if self._published:
-            return
-        width = int(msg.width)
-        height = int(msg.height)
-        if width <= 0 or height <= 0:
-            return
+    def __init__(self, image_topic: str) -> None:
+        self.width: Optional[int] = None
+        self.height: Optional[int] = None
+        self.msg_count = 0
+        self._sub = rospy.Subscriber(image_topic, Image, self._cb, queue_size=1)
 
-        cam_info = CameraInfo()
-        cam_info.header.stamp = msg.header.stamp
-        cam_info.header.frame_id = self._camera_frame or msg.header.frame_id
-        cam_info.width = width
-        cam_info.height = height
-        cam_info.distortion_model = "plumb_bob"
-
-        if self._intrinsic_k is not None and self._intrinsic_d is not None:
-            cam_info.D = [float(v) for v in self._intrinsic_d.reshape(-1).tolist()]
-            cam_info.K = [float(v) for v in self._intrinsic_k.reshape(-1).tolist()]
-            rospy.loginfo(
-                "Published CameraInfo to %s from calibration intrinsics (%.0fx%.0f image stream)",
-                self._camera_info_topic,
-                width,
-                height,
-            )
-        else:
-            hfov_rad = math.radians(self._hfov_deg)
-            fx = width / (2.0 * math.tan(hfov_rad / 2.0))
-            fy = fx
-            cx = width / 2.0
-            cy = height / 2.0
-            cam_info.D = [0.0, 0.0, 0.0, 0.0, 0.0]
-            cam_info.K = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
-            rospy.loginfo(
-                "Published synthetic CameraInfo to %s (%.0fx%.0f, hfov=%.1f deg)",
-                self._camera_info_topic,
-                width,
-                height,
-                self._hfov_deg,
-            )
-        cam_info.R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        cam_info.P = [
-            cam_info.K[0],
-            0.0,
-            cam_info.K[2],
-            0.0,
-            0.0,
-            cam_info.K[4],
-            cam_info.K[5],
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-        ]
-        self._pub.publish(cam_info)
-        self._published = True
+    def _cb(self, msg: Image) -> None:
+        self.width = int(msg.width)
+        self.height = int(msg.height)
+        self.msg_count += 1
 
 
 class TagDetectionWatcher:
-    def __init__(self, tag_family: str, tag_id: int) -> None:
-        self._tag_family = tag_family
-        self._tag_id = tag_id
-        self.detected = False
-        self.last_child_frame: Optional[str] = None
-        self._sub = rospy.Subscriber("/tf", TFMessage, self._tf_cb, queue_size=10)
+    """Watch /tag_detection_ids and report when desired tag appears."""
 
-    def _tf_cb(self, msg: TFMessage) -> None:
+    def __init__(self, target_tag_id: int) -> None:
+        self.target_tag_id = target_tag_id
+        self.detected = False
+        self.ever_detected = False
+        self.last_ids: list[int] = []
+        self._sub = rospy.Subscriber("/tag_detection_ids", Int32MultiArray, self._cb, queue_size=10)
+
+    def _cb(self, msg: Int32MultiArray) -> None:
+        ids = [int(v) for v in msg.data]
+        self.last_ids = ids
+        if self.target_tag_id < 0:
+            self.detected = len(ids) > 0
+        else:
+            self.detected = self.target_tag_id in ids
         if self.detected:
-            return
-        for transform in msg.transforms:
-            child = transform.child_frame_id
-            if self._tag_id >= 0:
-                expected = f"{self._tag_family}:{self._tag_id}"
-                if child != expected:
-                    continue
-            else:
-                if not child.startswith(f"{self._tag_family}:"):
-                    continue
-            self.last_child_frame = child
-            self.detected = True
-            rospy.loginfo("Detected tag frame on /tf: %s", child)
-            return
+            self.ever_detected = True
 
 
 def _build_env(ws_src: Path) -> dict:
@@ -147,16 +71,16 @@ def _build_env(ws_src: Path) -> dict:
 
 
 def _start_process(cmd: list[str], env: dict) -> subprocess.Popen:
-    return subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    return subprocess.Popen(cmd, env=env)
 
 
 def _find_ws_src(start: Path) -> Path:
     for candidate in [start, *start.parents]:
-        stereo_script = candidate / "stereo_camera" / "scripts" / "stereo_ros_publisher.py"
-        if stereo_script.exists():
+        direct = candidate / "stereo_camera" / "scripts" / "stereo_ros_publisher.py"
+        if direct.exists():
             return candidate
-        stereo_script = candidate / "src" / "stereo_camera" / "scripts" / "stereo_ros_publisher.py"
-        if stereo_script.exists():
+        via_src = candidate / "src" / "stereo_camera" / "scripts" / "stereo_ros_publisher.py"
+        if via_src.exists():
             return candidate / "src"
     raise FileNotFoundError(
         f"Could not locate stereo_ros_publisher.py by searching from {start}. "
@@ -169,69 +93,64 @@ def _find_calibration_dir(start: Path) -> Path:
         direct = candidate / "calibration"
         if (direct / "april_tag_detector.py").exists():
             return direct
-        src = candidate / "src" / "calibration"
-        if (src / "april_tag_detector.py").exists():
-            return src
+        via_src = candidate / "src" / "calibration"
+        if (via_src / "april_tag_detector.py").exists():
+            return via_src
     raise FileNotFoundError(
         f"Could not locate april_tag_detector.py by searching from {start}. "
         "Expected path: <ws>/src/calibration/april_tag_detector.py"
     )
 
 
-def _load_intrinsics_from_npz(npz_path: Path, use_right_camera: bool) -> tuple[np.ndarray, np.ndarray]:
-    if not npz_path.exists():
-        raise FileNotFoundError(f"Intrinsic file not found: {npz_path}")
-
-    calib = np.load(npz_path)
-    if use_right_camera:
-        key_k_candidates = ("k2", "k")
-        key_d_candidates = ("d2", "d")
-    else:
-        key_k_candidates = ("k1", "k")
-        key_d_candidates = ("d1", "d")
-
-    key_k = next((k for k in key_k_candidates if k in calib), None)
-    key_d = next((k for k in key_d_candidates if k in calib), None)
-    if key_k is None or key_d is None:
-        raise KeyError(
-            f"Could not find intrinsic keys in {npz_path}. "
-            f"Expected one of {key_k_candidates} and {key_d_candidates}."
-        )
-
-    k = np.array(calib[key_k], dtype=np.float64).reshape(3, 3)
-    d = np.array(calib[key_d], dtype=np.float64).reshape(1, -1)
-    return k, d
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launch stereo stream + AprilTag detector and wait for /tf tag.")
-    parser.add_argument("--image-topic", default="/stereo/left/image_raw")
-    parser.add_argument("--right-image-topic", default="/stereo/right/image_raw")
-    parser.add_argument("--camera-info-topic", default="/stereo/left/camera_info")
-    parser.add_argument("--camera-frame", default="")
+    parser = argparse.ArgumentParser(
+        description="Launch stereo camera + AprilTag detector and wait for detection."
+    )
+
+    # Stereo camera launch settings
+    parser.add_argument("--left-config", default="ov9732_L")
+    parser.add_argument("--right-config", default="ov9732_R")
+    parser.add_argument("--left-topic", default="/stereo/left/image_raw")
+    parser.add_argument("--right-topic", default="/stereo/right/image_raw")
+    parser.add_argument("--left-frame", default="stereo_left")
+    parser.add_argument("--right-frame", default="stereo_right")
+    parser.add_argument("--flip", default="none", choices=["none", "vertical", "horizontal", "both"])
+    parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--rate", type=float, default=0.0, help="Optional publish rate limit (Hz). 0 disables.")
+
+    # Detector settings
     parser.add_argument("--tag-family", default="tag25h9")
     parser.add_argument("--tag-id", type=int, default=-1)
     parser.add_argument("--tag-size", type=float, default=0.10)
-    parser.add_argument("--hfov-deg", type=float, default=90.0)
-    parser.add_argument("--timeout", type=float, default=20.0)
-    parser.add_argument("--no-camera-info", action="store_true", help="Do not publish CameraInfo from this helper.")
+    parser.add_argument("--camera-frame", default="stereo_left")
+    parser.add_argument("--intrinsics-npz", default="")
+    parser.add_argument("--intrinsics-camera", default="left", choices=["left", "right", "auto"])
     parser.add_argument(
-        "--synthetic-camera-info",
-        action="store_true",
-        help="Force synthetic CameraInfo (ignore saved calibration intrinsics).",
+        "--input-reflip",
+        default="none",
+        choices=["none", "vertical", "horizontal", "both"],
+        help="Undo upstream image flip before detection.",
     )
     parser.add_argument(
-        "--intrinsics-npz",
-        default="",
+        "--debug-display-flip",
+        default="auto",
+        choices=["auto", "none", "vertical", "horizontal", "both"],
         help=(
-            "Path to calibration .npz for CameraInfo intrinsics. "
-            "If empty, defaults to <ws>/src/stereo_camera/tests/calibration/jetson_stereo.npz."
+            "Flip detector debug window display only. "
+            "'auto' matches --input-reflip so view is usually upright."
         ),
     )
-    parser.add_argument("--no-stereo", action="store_true", help="Do not launch the stereo ROS publisher.")
-    parser.add_argument("--left-config", default="ov9732_L")
-    parser.add_argument("--right-config", default="ov9732_R")
-    parser.add_argument("--flip", default="none", choices=["none", "vertical", "horizontal", "both"])
+    parser.add_argument("--debug-view", action="store_true", help="Enable detector OpenCV debug window.")
+
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=0.0,
+        help="Optional max runtime in seconds. <=0 means run until Ctrl+C.",
+    )
+    parser.add_argument("--startup-wait", type=float, default=2.0, help="Seconds to wait after launching nodes.")
     return parser.parse_args()
 
 
@@ -245,81 +164,109 @@ def main() -> int:
     detector_script = calibration_dir / "april_tag_detector.py"
     default_intrinsics_path = ws_src / "stereo_camera" / "tests" / "calibration" / "jetson_stereo.npz"
 
+    if not stereo_script.exists():
+        raise FileNotFoundError(f"Stereo publisher script not found: {stereo_script}")
     if not detector_script.exists():
-        raise FileNotFoundError(f"AprilTag detector not found: {detector_script}")
+        raise FileNotFoundError(f"AprilTag detector script not found: {detector_script}")
+
+    intrinsics_path = Path(args.intrinsics_npz) if args.intrinsics_npz else default_intrinsics_path
+    if not intrinsics_path.exists():
+        raise FileNotFoundError(f"Intrinsic file not found: {intrinsics_path}")
 
     env = _build_env(ws_src)
-
     procs: list[subprocess.Popen] = []
+
     try:
-        if not args.no_stereo:
-            if not stereo_script.exists():
-                raise FileNotFoundError(f"Stereo publisher not found: {stereo_script}")
-            stereo_cmd = [
-                sys.executable,
-                str(stereo_script),
-                "--left-topic",
-                args.image_topic,
-                "--right-topic",
-                args.right_image_topic,
-                "--left-config",
-                args.left_config,
-                "--right-config",
-                args.right_config,
-                "--flip",
-                args.flip,
-            ]
-            procs.append(_start_process(stereo_cmd, env))
-            time.sleep(1.0)
+        rospy.init_node("test_april_tag_detection", anonymous=True)
+
+        stereo_cmd = [
+            sys.executable,
+            str(stereo_script),
+            "--left-config",
+            args.left_config,
+            "--right-config",
+            args.right_config,
+            "--left-topic",
+            args.left_topic,
+            "--right-topic",
+            args.right_topic,
+            "--left-frame",
+            args.left_frame,
+            "--right-frame",
+            args.right_frame,
+            "--flip",
+            args.flip,
+            "--width",
+            str(args.width),
+            "--height",
+            str(args.height),
+            "--fps",
+            str(args.fps),
+        ]
+        if args.rate > 0.0:
+            stereo_cmd.extend(["--rate", str(args.rate)])
+        rospy.loginfo("Launching stereo publisher: %s", " ".join(stereo_cmd))
+        procs.append(_start_process(stereo_cmd, env))
+
+        debug_display_flip = args.debug_display_flip
+        if debug_display_flip == "auto":
+            debug_display_flip = args.input_reflip
 
         detector_cmd = [
             sys.executable,
             str(detector_script),
-            f"_image_topic:={args.image_topic}",
+            f"_image_topic:={args.left_topic}",
             f"_tag_family:={args.tag_family}",
             f"_tag_id:={args.tag_id}",
             f"_tag_size:={args.tag_size}",
+            f"_camera_frame:={args.camera_frame}",
+            f"_intrinsics_npz:={intrinsics_path}",
+            f"_intrinsics_camera:={args.intrinsics_camera}",
+            f"_input_reflip:={args.input_reflip}",
+            f"_debug_view:={str(bool(args.debug_view)).lower()}",
+            f"_debug_display_flip:={debug_display_flip}",
         ]
-        detector_intrinsics_path = Path(args.intrinsics_npz) if args.intrinsics_npz else default_intrinsics_path
-        detector_intrinsics_camera = "right" if "/right/" in args.image_topic else "left"
-        detector_cmd.append(f"_intrinsics_npz:={detector_intrinsics_path}")
-        detector_cmd.append(f"_intrinsics_camera:={detector_intrinsics_camera}")
-        if args.camera_frame:
-            detector_cmd.append(f"_camera_frame:={args.camera_frame}")
+        rospy.loginfo("Launching detector: %s", " ".join(detector_cmd))
         procs.append(_start_process(detector_cmd, env))
 
-        rospy.init_node("test_april_tag_detection", anonymous=True)
-        if not args.no_camera_info:
-            intrinsic_k = None
-            intrinsic_d = None
-            if not args.synthetic_camera_info:
-                intrinsic_path = Path(args.intrinsics_npz) if args.intrinsics_npz else default_intrinsics_path
-                use_right = "/right/" in args.image_topic
-                intrinsic_k, intrinsic_d = _load_intrinsics_from_npz(
-                    intrinsic_path, use_right_camera=use_right
-                )
-                rospy.loginfo("Loaded calibration intrinsics from %s", intrinsic_path)
+        time.sleep(max(args.startup_wait, 0.0))
 
-            CameraInfoPublisher(
-                image_topic=args.image_topic,
-                camera_info_topic=args.camera_info_topic,
-                camera_frame=args.camera_frame,
-                hfov_deg=args.hfov_deg,
-                intrinsic_k=intrinsic_k,
-                intrinsic_d=intrinsic_d,
-            )
-        watcher = TagDetectionWatcher(args.tag_family, args.tag_id)
+        stream = StreamInfoWatcher(args.left_topic)
+        watcher = TagDetectionWatcher(args.tag_id)
 
         start = time.time()
+        last_log = 0.0
+        last_detect_log = 0.0
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            if watcher.detected:
-                return 0
-            if (time.time() - start) > args.timeout:
-                rospy.logerr("Timed out waiting for tag detection on /tf.")
+            now = time.time()
+            if watcher.detected and (now - last_detect_log >= 1.0):
+                last_detect_log = now
+                rospy.loginfo("Detected tag IDs on /tag_detection_ids: %s", watcher.last_ids)
+
+            if now - last_log >= 2.0:
+                last_log = now
+                dim = "unknown"
+                if stream.width is not None and stream.height is not None:
+                    dim = f"{stream.width}x{stream.height}"
+                rospy.loginfo(
+                    "Running... image=%s msgs=%d ids=%s detected_once=%s",
+                    dim,
+                    stream.msg_count,
+                    watcher.last_ids,
+                    watcher.ever_detected,
+                )
+
+            if args.timeout > 0.0 and (now - start) > args.timeout:
+                if watcher.ever_detected:
+                    rospy.loginfo("Reached timeout after successful detections.")
+                    return 0
+                rospy.logerr("Reached timeout without detections on /tag_detection_ids.")
                 return 1
+
             rate.sleep()
-        return 1
+
+        return 0 if watcher.ever_detected else 1
     finally:
         for proc in procs:
             try:
