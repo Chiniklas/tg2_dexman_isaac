@@ -9,6 +9,9 @@
   <arg name="max_fails" default="5"/>
   <arg name="reconnect_wait" default="1.0"/>
   <arg name="rate" default=""/>
+  <arg name="width" default="320"/>
+  <arg name="height" default="240"/>
+  <arg name="fps" default=""/>
 
   <node pkg="stereo_camera" type="stereo_ros_publisher.py" name="stereo_ros_publisher" output="screen">
     <param name="left_config" value="$(arg left_config)"/>
@@ -21,5 +24,8 @@
     <param name="max_fails" value="$(arg max_fails)"/>
     <param name="reconnect_wait" value="$(arg reconnect_wait)"/>
     <param name="rate" value="$(arg rate)"/>
+    <param name="width" value="$(arg width)"/>
+    <param name="height" value="$(arg height)"/>
+    <param name="fps" value="$(arg fps)"/>
   </node>
 </launch>

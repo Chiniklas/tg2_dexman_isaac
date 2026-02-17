@@ -143,6 +143,15 @@ def _maybe_float(value):
         return None
 
 
+def _maybe_int(value):
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def main() -> int:
     args = parse_args()
     rospy.init_node("stereo_ros_publisher")
@@ -159,9 +168,9 @@ def main() -> int:
     rate_hz = _maybe_float(_param("rate", args.rate))
     device_left = _param("device_left", args.device_left)
     device_right = _param("device_right", args.device_right)
-    width = _param("width", args.width)
-    height = _param("height", args.height)
-    fps = _param("fps", args.fps)
+    width = _maybe_int(_param("width", args.width))
+    height = _maybe_int(_param("height", args.height))
+    fps = _maybe_int(_param("fps", args.fps))
 
     pub = StereoRosPublisher(
         left_config=left_config,

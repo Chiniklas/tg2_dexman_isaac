@@ -15,7 +15,9 @@ This deployment uses a ROS1 Noetic container (see `Dockerfile` + `docker-compose
 1. Robot side (192.168.41.1)
 
 ```bash
-ssh ubuntu@192.168.41.1   # or open the robot console
+ssh ubuntu@192.168.41.1 
+sudo su
+# both passwords are tg2TUM2025
 source /home/ubuntu/rosws/install_isolated/setup.bash
 
 export ROS_MASTER_URI=http://192.168.41.1:11311
@@ -34,7 +36,7 @@ Reminder: every robot-side terminal must export the same `ROS_MASTER_URI` and `R
 2. Host workstation (192.168.41.108) — build the Docker image once:
 
 ```bash
-cd ~/projects/tiangong_infra_ws
+cd ~/projects/tg2_dexman_isaac/dextrah_lab/deployment_tg2_inspirehand
 ./scripts/build.sh
 ```
 
@@ -63,7 +65,7 @@ Reminder: each new shell in the container must export `ROS_MASTER_URI` and `ROS_
 4. Build and source the catkin workspace:
 
 ```bash
-cd /tiangong_infra_ws/ws/tg2_ws
+cd /tiangong_infra_ws/ws
 catkin_make
 source devel/setup.bash
 ```
@@ -81,17 +83,99 @@ You should now see the robot’s topics from the container.
 
 Single-arm feedback control bridge (fake controller → real arm).
 
-To publish the planned trajectory to the robot, launch the arm feedback bridge:
+To publish `sensor_msgs/JointState` commands to the robot, launch the bridge:
 
 ```bash
-roslaunch tg2_moveit_config arm_feedback_control_bridge.launch \
+roslaunch feedback_control_bridge feedback_control_bridge.launch \
   arm_side:=right \
-  fake_execute_topic:=/execute_trajectory/goal \
+  input_joint_state_topic:=/arm/command_joint_states \
   command_topic:=/arm/cmd_pos \
+  status_topic:=/arm/status \
   default_velocity_rpm:=10.0 \
   velocity_rpm:="[15,15,15,15,15,15,15]"
 ```
 
+## Camera node launch
+
+Launch the stereo camera ROS1 publisher from inside the running container:
+
+```bash
+cd /tiangong_infra_ws/ws
+catkin_make
+source devel/setup.bash
+roslaunch stereo_camera stereo_ros_publisher.launch
+```
+
+Default launch resolution is `320x240` (matching the distillation pipeline input size).
+
+Default topics:
+- `/stereo/left/image_raw`
+- `/stereo/right/image_raw`
+
+Quick checks:
+
+```bash
+rostopic list | grep stereo
+rostopic hz /stereo/left/image_raw
+rostopic hz /stereo/right/image_raw
+```
+
+Visualization test (side-by-side viewer for left/right streams):
+
+```bash
+python3 /tiangong_infra_ws/ws/src/calibration_tests/tests/test_stereo_camera_node.py \
+  --left-topic /stereo/left/image_raw \
+  --right-topic /stereo/right/image_raw \
+  --no-stereo
+```
+
+If the stereo publisher is not already running, remove `--no-stereo`.
+
+Optional launch overrides (example):
+
+```bash
+roslaunch stereo_camera stereo_ros_publisher.launch \
+  width:=320 \
+  height:=240 \
+  left_config:=ov9732_L \
+  right_config:=ov9732_R \
+  left_topic:=/stereo/left/image_raw \
+  right_topic:=/stereo/right/image_raw \
+  flip:=vertical \
+  rate:=30
+```
+## Camera Intrinsic Calibration
+
+Run intrinsic/stereo calibration when:
+- You use a new camera pair.
+- You re-mount cameras or change baseline/orientation.
+- You change capture resolution (for distillation, target is `320x240`).
+- Depth/disparity quality degrades or left/right rectification looks wrong.
+
+If hardware and resolution are unchanged and depth is stable, you usually do not need to recalibrate every run.
+
+Detailed calibration guide (recommended):
+- `/tiangong_infra_ws/ws/src/stereo_camera/README.md`
+
+Quick command (inside the container):
+
+```bash
+cd /tiangong_infra_ws/ws/src/stereo_camera
+python3 tests/camera_calibration.py \
+  --left-config ov9732_L --right-config ov9732_R \
+  --square-size-mm 25 --board-cols 8 --board-rows 6 \
+  --frames 50 --flip vertical \
+  --save-dir tests/calibration --camera-name jetson_stereo
+```
+
+Capture controls:
+- Press `c` to capture a synchronized checkerboard pair.
+- Press `x` to abort.
+
+Expected outputs:
+- `tests/calibration/jetson_stereo.npz`
+- `tests/calibration/jetson_stereoc1.npz`
+- `tests/calibration/jetson_stereoc2.npz`
 
 ## Camera Calibration (Hand-Eye)
 
