@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direct command + joint-state feedback bridge for Tiangong arms.
+"""Direct command + joint-state feedback bridge for Tiangong arm/hand.
 
 This node bypasses MoveIt and accepts direct joint commands (sensor_msgs/JointState)
 on a configurable topic. It converts the command into bodyctrl_msgs/CmdSetMotorPosition
@@ -16,6 +16,7 @@ from typing import Dict, Iterable, List, Tuple, Union
 import rospy
 from sensor_msgs.msg import JointState
 from bodyctrl_msgs.msg import CmdSetMotorPosition, MotorStatusMsg, SetMotorPosition
+from bodyctrl_msgs.srv import set_angle_flexible, set_angle_flexibleRequest
 
 LEFT_ARM_MAP: List[Tuple[int, str]] = [
     (11, "shoulder_pitch_l_joint"),
@@ -35,6 +36,14 @@ RIGHT_ARM_MAP: List[Tuple[int, str]] = [
     (26, "wrist_pitch_r_joint"),
     (27, "wrist_roll_r_joint"),
 ]
+RIGHT_HAND_SERVICE_MAP: List[Tuple[str, str, float, float]] = [
+    ("little_joint_0", "1", 0.0, 1.1),
+    ("ring_joint_0", "2", 0.0, 1.1),
+    ("middle_joint_0", "3", 0.0, 1.1),
+    ("index_joint_0", "4", 0.0, 1.1),
+    ("thumb_joint_1", "5", 0.0, 0.5),
+    ("thumb_joint_0", "6", 0.3, 1.2),
+]
 
 RPM_PER_RAD_PER_SEC = 60.0 / (2.0 * math.pi)
 RAD_PER_SEC_PER_RPM = (2.0 * math.pi) / 60.0
@@ -44,19 +53,37 @@ class FeedbackControlBridge:
     """Send direct joint commands while republishing live joint states."""
 
     def __init__(self) -> None:
-        arm_side = rospy.get_param("~arm_side", "right").strip().lower()
-        if arm_side not in {"left", "right"}:
-            rospy.logerr("feedback_control_bridge: arm_side must be 'left' or 'right'")
+        arm_side = rospy.get_param("~arm_side", "right_full").strip().lower()
+        if arm_side not in {"left", "right", "right_full", "right_arm_hand"}:
+            rospy.logerr(
+                "feedback_control_bridge: arm_side must be one of "
+                "'left', 'right', 'right_full', 'right_arm_hand'"
+            )
             raise ValueError("Invalid arm_side parameter")
 
-        mapping = LEFT_ARM_MAP if arm_side == "left" else RIGHT_ARM_MAP
-        self._joint_order: List[str] = [joint for _, joint in mapping]
-        self._id_by_joint: Dict[str, int] = {joint: motor_id for motor_id, joint in mapping}
-        self._joint_by_id: Dict[int, str] = {motor_id: joint for motor_id, joint in mapping}
+        if arm_side == "left":
+            arm_mapping = LEFT_ARM_MAP
+            self._hand_enabled = False
+            self._hand_joint_order: List[str] = []
+        elif arm_side in {"right_full", "right_arm_hand"}:
+            arm_mapping = RIGHT_ARM_MAP
+            self._hand_enabled = True
+            self._hand_joint_order = [joint_name for joint_name, _, _, _ in RIGHT_HAND_SERVICE_MAP]
+        else:
+            arm_mapping = RIGHT_ARM_MAP
+            self._hand_enabled = False
+            self._hand_joint_order = []
+        self._arm_joint_order: List[str] = [joint for _, joint in arm_mapping]
+        self._joint_order: List[str] = list(self._arm_joint_order) + list(self._hand_joint_order)
+        self._id_by_joint: Dict[str, int] = {joint: motor_id for motor_id, joint in arm_mapping}
+        self._joint_by_id: Dict[int, str] = {motor_id: joint for motor_id, joint in arm_mapping}
 
         self._command_topic = rospy.get_param("~command_topic", "/arm/cmd_pos")
         self._input_joint_state_topic = rospy.get_param(
             "~input_joint_state_topic", "/arm/command_joint_states"
+        )
+        self._input_hand_joint_state_topic = rospy.get_param(
+            "~input_hand_joint_state_topic", "/hand/command_joint_states"
         )
         self._status_topic = rospy.get_param("~status_topic", "/arm/status")
         self._use_status = rospy.get_param("~use_status", True)
@@ -69,6 +96,11 @@ class FeedbackControlBridge:
         self._velocity_override = self._parse_velocity_override(
             rospy.get_param("~velocity_rpm", None)
         )
+        self._hand_service_name = rospy.get_param(
+            "~hand_service_name", "/inspire_hand/set_angle_flexible/right_hand"
+        )
+        self._hand_service_wait_sec = float(rospy.get_param("~hand_service_wait_sec", 0.3))
+        self._hand_service_proxy = None
 
         self._cmd_pub = rospy.Publisher(self._command_topic, CmdSetMotorPosition, queue_size=10)
         self._joint_state_pub = None
@@ -78,6 +110,8 @@ class FeedbackControlBridge:
         self._last_positions: Dict[str, float] = {}
         self._last_velocities: Dict[str, float] = {}
         self._last_currents: Dict[str, float] = {}
+        for joint_name, _, lower, _ in RIGHT_HAND_SERVICE_MAP:
+            self._last_positions[joint_name] = lower
 
         needs_status = self._use_status or self._publish_joint_states
         if needs_status:
@@ -102,11 +136,35 @@ class FeedbackControlBridge:
             self._command_cb,
             queue_size=10,
         )
+        self._hand_command_sub = None
+        if self._hand_enabled:
+            self._hand_command_sub = rospy.Subscriber(
+                self._input_hand_joint_state_topic,
+                JointState,
+                self._hand_command_cb,
+                queue_size=10,
+            )
+            try:
+                rospy.wait_for_service(self._hand_service_name, timeout=max(0.0, self._hand_service_wait_sec))
+                self._hand_service_proxy = rospy.ServiceProxy(
+                    self._hand_service_name,
+                    set_angle_flexible,
+                    persistent=True,
+                )
+            except (rospy.ROSException, rospy.ROSInterruptException):
+                rospy.logwarn(
+                    "feedback_control_bridge: hand service unavailable at startup: %s",
+                    self._hand_service_name,
+                )
 
         rospy.loginfo(
-            "feedback_control_bridge: direct command mode (%s -> %s)",
+            "feedback_control_bridge: direct command mode (%s -> %s), arm_side=%s, joints=%d, hand_input=%s, hand_service=%s",
             self._input_joint_state_topic,
             self._command_topic,
+            arm_side,
+            len(self._joint_order),
+            self._input_hand_joint_state_topic if self._hand_enabled else "<disabled>",
+            self._hand_service_name if self._hand_enabled else "<disabled>",
         )
 
     # --------------------------------------------------------------- status
@@ -169,7 +227,7 @@ class FeedbackControlBridge:
             except (TypeError, ValueError):
                 parsed = None
 
-        joint_names = list(self._joint_order)
+        joint_names = list(self._arm_joint_order)
         if parsed is None:
             rospy.logwarn("feedback_control_bridge: invalid velocity_rpm parameter; ignoring override")
             return {}
@@ -185,7 +243,6 @@ class FeedbackControlBridge:
             return {joint: value for joint, value in zip(joint_names, parsed)}
 
         return {joint: parsed for joint in joint_names}
-
     def _resolve_joint_index(self, msg: JointState) -> Dict[str, int]:
         if msg.name:
             return {name: idx for idx, name in enumerate(msg.name)}
@@ -200,7 +257,7 @@ class FeedbackControlBridge:
         positions = list(msg.position) if msg.position else []
         velocities = list(msg.velocity) if msg.velocity else None
 
-        for joint_name in self._joint_order:
+        for joint_name in self._arm_joint_order:
             motor_id = self._id_by_joint[joint_name]
             entry = SetMotorPosition()
             entry.name = motor_id
@@ -234,16 +291,84 @@ class FeedbackControlBridge:
 
         return cmd
 
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return max(0.0, min(1.0, value))
+
+    def _command_hand_from_joint_state(self, msg: JointState) -> bool:
+        if not self._hand_enabled:
+            return False
+
+        joint_index = self._resolve_joint_index(msg)
+        positions = list(msg.position) if msg.position else []
+        req = set_angle_flexibleRequest()
+        req.name = []
+        req.angleRatio = []
+
+        for joint_name, finger_name, lower, upper in RIGHT_HAND_SERVICE_MAP:
+            src_idx = joint_index.get(joint_name)
+            # Partial update semantics: only joints present in the incoming
+            # message are forwarded to the hand service.
+            if src_idx is None or src_idx >= len(positions):
+                continue
+            pos = float(positions[src_idx])
+            self._last_positions[joint_name] = pos
+            span = max(1e-6, float(upper - lower))
+            ratio = self._clamp01((pos - lower) / span)
+            req.name.append(str(finger_name))
+            req.angleRatio.append(float(ratio))
+
+        if not req.name:
+            return False
+
+        if self._hand_service_proxy is None:
+            try:
+                rospy.wait_for_service(self._hand_service_name, timeout=max(0.0, self._hand_service_wait_sec))
+                self._hand_service_proxy = rospy.ServiceProxy(
+                    self._hand_service_name,
+                    set_angle_flexible,
+                    persistent=True,
+                )
+            except (rospy.ROSException, rospy.ROSInterruptException):
+                rospy.logwarn_throttle(
+                    2.0,
+                    "feedback_control_bridge: hand service unavailable: %s",
+                    self._hand_service_name,
+                )
+                return False
+
+        try:
+            resp = self._hand_service_proxy(req)
+            accepted = bool(getattr(resp, "angle_accepted", True))
+            if not accepted:
+                rospy.logwarn_throttle(1.0, "feedback_control_bridge: hand service rejected angle request")
+            return accepted
+        except rospy.ServiceException as exc:
+            self._hand_service_proxy = None
+            rospy.logwarn_throttle(1.0, "feedback_control_bridge: hand service call failed: %s", str(exc))
+            return False
+
     # -------------------------------------------------------------- command
     def _command_cb(self, msg: JointState) -> None:
         with self._lock:
             cmd = self._command_from_joint_state(msg)
-            if not cmd.cmds:
-                rospy.logwarn("feedback_control_bridge: empty command, skipping")
-                return
+            if cmd.cmds:
+                self._cmd_pub.publish(cmd)
+            else:
+                rospy.logwarn("feedback_control_bridge: empty arm command, skipping /arm/cmd_pos publish")
 
-            self._cmd_pub.publish(cmd)
-            self._publish_joint_state(cmd.header.stamp)
+            if self._hand_enabled:
+                self._command_hand_from_joint_state(msg)
+
+            stamp = msg.header.stamp if msg.header.stamp else rospy.Time.now()
+            self._publish_joint_state(stamp)
+
+    def _hand_command_cb(self, msg: JointState) -> None:
+        with self._lock:
+            if self._hand_enabled:
+                self._command_hand_from_joint_state(msg)
+                stamp = msg.header.stamp if msg.header.stamp else rospy.Time.now()
+                self._publish_joint_state(stamp)
 
 
 def main(argv: Iterable[str]) -> int:

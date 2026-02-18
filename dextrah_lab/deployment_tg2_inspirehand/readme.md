@@ -81,19 +81,26 @@ You should now see the robot’s topics from the container.
 
 6. Launch the control bridge(s) for execution
 
-Single-arm feedback control bridge (fake controller → real arm).
+Right-side feedback control bridge (fake controller → real arm + right hand).
 
 To publish `sensor_msgs/JointState` commands to the robot, launch the bridge:
 
 ```bash
 roslaunch feedback_control_bridge feedback_control_bridge.launch \
-  arm_side:=right \
+  arm_side:=right_full \
   input_joint_state_topic:=/arm/command_joint_states \
+  input_hand_joint_state_topic:=/hand/command_joint_states \
+  hand_service_name:=/inspire_hand/set_angle_flexible/right_hand \
   command_topic:=/arm/cmd_pos \
   status_topic:=/arm/status \
-  default_velocity_rpm:=10.0 \
-  velocity_rpm:="[15,15,15,15,15,15,15]"
+  default_velocity_rpm:=10.0
 ```
+
+Notes:
+- `arm_side:=right_full` is now the default and includes right arm + right hand.
+- Arm commands are forwarded to `/arm/cmd_pos`.
+- Hand commands are sent via service `/inspire_hand/set_angle_flexible/right_hand` (reference-compatible).
+- You can command hand joints from `/hand/command_joint_states` (or include them on `/arm/command_joint_states`).
 
 ## Camera node launch
 
