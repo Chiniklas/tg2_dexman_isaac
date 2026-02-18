@@ -48,12 +48,15 @@ DIY stereo camera test environment (dual OV9732 modules on a 3D-printed holder).
 - Start the interactive calibration capture (uses the same resilient reader as two-stream):
   ```bash
   python tests/camera_calibration.py \
-    --left-config ov9732_L --right-config ov9732_R \
+    --left-config ov9732_L_320 --right-config ov9732_R_320 \
     --square-size-mm 25 --board-cols 8 --board-rows 6 \
-    --frames 50 --flip vertical
+    --frames 50 \
+    --save-dir calibration_320_both \
+    --camera-name jetson_stereo_320_both \
+    --flip both
   ```
 - Press `c` to capture synchronized pairs; aim for 40–50 diverse poses; press `x` to abort.
-- Outputs land in `tests/calibration/` by default: `jetson_stereo.npz` (stereo), `jetson_stereoc1.npz`, `jetson_stereoc2.npz`.
+- Outputs land in `tests/calibration_320_both/`: `jetson_stereo_320_both.npz` (stereo), `jetson_stereo_320_bothc1.npz`, `jetson_stereo_320_bothc2.npz`.
 - Use inner-corner counts for `--board-cols/rows` (e.g., an 8×6 inner-corner A4 board with 25 mm squares → `--board-cols 8 --board-rows 6 --square-size-mm 25`).
 
 ## Depth sanity check
@@ -61,8 +64,8 @@ DIY stereo camera test environment (dual OV9732 modules on a 3D-printed holder).
 - Run the plausibility test:
   ```bash
   python tests/depth_plausibility.py \
-    --calib tests/calibration/jetson_stereo.npz \
-    --left-config ov9732_L --right-config ov9732_R \
+    --calib tests/calibration_320_both/jetson_stereo_320_both.npz \
+    --left-config ov9732_L_320 --right-config ov9732_R_320 \
     --expected 0.50 --tolerance 0.25 --frames 30 --show --show-rgb
   ```
 - Shows disparity (and optional RGB on top). Reports median depth in the center ROI; exits non-zero if relative error exceeds tolerance.
@@ -72,9 +75,9 @@ DIY stereo camera test environment (dual OV9732 modules on a 3D-printed holder).
 - Visualize rectified RGB (top) and real-time disparity (bottom) using your saved calibration:
   ```bash
   python tests/capture_stereo_stream.py \
-    --calib tests/calibration/jetson_stereo.npz \
-    --left-config ov9732_L --right-config ov9732_R \
-    --flip vertical --preview-scale 0.7 \
+    --calib tests/calibration_320_both/jetson_stereo_320_both.npz \
+    --left-config ov9732_L_320 --right-config ov9732_R_320 \
+    --flip both --preview-scale 0.7 \
     --num-disp 160 --block-size 7 --uniqueness 15 \
     --speckle-window 200 --speckle-range 4 --median --clahe
   ```

@@ -287,6 +287,42 @@ class AprilTagDetectorNode:
             return width - 1 - x, height - 1 - y
         return x, y
 
+    @staticmethod
+    def _fit_overlay_text(
+        text: str,
+        width_px: int,
+        *,
+        font: int = cv2.FONT_HERSHEY_SIMPLEX,
+        base_scale: float = 0.55,
+        thickness: int = 2,
+        x_pad: int = 8,
+    ) -> tuple[str, float]:
+        """Keep overlay text readable and inside frame width."""
+        max_w = max(20, int(width_px) - 2 * x_pad)
+        scale = base_scale
+
+        for _ in range(4):
+            text_w = cv2.getTextSize(text, font, scale, thickness)[0][0]
+            if text_w <= max_w:
+                return text, scale
+            scale *= 0.9
+
+        if len(text) <= 3:
+            return text, scale
+
+        lo, hi = 1, len(text)
+        best = "..."
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = text[:mid] + "..."
+            text_w = cv2.getTextSize(candidate, font, scale, thickness)[0][0]
+            if text_w <= max_w:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best, scale
+
     def _image_cb(self, msg: Image) -> None:
         if self.camera_matrix is None or self.dist_coeffs is None:
             rospy.logwarn_throttle(5.0, "No intrinsics loaded; skipping tag detection.")
@@ -442,7 +478,7 @@ class AprilTagDetectorNode:
             status = (
                 f"{self.family_label}"
                 + (f":{self.tag_id_filter}" if self.tag_id_filter >= 0 else ":*")
-                + f" | detections={len(ids_msg.data)} | fps={self._debug_fps:.1f}"
+                + f" | det={len(ids_msg.data)} | fps={self._debug_fps:.1f}"
             )
             frame_display = self._apply_debug_display_flip(frame)
             h, w = frame_display.shape[:2]
@@ -458,12 +494,13 @@ class AprilTagDetectorNode:
                     2,
                     cv2.LINE_AA,
                 )
+            status_text, status_scale = self._fit_overlay_text(status, w)
             cv2.putText(
                 frame_display,
-                status,
+                status_text,
                 (8, 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
+                status_scale,
                 (0, 255, 255),
                 2,
                 cv2.LINE_AA,

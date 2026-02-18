@@ -35,8 +35,9 @@ This package contains camera-to-robot calibration scripts and test utilities for
 
 ```bash
 roslaunch stereo_camera stereo_ros_publisher.launch \
-  width:=1280 \
-  height:=720
+  width:=320 \
+  height:=240 \
+  flip:=both
 ```
 
 2. Start AprilTag detector (example):
@@ -48,7 +49,7 @@ rosrun calibration april_tag_detector.py \
   _tag_id:=-1 \
   _tag_size:=0.10 \
   _camera_frame:=stereo_left \
-  _intrinsics_npz:=/tiangong_infra_ws/ws/src/stereo_camera/tests/calibration/jetson_stereo.npz \
+  _intrinsics_npz:=/tiangong_infra_ws/ws/src/stereo_camera/tests/calibration_320_both/jetson_stereo_320_both.npz \
   _intrinsics_camera:=left \
   _input_reflip:=none \
   _debug_view:=true \
@@ -62,12 +63,12 @@ Notes:
 - Detector default `tag_id` is `-1` (detect all tag IDs).
 - `input_reflip` is applied before detection/pose. Use it only to undo upstream image flips.
 - `debug_display_flip` only affects the debug window rendering; detection/pose uses the original image.
-- Use stream settings matching calibration intrinsics. For `jetson_stereo.npz`, validate first with `flip:=none` and `1280x720`.
-- Resolution must match the calibration file. Example: if `jetson_stereo.npz` was calibrated at `1280x720` but the stream runs at `320x240`, pose scale can be wrong (distance often appears ~4x too large).
+- Use stream settings matching calibration intrinsics. For `jetson_stereo_320_both.npz`, validate first with `flip:=both` and `320x240`.
+- Resolution must match the calibration file. Example: if `jetson_stereo_320_both.npz` was calibrated at `320x240` but the stream runs at `1280x720`, pose scale can be wrong.
 - Quick check:
   - `rostopic echo -n 1 /stereo/left/image_raw | grep -E "width|height"`
 - If mismatched:
-  - relaunch stereo publisher with matching size (`width:=1280 height:=720`), or
+  - relaunch stereo publisher with matching size (`width:=320 height:=240 flip:=both`), or
   - recalibrate and use an intrinsics file generated for the current stream resolution.
 
 3. Run calibration:
@@ -95,7 +96,7 @@ python3 test_stereo_camera_node.py --left-topic /stereo/left/image_raw --right-t
 python3 test_april_tag_detection.py --tag-family tag25h9 --tag-id -1 --tag-size 0.10
 
 python3 test_pure_apriltag_detection.py --tag-family tag25h9 --tag-id -1 --tag-size 0.10 \
-  --intrinsics-npz /tiangong_infra_ws/ws/src/stereo_camera/tests/calibration/jetson_stereo.npz \
+  --intrinsics-npz /tiangong_infra_ws/ws/src/stereo_camera/tests/calibration_320_both/jetson_stereo_320_both.npz \
   --intrinsics-camera left
 ```
 
@@ -116,14 +117,14 @@ Then run:
 ```bash
 cd /tiangong_infra_ws/ws/src/calibration/tests
 python3 test_pure_apriltag_detection.py \
-  --left-config ov9732_L \
-  --width 1280 \
-  --height 720 \
+  --left-config ov9732_L_320 \
+  --width 320 \
+  --height 240 \
   --tag-family tag25h9 \
   --tag-id -1 \
   --tag-size 0.10 \
-  --flip none \
-  --intrinsics-npz /tiangong_infra_ws/ws/src/stereo_camera/tests/calibration/jetson_stereo.npz \
+  --flip both \
+  --intrinsics-npz /tiangong_infra_ws/ws/src/stereo_camera/tests/calibration_320_both/jetson_stereo_320_both.npz \
   --intrinsics-camera left
 ```
 

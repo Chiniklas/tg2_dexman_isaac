@@ -30,7 +30,7 @@ def main():
     parser.add_argument(
         "--flip",
         choices=["none", "vertical", "horizontal", "both"],
-        default="vertical",
+        default="both",
         help="Flip the frame if your camera is inverted",
     )
     parser.add_argument("--label", default=None, help="Label for logs/preview")

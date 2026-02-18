@@ -10,7 +10,7 @@ Flow:
 
 Usage (example):
     python -m tests.depth_plausibility \
-        --calib calibration/jetson_stereo.npz \
+        --calib tests/calibration_320_both/jetson_stereo_320_both.npz \
         --left-config ov9732_L --right-config ov9732_R \
         --expected 0.50 --tolerance 0.25 --frames 30 --show
 
@@ -33,14 +33,18 @@ from stereo_camera.utils.capture_two_stream import DualCameraReader
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Depth plausibility check using live stereo capture.")
-    p.add_argument("--calib", default="tests/calibration/jetson_stereo.npz", help="Stereo calibration npz file.")
+    p.add_argument(
+        "--calib",
+        default="tests/calibration_320_both/jetson_stereo_320_both.npz",
+        help="Stereo calibration npz file.",
+    )
     p.add_argument("--left-config", default="ov9732_L", help="Left camera config name or path.")
     p.add_argument("--right-config", default="ov9732_R", help="Right camera config name or path.")
     p.add_argument("--expected", type=float, default=0.5, help="Expected target distance in meters.")
     p.add_argument("--tolerance", type=float, default=0.25, help="Relative tolerance (0.25 = 25% error allowed).")
     p.add_argument("--frames", type=int, default=30, help="Number of frames to sample.")
     p.add_argument("--roi", type=int, default=80, help="ROI size (square, pixels) around the image center.")
-    p.add_argument("--flip", choices=["none", "vertical", "horizontal", "both"], default="vertical", help="Optional flip applied to both streams.")
+    p.add_argument("--flip", choices=["none", "vertical", "horizontal", "both"], default="both", help="Optional flip applied to both streams.")
     p.add_argument("--max-fails", type=int, default=5, help="Consecutive read failures before attempting reconnect.")
     p.add_argument("--reconnect-wait", type=float, default=1.0, help="Initial reconnect backoff (seconds).")
     p.add_argument("--show", action="store_true", help="Show disparity preview with ROI.")
@@ -49,7 +53,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_sgbm(width: int, height: int) -> cv2.StereoSGBM:
-    # Disparity settings tuned for 1280x720 @ ~6-8 cm baseline; adjust if needed.
+    # Disparity settings tuned for short-baseline OV9732 stereo; adjust if needed.
     num_disp = 16 * 8  # must be divisible by 16
     block = 5
     return cv2.StereoSGBM_create(
@@ -71,8 +75,8 @@ def main() -> int:
     args = parse_args()
     calib_path = Path(args.calib)
     if not calib_path.exists():
-        # helpful hint if the user kept calibration under tests/calibration
-        alt = Path("tests/calibration/jetson_stereo.npz")
+        # helpful hint if the user kept calibration under tests/calibration_320_both
+        alt = Path("tests/calibration_320_both/jetson_stereo_320_both.npz")
         msg = f"Calibration file not found: {calib_path}"
         if calib_path != alt and alt.exists():
             msg += f"\nTry --calib {alt}"

@@ -121,7 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--flip",
         choices=["none", "vertical", "horizontal", "both"],
-        default="vertical",
+        default="both",
         help="Flip frames if cameras are inverted",
     )
     parser.add_argument("--max-fails", type=int, default=5)

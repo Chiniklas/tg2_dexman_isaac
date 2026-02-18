@@ -114,32 +114,75 @@ def _rotation_matrix_to_rpy_deg(rotation_matrix: np.ndarray) -> tuple[float, flo
     return float(np.degrees(roll)), float(np.degrees(pitch)), float(np.degrees(yaw))
 
 
+def _fit_overlay_text(
+    text: str,
+    width_px: int,
+    *,
+    font: int = cv2.FONT_HERSHEY_SIMPLEX,
+    base_scale: float = 0.55,
+    thickness: int = 2,
+    x_pad: int = 8,
+) -> tuple[str, float]:
+    """Keep overlay text readable and inside frame width."""
+    max_w = max(20, int(width_px) - 2 * x_pad)
+    scale = base_scale
+
+    for _ in range(4):
+        text_w = cv2.getTextSize(text, font, scale, thickness)[0][0]
+        if text_w <= max_w:
+            return text, scale
+        scale *= 0.9
+
+    # Fallback: truncate at the last tested scale.
+    if len(text) <= 3:
+        return text, scale
+
+    lo, hi = 1, len(text)
+    best = "..."
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = text[:mid] + "..."
+        text_w = cv2.getTextSize(candidate, font, scale, thickness)[0][0]
+        if text_w <= max_w:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best, scale
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Pure-python left-camera AprilTag detection with Matplotlib visualization."
     )
-    parser.add_argument("--left-config", default="ov9732_L", help="Left camera config name (YAML)")
+    parser.add_argument("--left-config", default="ov9732_L_320", help="Left camera config name (YAML)")
     parser.add_argument("--device", default=None, help="Override camera device path")
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--width", type=int, default=320)
+    parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--flip",
         choices=["none", "vertical", "horizontal", "both"],
-        default="none",
+        default="both",
         help="Display-only flip applied after detection/pose estimation",
     )
 
     parser.add_argument("--tag-family", choices=sorted(DICT_MAP.keys()), default="tag25h9")
     parser.add_argument("--tag-id", type=int, default=-1, help="Detect all IDs if < 0")
     parser.add_argument("--tag-size", type=float, default=0.10, help="Tag size in meters")
+    parser.add_argument(
+        "--axis-length-m",
+        type=float,
+        default=0.0,
+        help="Axes length in meters for drawFrameAxes. <=0 uses an auto-scaled value for low-res previews.",
+    )
 
     parser.add_argument(
         "--intrinsics-npz",
-        default="",
+        default="auto",
         help=(
-            "Optional calibration .npz (for pose axes). "
-            "If empty, pose axes are disabled and only marker detection is shown."
+            "Calibration .npz used for pose axes. "
+            "Default 'auto' uses stereo_camera/tests/calibration_320_both/jetson_stereo_320_both.npz."
         ),
     )
     parser.add_argument(
@@ -174,8 +217,21 @@ def main() -> int:
 
     cam_matrix: Optional[np.ndarray] = None
     dist_coeffs: Optional[np.ndarray] = None
-    if args.intrinsics_npz:
-        intr_path = Path(args.intrinsics_npz)
+    intrinsics_arg = args.intrinsics_npz.strip()
+    if intrinsics_arg.lower() == "auto":
+        intr_path = (
+            ws_src
+            / "stereo_camera"
+            / "tests"
+            / "calibration_320_both"
+            / "jetson_stereo_320_both.npz"
+        )
+    elif intrinsics_arg:
+        intr_path = Path(intrinsics_arg)
+    else:
+        intr_path = None
+
+    if intr_path is not None:
         use_right = args.intrinsics_camera == "right"
         if args.intrinsics_camera == "auto":
             use_right = False
@@ -248,13 +304,21 @@ def main() -> int:
                         )
                         if not ok:
                             continue
+                        if args.axis_length_m > 0.0:
+                            axis_length_m = args.axis_length_m
+                        else:
+                            # Keep pose geometry tied to true tag size, but enlarge drawn axes for low-res streams.
+                            ref_width = 1280.0
+                            scale = max(1.0, ref_width / max(float(args.width), 1.0))
+                            axis_length_m = args.tag_size * 0.5 * scale
+
                         cv2.drawFrameAxes(
                             vis,
                             cam_matrix,
                             dist_coeffs,
                             rvec,
                             tvec,
-                            args.tag_size * 0.5,
+                            axis_length_m,
                         )
                         position = tvec.flatten()
                         dist_m = float(np.linalg.norm(position))
@@ -291,9 +355,9 @@ def main() -> int:
                 t_prev = t_now
 
             status = (
-                f"{args.tag_family} ({dictionary_name})"
+                f"{args.tag_family}"
                 + (f":{args.tag_id}" if args.tag_id >= 0 else ":*")
-                + f" | detections={len(selected_corners)} | fps={fps_val:.1f}"
+                + f" | det={len(selected_corners)} | fps={fps_val:.1f}"
             )
             vis_display = cv2.flip(vis, flip_code) if flip_code is not None else vis
             h, w = vis_display.shape[:2]
@@ -309,12 +373,13 @@ def main() -> int:
                     2,
                     cv2.LINE_AA,
                 )
+            status_text, status_scale = _fit_overlay_text(status, w)
             cv2.putText(
                 vis_display,
-                status,
+                status_text,
                 (8, 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
+                status_scale,
                 (0, 255, 255),
                 2,
                 cv2.LINE_AA,

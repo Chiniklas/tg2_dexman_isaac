@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not fix intrinsics during stereoCalibrate (CALIB_FIX_INTRINSIC off).",
     )
-    parser.add_argument("--flip", choices=["none", "vertical", "horizontal", "both"], default="vertical", help="Optional flip applied to both streams.")
+    parser.add_argument("--flip", choices=["none", "vertical", "horizontal", "both"], default="both", help="Optional flip applied to both streams.")
     parser.add_argument("--max-fails", type=int, default=5, help="Consecutive read failures before attempting reconnect.")
     parser.add_argument("--reconnect-wait", type=float, default=1.0, help="Initial reconnect backoff (seconds).")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])

@@ -27,7 +27,7 @@ class DualCameraReader:
     This is the baseline used by both capture_two_stream and calibration flows.
     """
 
-    def __init__(self, cams: Iterable[Ov9732Camera], *, flip: str = "vertical", max_fails: int = 5, reconnect_wait: float = 1.0):
+    def __init__(self, cams: Iterable[Ov9732Camera], *, flip: str = "both", max_fails: int = 5, reconnect_wait: float = 1.0):
         cams = list(cams)
         if len(cams) != 2:
             raise ValueError("Exactly two camera instances are required")
@@ -104,7 +104,7 @@ def capture_two_stream(
     max_fails: int = 5,
     reconnect_wait: int = 1,
     stats_interval: int = 10,
-    flip: str = "vertical",
+    flip: str = "both",
     preview_scale: float = 0.5,
 ):
     cams = list(cams)
@@ -231,7 +231,7 @@ def main():
     parser.add_argument(
         "--flip",
         choices=["none", "vertical", "horizontal", "both"],
-        default="vertical",
+        default="both",
         help="Flip frames if cameras are inverted",
     )
     parser.add_argument("--preview-scale", type=float, default=0.5, help="Scale preview window")

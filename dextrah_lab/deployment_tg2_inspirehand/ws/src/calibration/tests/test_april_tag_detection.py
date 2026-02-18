@@ -114,9 +114,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--right-topic", default="/stereo/right/image_raw")
     parser.add_argument("--left-frame", default="stereo_left")
     parser.add_argument("--right-frame", default="stereo_right")
-    parser.add_argument("--flip", default="none", choices=["none", "vertical", "horizontal", "both"])
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--flip", default="both", choices=["none", "vertical", "horizontal", "both"])
+    parser.add_argument("--width", type=int, default=320)
+    parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--rate", type=float, default=0.0, help="Optional publish rate limit (Hz). 0 disables.")
 
@@ -162,7 +162,13 @@ def main() -> int:
     calibration_dir = _find_calibration_dir(tests_dir)
     stereo_script = ws_src / "stereo_camera" / "scripts" / "stereo_ros_publisher.py"
     detector_script = calibration_dir / "april_tag_detector.py"
-    default_intrinsics_path = ws_src / "stereo_camera" / "tests" / "calibration" / "jetson_stereo.npz"
+    default_intrinsics_path = (
+        ws_src
+        / "stereo_camera"
+        / "tests"
+        / "calibration_320_both"
+        / "jetson_stereo_320_both.npz"
+    )
 
     if not stereo_script.exists():
         raise FileNotFoundError(f"Stereo publisher script not found: {stereo_script}")

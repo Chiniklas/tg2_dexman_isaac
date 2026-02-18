@@ -47,7 +47,7 @@ def stereo_calibrate_camera(
     fix_intrinsic: bool = True,
     max_fails: int = 5,
     reconnect_wait: float = 1.0,
-    flip: str = "vertical",
+    flip: str = "both",
 ) -> Path:
     """
     Run stereo calibration on two cameras showing a chessboard.

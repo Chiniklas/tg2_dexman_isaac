@@ -34,7 +34,7 @@ def capture_single_stream(
     max_fails: int = 5,
     reconnect_wait: int = 1,
     stats_interval: int = 10,
-    flip: str = "vertical",
+    flip: str = "both",
     stop_event: Optional[threading.Event] = None,
     label: str = "cam",
 ):
@@ -182,7 +182,7 @@ def main():
     parser.add_argument(
         "--flip",
         choices=["none", "vertical", "horizontal", "both"],
-        default="vertical",
+        default="both",
         help="Flip the frame if your camera is inverted (vertical=upside down, horizontal=mirror, both=180° rotate)",
     )
     parser.add_argument("--label", default=None, help="Label for logs and preview title")

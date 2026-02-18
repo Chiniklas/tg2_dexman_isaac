@@ -40,10 +40,14 @@ def build_sgbm(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Stereo live view: rectified RGB + disparity.")
-    p.add_argument("--calib", default="tests/calibration/jetson_stereo.npz", help="Stereo calibration npz path.")
+    p.add_argument(
+        "--calib",
+        default="tests/calibration_320_both/jetson_stereo_320_both.npz",
+        help="Stereo calibration npz path.",
+    )
     p.add_argument("--left-config", default="ov9732_L", help="Left camera config name/path.")
     p.add_argument("--right-config", default="ov9732_R", help="Right camera config name/path.")
-    p.add_argument("--flip", choices=["none", "vertical", "horizontal", "both"], default="vertical", help="Flip applied to both streams.")
+    p.add_argument("--flip", choices=["none", "vertical", "horizontal", "both"], default="both", help="Flip applied to both streams.")
     p.add_argument("--max-fails", type=int, default=5, help="Consecutive read failures before reconnect.")
     p.add_argument("--reconnect-wait", type=float, default=1.0, help="Initial reconnect backoff (seconds).")
     p.add_argument("--preview-scale", type=float, default=0.7, help="Scale factor for the displayed composite.")
@@ -64,7 +68,7 @@ def run(
     calib_path: Path,
     left_config: str,
     right_config: str,
-    flip: str = "vertical",
+    flip: str = "both",
     max_fails: int = 5,
     reconnect_wait: float = 1.0,
     preview_scale: float = 0.7,

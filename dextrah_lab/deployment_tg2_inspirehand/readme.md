@@ -162,10 +162,10 @@ Quick command (inside the container):
 ```bash
 cd /tiangong_infra_ws/ws/src/stereo_camera
 python3 tests/camera_calibration.py \
-  --left-config ov9732_L --right-config ov9732_R \
+  --left-config ov9732_L_320 --right-config ov9732_R_320 \
   --square-size-mm 25 --board-cols 8 --board-rows 6 \
-  --frames 50 --flip vertical \
-  --save-dir tests/calibration --camera-name jetson_stereo
+  --frames 50 --flip both \
+  --save-dir tests/calibration_320_both --camera-name jetson_stereo_320_both
 ```
 
 Capture controls:
@@ -173,9 +173,9 @@ Capture controls:
 - Press `x` to abort.
 
 Expected outputs:
-- `tests/calibration/jetson_stereo.npz`
-- `tests/calibration/jetson_stereoc1.npz`
-- `tests/calibration/jetson_stereoc2.npz`
+- `tests/calibration_320_both/jetson_stereo_320_both.npz`
+- `tests/calibration_320_both/jetson_stereo_320_bothc1.npz`
+- `tests/calibration_320_both/jetson_stereo_320_bothc2.npz`
 
 ## Camera Calibration (Hand-Eye)
 
