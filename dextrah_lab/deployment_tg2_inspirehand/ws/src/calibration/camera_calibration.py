@@ -4,8 +4,9 @@
 """
 Camera calibration pipeline for TG2 Inspirehand (ROS1).
 
-Moves the robot through a set of pose targets, logs (camera->tag pose, robot joints),
-runs a Gauss-Newton optimizer to solve camera->robot and palm->tag transforms, and
+Publishes direct joint-space trajectories (same execution style as
+tests/test_execute_targets.py), logs (camera->tag pose, robot joints), runs a
+Gauss-Newton optimizer to solve camera->robot and palm->tag transforms, and
 saves the robot->camera transform to disk.
 """
 
@@ -24,11 +25,25 @@ import rospy
 from sensor_msgs.msg import JointState
 from tf2_msgs.msg import TFMessage
 
-from fabrics_sim.prod.kinematics import Kinematics
-from fabrics_sim.utils.rotation_utils import euler_to_matrix, quaternion_to_matrix
-from fabrics_sim.utils.utils import initialize_warp
+from dextrah_lab.utils.kinematics import Kinematics
+from dextrah_lab.utils.rotation_utils import euler_to_matrix, quaternion_to_matrix
+from dextrah_lab.utils.utils import initialize_warp
 
-from tg2_inspirehand_random_targets import build_calibration_trajectory
+RIGHT_ARM_HAND_JOINTS = [
+    "shoulder_pitch_r_joint",
+    "shoulder_roll_r_joint",
+    "shoulder_yaw_r_joint",
+    "elbow_pitch_r_joint",
+    "elbow_yaw_r_joint",
+    "wrist_pitch_r_joint",
+    "wrist_roll_r_joint",
+    "little_joint_0",
+    "ring_joint_0",
+    "middle_joint_0",
+    "index_joint_0",
+    "thumb_joint_0",
+    "thumb_joint_1",
+]
 
 
 def _transform_from_translation_euler(translation: np.ndarray, euler_angles: np.ndarray) -> np.ndarray:
@@ -55,6 +70,22 @@ def _warp_transform_to_matrix(transform: torch.Tensor) -> torch.Tensor:
     mat[:, :3, :3] = rot
     mat[:, :3, 3] = pos
     return mat
+
+
+def _parse_vec(raw: str, label: str, size: int) -> np.ndarray:
+    vals = [float(v.strip()) for v in raw.split(",") if v.strip()]
+    if len(vals) != size:
+        raise ValueError(f"{label} must have {size} comma-separated values, got {len(vals)}")
+    return np.asarray(vals, dtype=np.float64)
+
+
+def _interpolate(a: np.ndarray, b: np.ndarray, steps: int) -> list[np.ndarray]:
+    if steps < 2:
+        return [a.copy(), b.copy()]
+    out: list[np.ndarray] = []
+    for alpha in np.linspace(0.0, 1.0, num=steps):
+        out.append(((1.0 - alpha) * a + alpha * b).astype(np.float64))
+    return out
 
 
 class OptimizeCameraCalibration:
@@ -175,24 +206,38 @@ class CameraCalibrationNode:
         palm_link: str,
         device: str,
         joint_state_topic: str,
-        pose_command_topic: str,
+        command_topic: str,
+        command_joint_names: list[str],
+        start_joints: np.ndarray | None,
+        target_joints: np.ndarray,
+        num_steps: int,
+        command_rate_hz: float,
+        max_command_step_rad: float,
+        feedback_timeout_sec: float,
+        wait_feedback_sec: float,
         tag_frame_id: str,
         tf_topic: str,
-        home_pose: list[float],
-        target_pose: list[float],
-        num_steps: int,
-        fabric_vel_threshold: float,
-        publish_dt: float,
+        required_valid_pairs: int,
+        max_pose_commands: int,
+        settle_sec: float,
     ):
         self.camera = camera
         self.device = device
         initialize_warp(self.device)
 
-        self.publish_dt = publish_dt
-        self.fabric_vel_threshold = fabric_vel_threshold
+        self.command_topic = command_topic
+        self.command_joint_names = list(command_joint_names)
+        self.command_dof = len(self.command_joint_names)
+        self.start_joints = start_joints.copy() if start_joints is not None else None
+        self.target_joints = target_joints.copy()
+        self.num_steps = int(num_steps)
+        self.command_rate_hz = float(command_rate_hz)
+        self.max_command_step_rad = float(max_command_step_rad)
+        self.feedback_timeout_sec = float(feedback_timeout_sec)
+        self.wait_feedback_sec = float(wait_feedback_sec)
+        self.settle_sec = float(settle_sec)
 
         self._joint_state_msg: JointState | None = None
-        self._joint_velocity: np.ndarray | None = None
         self._joint_feedback_time = time.time()
 
         self.tag_frame_id = tag_frame_id
@@ -202,9 +247,7 @@ class CameraCalibrationNode:
 
         self.optimizer = OptimizeCameraCalibration(urdf_path=urdf_path, palm_link=palm_link, device=device)
 
-        self._pose_command: list[float] | None = None
-        self._pose_pub = rospy.Publisher(pose_command_topic, JointState, queue_size=1)
-        self._pose_timer = rospy.Timer(rospy.Duration(self.publish_dt), self._pose_pub_callback)
+        self._cmd_pub = rospy.Publisher(self.command_topic, JointState, queue_size=10)
 
         self._joint_sub = rospy.Subscriber(joint_state_topic, JointState, self._joint_state_callback, queue_size=1)
         self._tf_sub = rospy.Subscriber(tf_topic, TFMessage, self._tf_callback, queue_size=10)
@@ -212,23 +255,22 @@ class CameraCalibrationNode:
         self.tag_transforms: list[np.ndarray] = []
         self.robot_joints: list[np.ndarray] = []
 
-        self.home_pose = torch.tensor([home_pose], device=self.device, dtype=torch.float32)
-        self.target_pose = torch.tensor([target_pose], device=self.device, dtype=torch.float32)
-
-        self.pose_targets = build_calibration_trajectory(self.home_pose, self.target_pose, num_steps)
-
-    def _pose_pub_callback(self, _event: rospy.TimerEvent) -> None:
-        if self._pose_command is None:
-            return
-        msg = JointState()
-        msg.position = self._pose_command
-        self._pose_pub.publish(msg)
+        self.required_valid_pairs = int(required_valid_pairs)
+        self.max_pose_commands = int(max_pose_commands)
 
     def _joint_state_callback(self, msg: JointState) -> None:
         self._joint_feedback_time = time.time()
         self._joint_state_msg = msg
-        if msg.velocity:
-            self._joint_velocity = np.array(msg.velocity, dtype=np.float32)
+
+    def _extract_command_vector(self, msg: JointState) -> np.ndarray | None:
+        idx = {name: i for i, name in enumerate(msg.name)}
+        q = np.zeros(self.command_dof, dtype=np.float64)
+        for j, name in enumerate(self.command_joint_names):
+            i = idx.get(name)
+            if i is None or i >= len(msg.position):
+                return None
+            q[j] = float(msg.position[i])
+        return q
 
     def _tf_callback(self, msg: TFMessage) -> None:
         if len(msg.transforms) == 0:
@@ -261,70 +303,122 @@ class CameraCalibrationNode:
                 return
         self.got_tag_info = False
 
-    def record_data(self) -> None:
+    def record_data(self) -> bool:
         if not self.got_tag_info or self._joint_state_msg is None:
             print("Missing tag or joint state data; skipping frame.")
-            return
+            return False
         self.tag_transforms.append(copy.copy(self.tag_transform))
         q = self.optimizer.build_q_from_joint_state(self._joint_state_msg)
         self.robot_joints.append(q)
         self.got_tag_info = False
+        return True
 
-    def move_to_pose_target(self, pose_target: torch.Tensor, move_timeout: float) -> None:
-        self._pose_command = list(pose_target[0, :].detach().cpu().numpy().astype("float"))
-        start = time.time()
-        while (time.time() - start) < move_timeout and not rospy.is_shutdown():
-            if (time.time() - self._joint_feedback_time) > 0.1:
-                print("No joint feedback; shutting down.")
-                rospy.signal_shutdown("no feedback")
-                return
-            if self._joint_velocity is not None:
-                if np.linalg.norm(self._joint_velocity) < self.fabric_vel_threshold and (time.time() - start) > 1.0:
-                    break
-            time.sleep(0.1)
+    def _publish_joint_target(self, q_cmd: np.ndarray) -> None:
+        msg = JointState()
+        msg.header.stamp = rospy.Time.now()
+        msg.name = list(self.command_joint_names)
+        msg.position = q_cmd.astype(float).tolist()
+        msg.velocity = []
+        msg.effort = []
+        self._cmd_pub.publish(msg)
+
+    def _build_sweep_trajectory(self, q_start: np.ndarray, q_target: np.ndarray) -> list[np.ndarray]:
+        up = _interpolate(q_start, q_target, self.num_steps)
+        down = _interpolate(q_target, q_start, self.num_steps)
+        return up + down[1:]
 
     def run(self) -> None:
-        move_timeout = 10.0
-        print("Moving to home pose")
-        self.move_to_pose_target(self.home_pose, move_timeout)
-        if rospy.is_shutdown():
+        if self.required_valid_pairs < 1:
+            raise ValueError("--required-valid-pairs must be >= 1")
+        if self.max_pose_commands < 1:
+            raise ValueError("--max-pose-commands must be >= 1")
+        if self.num_steps < 2:
+            raise ValueError("--num-steps must be >= 2")
+        if self.command_rate_hz <= 0.0:
+            raise ValueError("--command-rate must be > 0")
+
+        t0 = time.time()
+        while not rospy.is_shutdown() and self._joint_state_msg is None and (time.time() - t0) < self.wait_feedback_sec:
+            time.sleep(0.05)
+        if self._joint_state_msg is None:
+            print(f"No joint feedback within {self.wait_feedback_sec:.2f}s; calibration aborted.")
             return
 
+        q_feedback = self._extract_command_vector(self._joint_state_msg)
+        if q_feedback is None:
+            print("Current /joint_states do not include all commanded joints; calibration aborted.")
+            return
+
+        q_start = self.start_joints.copy() if self.start_joints is not None else q_feedback.copy()
+        q_target = self.target_joints.copy()
+        sweep = self._build_sweep_trajectory(q_start, q_target)
+
+        max_step = 0.0
+        for i in range(1, len(sweep)):
+            step = float(np.max(np.abs(sweep[i] - sweep[i - 1])))
+            max_step = max(max_step, step)
+        if max_step > self.max_command_step_rad:
+            raise ValueError(
+                f"Per-step command delta {max_step:.4f} exceeds --max-command-step-rad {self.max_command_step_rad:.4f}"
+            )
+
+        print(f"Start={np.array2string(q_start, precision=3)}")
+        print(f"Target={np.array2string(q_target, precision=3)}")
+        print(
+            f"Executing sweep trajectory with {len(sweep)} waypoints @ {self.command_rate_hz:.1f} Hz; "
+            f"max_step={max_step:.4f} rad"
+        )
+
+        cmd_count = 0
         pose_index = 0
-        start_index = 0
-        if self.pose_targets:
-            if torch.allclose(self.pose_targets[0], self.home_pose):
-                start_index = 1
-        for pose_target in self.pose_targets[start_index:]:
-            print(f"Pose index {pose_index}")
-            self.move_to_pose_target(pose_target, move_timeout)
+        rate = rospy.Rate(self.command_rate_hz)
+        while len(self.tag_transforms) < self.required_valid_pairs and not rospy.is_shutdown():
+            q_cmd = sweep[pose_index % len(sweep)]
+            print(
+                f"Pose command {cmd_count + 1}/{self.max_pose_commands} | "
+                f"valid pairs {len(self.tag_transforms)}/{self.required_valid_pairs}"
+            )
+            self._publish_joint_target(q_cmd)
             pose_index += 1
+            cmd_count += 1
             if rospy.is_shutdown():
                 return
-            time.sleep(0.5)
-            self.record_data()
+            rate.sleep()
+            if (time.time() - self._joint_feedback_time) > self.feedback_timeout_sec:
+                print(f"Stale joint feedback (> {self.feedback_timeout_sec:.2f}s); calibration aborted.")
+                return
+            if self.settle_sec > 0.0:
+                time.sleep(self.settle_sec)
+            got_pair = self.record_data()
+            if got_pair:
+                print(
+                    f"Collected valid pair {len(self.tag_transforms)}/{self.required_valid_pairs}"
+                )
+            if cmd_count >= self.max_pose_commands and len(self.tag_transforms) < self.required_valid_pairs:
+                print(
+                    f"Reached max pose commands ({self.max_pose_commands}) before collecting "
+                    f"{self.required_valid_pairs} valid pairs."
+                )
+                break
 
-        print("Moving to home pose")
-        self.move_to_pose_target(self.home_pose, move_timeout)
-        if rospy.is_shutdown():
-            return
+        for _ in range(int(max(1, round(self.command_rate_hz * max(0.0, self.settle_sec))))):
+            self._publish_joint_target(q_start)
+            rate.sleep()
 
         if len(self.tag_transforms) == 0:
             print("No calibration data collected; skipping optimization.")
+            return
+        if len(self.tag_transforms) < self.required_valid_pairs:
+            print(
+                f"Insufficient valid pairs ({len(self.tag_transforms)}/{self.required_valid_pairs}); "
+                "skipping optimization."
+            )
             return
         print("Running optimizer...")
         parameters = self.optimizer.calibrate_camera(self.tag_transforms, self.robot_joints)
         print("Saving calibration matrices")
         self.optimizer.save_calibration_matrices(parameters, self.camera)
         print("Done!")
-
-
-def _parse_pose_arg(args: list[str], fallback: list[float]) -> list[float]:
-    if args is None:
-        return fallback
-    if len(args) != 6:
-        raise ValueError("Pose must be 6 floats: x y z yaw pitch roll (ZYX, radians).")
-    return [float(v) for v in args]
 
 
 def main(argv: Iterable[str]) -> int:
@@ -338,22 +432,72 @@ def main(argv: Iterable[str]) -> int:
     )
     parser.add_argument("--palm-link", type=str, default="palm", help="Palm link name in the URDF.")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--joint-state-topic", type=str, default="/tg2/joint_states")
-    parser.add_argument("--pose-command-topic", type=str, default="/tg2_inspirehand_fabric/pose_commands")
+    parser.add_argument("--joint-state-topic", type=str, default="/joint_states")
+    parser.add_argument("--command-topic", type=str, default="/arm/command_joint_states")
+    parser.add_argument(
+        "--command-joints",
+        default=",".join(RIGHT_ARM_HAND_JOINTS),
+        help="Comma-separated ordered joint names for direct command publishing.",
+    )
+    parser.add_argument(
+        "--start-joints",
+        default="",
+        help="Optional start vector (same length/order as --command-joints). If omitted, uses current /joint_states.",
+    )
+    parser.add_argument(
+        "--target-joints",
+        required=True,
+        help="Required target vector (same length/order as --command-joints).",
+    )
+    parser.add_argument("--num-steps", type=int, default=60, help="Interpolation points from start->target.")
+    parser.add_argument("--command-rate", type=float, default=30.0, help="Command publish rate (Hz).")
+    parser.add_argument(
+        "--max-command-step-rad",
+        type=float,
+        default=0.08,
+        help="Safety clamp: max per-step joint delta in radians.",
+    )
+    parser.add_argument(
+        "--feedback-timeout-sec",
+        type=float,
+        default=1.0,
+        help="Abort if joint feedback is older than this during execution.",
+    )
+    parser.add_argument(
+        "--wait-feedback-sec",
+        type=float,
+        default=3.0,
+        help="Max wait for initial /joint_states before aborting.",
+    )
+    parser.add_argument(
+        "--settle-sec",
+        type=float,
+        default=0.0,
+        help="Extra wait after each command before attempting to record a pair.",
+    )
     parser.add_argument("--tf-topic", type=str, default="/tf")
     parser.add_argument("--tag-frame-id", type=str, default="tag25h9:0")
-    parser.add_argument("--home-pose", nargs=6, help="Home pose: x y z yaw pitch roll (ZYX, radians).")
-    parser.add_argument("--target-pose", nargs=6, help="Target pose: x y z yaw pitch roll (ZYX, radians).")
-    parser.add_argument("--num-steps", type=int, default=30, help="Number of interpolated setpoints.")
-    parser.add_argument("--fabric-vel-threshold", type=float, default=0.05)
-    parser.add_argument("--publish-dt", type=float, default=1.0 / 30.0)
+    parser.add_argument(
+        "--required-valid-pairs",
+        type=int,
+        default=50,
+        help="Collect tag+joint pairs until this count is reached.",
+    )
+    parser.add_argument(
+        "--max-pose-commands",
+        type=int,
+        default=1000,
+        help="Safety cap on commanded poses while trying to gather valid pairs.",
+    )
 
     args = parser.parse_args(list(argv))
     if args.camera not in {"right", "left", "center"}:
         raise ValueError('Incorrect camera specification. Use "right", "left", or "center".')
-
-    home_pose = _parse_pose_arg(args.home_pose, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    target_pose = _parse_pose_arg(args.target_pose, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    joint_names = [name.strip() for name in args.command_joints.split(",") if name.strip()]
+    if not joint_names:
+        raise ValueError("--command-joints resolved to an empty list")
+    start_joints = _parse_vec(args.start_joints, "--start-joints", len(joint_names)) if args.start_joints else None
+    target_joints = _parse_vec(args.target_joints, "--target-joints", len(joint_names))
 
     rospy.init_node("tg2_camera_calibration")
 
@@ -363,14 +507,20 @@ def main(argv: Iterable[str]) -> int:
         palm_link=args.palm_link,
         device=args.device,
         joint_state_topic=args.joint_state_topic,
-        pose_command_topic=args.pose_command_topic,
+        command_topic=args.command_topic,
+        command_joint_names=joint_names,
+        start_joints=start_joints,
+        target_joints=target_joints,
+        num_steps=args.num_steps,
+        command_rate_hz=args.command_rate,
+        max_command_step_rad=args.max_command_step_rad,
+        feedback_timeout_sec=args.feedback_timeout_sec,
+        wait_feedback_sec=args.wait_feedback_sec,
         tag_frame_id=args.tag_frame_id,
         tf_topic=args.tf_topic,
-        home_pose=home_pose,
-        target_pose=target_pose,
-        num_steps=args.num_steps,
-        fabric_vel_threshold=args.fabric_vel_threshold,
-        publish_dt=args.publish_dt,
+        required_valid_pairs=args.required_valid_pairs,
+        max_pose_commands=args.max_pose_commands,
+        settle_sec=args.settle_sec,
     )
     node.run()
     return 0
