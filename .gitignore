@@ -7,7 +7,7 @@ logs
 .thumbs/
 
 runs/
-pretrained_ckpts/
+# pretrained_ckpts/
 wandb/
 outputs/
 background_imgs/
