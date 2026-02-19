@@ -61,8 +61,7 @@ from .dextrah_tg2_inspirehand_constants import (
 )
 
 # this is for calculating the forward kinematics on the hand points
-from fabrics_sim.utils.path_utils import get_robot_urdf_path
-from fabrics_sim.taskmaps.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
+from dextrah_lab.utils.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
 
 ## TODO:
 # define a palm direction vector
@@ -283,10 +282,8 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         self.robot_joint_pos_noise_width = torch.zeros(self.num_envs, 1, device=self.device)
         self.robot_joint_vel_noise_width = torch.zeros(self.num_envs, 1, device=self.device)
 
-        # For querying 3D points on hand      
-        # this is a fabric based forward kinematics helper
-        # the purpose is to use forward kinematics to generate a noisy fingertip and palm position and vel
-        # the noisy pos and vel will be compared with pure pos and vel
+        # For querying 3D points on hand via local FK taskmap utils.
+        # We use this to generate noisy fingertip/palm position and velocity for observations.
         self.urdf_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/urdf/tg2_with_hands_no_legs.urdf"
         self.hand_points_taskmap = RobotFrameOriginsTaskMap(self.urdf_path, self.cfg.hand_body_names,
                                                             self.num_envs, self.device)
