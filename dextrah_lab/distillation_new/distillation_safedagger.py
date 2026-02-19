@@ -34,6 +34,11 @@ from typing import Dict
 
 from ood_classifier import OODGaussianBuffer, OODPCABuffer, OODMLPBuffer
 from failure_predictor import FailurePredictor
+from dextrah_lab.distillation_new.eval_utils import (
+    UNSAFE_REASON_NAMES,
+    classify_out_of_reach_reasons,
+    unsafe_reason_percentages_from_counts,
+)
 
 # Imitation loss options (imitation_loss_type):
 # - "kl": KL(N_teacher || N_student) over action distributions.
@@ -249,11 +254,52 @@ class SafeDagger:
         self.games_to_track = 100
         self.frame = 0
         self.epoch_num = 0
+        self.unsafe_reason_names = UNSAFE_REASON_NAMES
+        self.unsafe_reason_to_idx = {
+            name: idx for idx, name in enumerate(self.unsafe_reason_names)
+        }
+        object_names = list(getattr(self.ov_env, "object_names", []))
+        if len(object_names) == 0:
+            object_names = ["object_0"]
+        self.metric_object_names = tuple(str(name) for name in object_names)
+        self.metric_object_tag_names = {
+            name: str(name).replace("/", "_")
+            for name in self.metric_object_names
+        }
+        object_idx = getattr(self.ov_env, "multi_object_idx", None)
+        if object_idx is None:
+            object_idx = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+        else:
+            object_idx = torch.as_tensor(object_idx, dtype=torch.long, device=self.device).flatten()
+            if object_idx.numel() < self.num_envs:
+                padded = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+                padded[: object_idx.numel()] = object_idx
+                object_idx = padded
+            elif object_idx.numel() > self.num_envs:
+                object_idx = object_idx[: self.num_envs]
+        self.env_object_idx = torch.clamp(
+            object_idx, min=0, max=len(self.metric_object_names) - 1
+        )
         self.game_rewards = torch_ext.AverageMeter(
             self.value_size, self.games_to_track
         ).to(self.device)
         self.game_lengths = torch_ext.AverageMeter(1, self.games_to_track).to(self.device)
         self.game_unsafe_terminated = torch_ext.AverageMeter(1, self.games_to_track).to(self.device)
+        self.game_unsafe_reason = {
+            name: torch_ext.AverageMeter(1, self.games_to_track).to(self.device)
+            for name in self.unsafe_reason_names
+        }
+        self.game_unsafe_terminated_by_object = {
+            object_name: torch_ext.AverageMeter(1, self.games_to_track).to(self.device)
+            for object_name in self.metric_object_names
+        }
+        self.game_unsafe_reason_by_object = {
+            object_name: {
+                reason_name: torch_ext.AverageMeter(1, self.games_to_track).to(self.device)
+                for reason_name in self.unsafe_reason_names
+            }
+            for object_name in self.metric_object_names
+        }
 
         if self.rank == 0:
             self.writer = SummaryWriter(summaries_dir)
@@ -374,6 +420,9 @@ class SafeDagger:
         )
         self.current_unsafe_terminated = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.current_unsafe_reason_idx = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
         )
         self.dones = torch.ones(
             (self.num_envs,), dtype=torch.uint8, device=self.device
@@ -714,7 +763,17 @@ class SafeDagger:
             self.frame += self.num_envs
             self.current_rewards += rew.unsqueeze(-1)
             self.current_lengths += 1
-            self.current_unsafe_terminated = self.current_unsafe_terminated | out_of_reach
+            reason_idx = classify_out_of_reach_reasons(
+                ov_env=self.ov_env,
+                out_of_reach=out_of_reach,
+                reason_names=self.unsafe_reason_names,
+                reason_to_idx=self.unsafe_reason_to_idx,
+                device=self.device,
+            )
+            classified_out_of_reach = reason_idx >= 0
+            self.current_unsafe_terminated = self.current_unsafe_terminated | classified_out_of_reach
+            new_reason_mask = (self.current_unsafe_reason_idx < 0) & classified_out_of_reach
+            self.current_unsafe_reason_idx[new_reason_mask] = reason_idx[new_reason_mask]
             self.dones = out_of_reach | timed_out
             all_done_indices = self.dones.nonzero(as_tuple=False)
 
@@ -751,10 +810,30 @@ class SafeDagger:
             self.game_rewards.update(self.current_rewards[done_indices])
             self.game_lengths.update(self.current_lengths[done_indices])
             self.game_unsafe_terminated.update(self.current_unsafe_terminated[done_indices].float())
+            done_reason_idx = self.current_unsafe_reason_idx[done_indices]
+            for name, idx in self.unsafe_reason_to_idx.items():
+                self.game_unsafe_reason[name].update((done_reason_idx == idx).float())
+            if len(done_indices) > 0:
+                done_env_ids = done_indices.squeeze(-1) if done_indices.ndim > 1 else done_indices
+                done_obj_idx = self.env_object_idx[done_env_ids]
+                for obj_idx, object_name in enumerate(self.metric_object_names):
+                    obj_mask = done_obj_idx == obj_idx
+                    if not obj_mask.any():
+                        continue
+                    obj_done_env_ids = done_env_ids[obj_mask]
+                    self.game_unsafe_terminated_by_object[object_name].update(
+                        self.current_unsafe_terminated[obj_done_env_ids].float()
+                    )
+                    obj_done_reason_idx = self.current_unsafe_reason_idx[obj_done_env_ids]
+                    for reason_name, reason_idx in self.unsafe_reason_to_idx.items():
+                        self.game_unsafe_reason_by_object[object_name][reason_name].update(
+                            (obj_done_reason_idx == reason_idx).float()
+                        )
             not_dones = 1.0 - self.dones.float()
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
             self.current_unsafe_terminated = self.current_unsafe_terminated & self.dones.logical_not()
+            self.current_unsafe_reason_idx[done_indices] = -1
             self.actions_teacher[done_indices] *= 0.
             if len(done_indices) > 0:
                 self.unsafe[done_indices] = False
@@ -781,15 +860,50 @@ class SafeDagger:
             ):
                 if self.rank == 0:
                     print(f"Running eval at iter {log_counter}...", flush=True)
-                eval_lift, eval_reward, eval_unsafe = self.evaluate_student(self.eval_num_episodes)
+                (
+                    eval_lift,
+                    eval_reward,
+                    eval_unsafe,
+                    eval_unsafe_reason_pct,
+                    eval_per_object_metrics,
+                ) = self.evaluate_student(self.eval_num_episodes)
                 if self.rank == 0 and eval_lift is not None:
-                    self.writer.add_scalar("eval/lift_success", eval_lift, self.frame)
-                    self.writer.add_scalar("eval/avg_reward", eval_reward, self.frame)
-                    self.writer.add_scalar("eval/unsafe_episode_rate", eval_unsafe, self.frame)
+                    self.writer.add_scalar("eval/avg/lift_success", eval_lift, self.frame)
+                    self.writer.add_scalar("eval/avg/avg_reward", eval_reward, self.frame)
+                    self.writer.add_scalar("eval/avg/unsafe_episode_rate", eval_unsafe, self.frame)
+                    for name in self.unsafe_reason_names:
+                        self.writer.add_scalar(
+                            f"eval/avg/unsafe_reason_pct/{name}",
+                            eval_unsafe_reason_pct.get(name, 0.0),
+                            self.frame,
+                        )
+                    for object_name, object_metrics in eval_per_object_metrics.items():
+                        object_tag_name = str(object_name).replace("/", "_")
+                        self.writer.add_scalar(
+                            f"eval/{object_tag_name}/lift_success",
+                            object_metrics.get("lift_success", 0.0),
+                            self.frame,
+                        )
+                        self.writer.add_scalar(
+                            f"eval/{object_tag_name}/unsafe_episode_rate",
+                            object_metrics.get("unsafe_episode_rate", 0.0),
+                            self.frame,
+                        )
+                        reason_pct = object_metrics.get("unsafe_reason_pct", {})
+                        for reason_name in self.unsafe_reason_names:
+                            self.writer.add_scalar(
+                                f"eval/{object_tag_name}/unsafe_reason_pct/{reason_name}",
+                                float(reason_pct.get(reason_name, 0.0)),
+                                self.frame,
+                            )
                     self.writer.flush()
                     print(
                         f"Eval lift_success: {eval_lift:.3f} | avg_reward: {eval_reward:.3f} | "
-                        f"unsafe_episode_rate: {eval_unsafe:.3f}",
+                        f"unsafe_episode_rate: {eval_unsafe:.3f} | "
+                        + " | ".join(
+                            [f"unsafe_reason_pct/{name}: {eval_unsafe_reason_pct.get(name, 0.0):.1f}%"
+                             for name in self.unsafe_reason_names]
+                        ),
                         flush=True,
                     )
                 if self.eval_env is None:
@@ -826,6 +940,42 @@ class SafeDagger:
             mean_lengths = self.game_lengths.get_mean()
             mean_unsafe_terminated = self.game_unsafe_terminated.get_mean()
             unsafe_episode_rate = float(np.asarray(mean_unsafe_terminated).reshape(-1)[0])
+            unsafe_reason_rates = {
+                name: float(np.asarray(self.game_unsafe_reason[name].get_mean()).reshape(-1)[0])
+                for name in self.unsafe_reason_names
+            }
+            if unsafe_episode_rate > 0.0:
+                unsafe_reason_pct = {
+                    name: 100.0 * rate / unsafe_episode_rate
+                    for name, rate in unsafe_reason_rates.items()
+                }
+            else:
+                unsafe_reason_pct = {name: 0.0 for name in self.unsafe_reason_names}
+            unsafe_episode_rate_by_object = {}
+            unsafe_reason_pct_by_object = {}
+            for object_name in self.metric_object_names:
+                object_unsafe_meter = self.game_unsafe_terminated_by_object[object_name]
+                if object_unsafe_meter.current_size > 0:
+                    object_unsafe_rate = float(np.asarray(object_unsafe_meter.get_mean()).reshape(-1)[0])
+                else:
+                    object_unsafe_rate = 0.0
+                unsafe_episode_rate_by_object[object_name] = object_unsafe_rate
+                object_reason_rates = {}
+                for reason_name in self.unsafe_reason_names:
+                    reason_meter = self.game_unsafe_reason_by_object[object_name][reason_name]
+                    if reason_meter.current_size > 0:
+                        object_reason_rates[reason_name] = float(np.asarray(reason_meter.get_mean()).reshape(-1)[0])
+                    else:
+                        object_reason_rates[reason_name] = 0.0
+                if object_unsafe_rate > 0.0:
+                    unsafe_reason_pct_by_object[object_name] = {
+                        reason_name: 100.0 * object_reason_rates[reason_name] / object_unsafe_rate
+                        for reason_name in self.unsafe_reason_names
+                    }
+                else:
+                    unsafe_reason_pct_by_object[object_name] = {
+                        reason_name: 0.0 for reason_name in self.unsafe_reason_names
+                    }
             self.mean_rewards = mean_rewards[0]
             for i in range(self.value_size):
                 rewards_name = "rewards" if i == 0 else "rewards{0}".format(i)
@@ -854,8 +1004,27 @@ class SafeDagger:
                     "beta", beta, self.frame
                 )
                 self.writer.add_scalar(
-                    "train/unsafe_episode_rate", unsafe_episode_rate, self.frame
+                    "train/avg/unsafe_episode_rate", unsafe_episode_rate, self.frame
                 )
+                for name in self.unsafe_reason_names:
+                    self.writer.add_scalar(
+                        f"train/avg/unsafe_reason_pct/{name}",
+                        unsafe_reason_pct[name],
+                        self.frame,
+                    )
+                for object_name in self.metric_object_names:
+                    object_tag_name = self.metric_object_tag_names[object_name]
+                    self.writer.add_scalar(
+                        f"train/{object_tag_name}/unsafe_episode_rate",
+                        unsafe_episode_rate_by_object[object_name],
+                        self.frame,
+                    )
+                    for reason_name in self.unsafe_reason_names:
+                        self.writer.add_scalar(
+                            f"train/{object_tag_name}/unsafe_reason_pct/{reason_name}",
+                            unsafe_reason_pct_by_object[object_name][reason_name],
+                            self.frame,
+                        )
                 self.writer.add_scalar(
                     "train/intervention_rate", beta, self.frame
                 )
@@ -881,7 +1050,22 @@ class SafeDagger:
                         "total_loss": total_loss.detach().cpu().numpy(),
                         "lr": self.optimizer.param_groups[0]["lr"],
                         "beta": beta,
-                        "train/unsafe_episode_rate": unsafe_episode_rate,
+                        "train/avg/unsafe_episode_rate": unsafe_episode_rate,
+                        **{
+                            f"train/avg/unsafe_reason_pct/{name}": unsafe_reason_pct[name]
+                            for name in self.unsafe_reason_names
+                        },
+                        **{
+                            f"train/{self.metric_object_tag_names[object_name]}/unsafe_episode_rate":
+                            unsafe_episode_rate_by_object[object_name]
+                            for object_name in self.metric_object_names
+                        },
+                        **{
+                            f"train/{self.metric_object_tag_names[object_name]}/unsafe_reason_pct/{reason_name}":
+                            unsafe_reason_pct_by_object[object_name][reason_name]
+                            for object_name in self.metric_object_names
+                            for reason_name in self.unsafe_reason_names
+                        },
                         "train/intervention_rate": beta,
                         "unsafe_l2_threshold": float(unsafe_l2_threshold) if unsafe_l2_threshold is not None else self.unsafe_l2_threshold,
                         "iteration": self.frame
@@ -936,6 +1120,8 @@ class SafeDagger:
                 print("\tMean Length: ", mean_lengths)
                 print("\tin_success_region: ", perf)
                 print("\tunsafe_episode_rate: ", mean_unsafe_terminated)
+                for name in self.unsafe_reason_names:
+                    print(f"\tunsafe_reason_pct/{name}: {unsafe_reason_pct[name]:.2f}")
 
     def log_img(self, pred_images, gt_images):
         combined_images = torch.cat((pred_images, gt_images), dim=0)
@@ -1239,7 +1425,7 @@ class SafeDagger:
 
     def evaluate_student(self, num_episodes):
         if num_episodes <= 0:
-            return None, None, None
+            return None, None, None, None, {}
         eval_env = self.eval_env if self.eval_env is not None else self.env
         eval_ov_env = eval_env.env
         if eval_ov_env.num_envs != self.num_envs:
@@ -1248,8 +1434,26 @@ class SafeDagger:
                     "Skipping eval: eval_env num_envs must match training num_envs "
                     f"({eval_ov_env.num_envs} vs {self.num_envs})."
                 )
-            return None, None, None
+            return None, None, None, None, {}
         num_envs = eval_ov_env.num_envs
+        eval_object_names = list(getattr(eval_ov_env, "object_names", []))
+        if len(eval_object_names) == 0:
+            eval_object_names = list(self.metric_object_names)
+        if len(eval_object_names) == 0:
+            eval_object_names = ["object_0"]
+        eval_object_names = [str(name) for name in eval_object_names]
+        eval_object_idx = getattr(eval_ov_env, "multi_object_idx", None)
+        if eval_object_idx is None:
+            eval_object_idx = torch.zeros((num_envs,), dtype=torch.long, device=self.device)
+        else:
+            eval_object_idx = torch.as_tensor(eval_object_idx, dtype=torch.long, device=self.device).flatten()
+            if eval_object_idx.numel() < num_envs:
+                padded = torch.zeros((num_envs,), dtype=torch.long, device=self.device)
+                padded[: eval_object_idx.numel()] = eval_object_idx
+                eval_object_idx = padded
+            elif eval_object_idx.numel() > num_envs:
+                eval_object_idx = eval_object_idx[:num_envs]
+        eval_object_idx = torch.clamp(eval_object_idx, min=0, max=len(eval_object_names) - 1)
         sim_dt = getattr(eval_ov_env.cfg, "sim_dt", None)
         if sim_dt is None and hasattr(eval_ov_env.cfg, "sim"):
             sim_dt = getattr(eval_ov_env.cfg.sim, "dt", None)
@@ -1280,12 +1484,26 @@ class SafeDagger:
         success_rates = []
         reward_means = []
         unsafe_rates = []
+        unsafe_reason_pct_series = {
+            name: [] for name in self.unsafe_reason_names
+        }
+        per_object_lift_series = {
+            object_name: [] for object_name in eval_object_names
+        }
+        per_object_unsafe_rate_series = {
+            object_name: [] for object_name in eval_object_names
+        }
+        per_object_unsafe_reason_pct_series = {
+            object_name: {name: [] for name in self.unsafe_reason_names}
+            for object_name in eval_object_names
+        }
         with torch.no_grad():
             for _ in range(num_episodes):
                 obs = eval_env.reset()[0]
                 dones = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
                 ever_lifted = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
                 ever_unsafe_terminated = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
+                unsafe_reason_idx = torch.full((num_envs,), -1, dtype=torch.long, device=self.device)
                 if self.is_rnn:
                     hidden_states = [s.to(self.device) for s in self.student_model.get_default_rnn_state()]
                 else:
@@ -1300,7 +1518,17 @@ class SafeDagger:
                     )
                     obs, reward, out_of_reach, timed_out, info = eval_env.step(actions)
                     dones = out_of_reach | timed_out
-                    ever_unsafe_terminated = ever_unsafe_terminated | out_of_reach
+                    reason_idx = classify_out_of_reach_reasons(
+                        ov_env=eval_ov_env,
+                        out_of_reach=out_of_reach,
+                        reason_names=self.unsafe_reason_names,
+                        reason_to_idx=self.unsafe_reason_to_idx,
+                        device=self.device,
+                    )
+                    classified_out_of_reach = reason_idx >= 0
+                    ever_unsafe_terminated = ever_unsafe_terminated | classified_out_of_reach
+                    new_reason_mask = (unsafe_reason_idx < 0) & classified_out_of_reach
+                    unsafe_reason_idx[new_reason_mask] = reason_idx[new_reason_mask]
                     prev_actions = actions.detach()
                     if self.is_rnn and dones.any():
                         self._zero_rnn_states(hidden_states, dones.nonzero(as_tuple=False))
@@ -1320,14 +1548,6 @@ class SafeDagger:
                     else:
                         contact_mask = torch.ones_like(lift_success, dtype=torch.bool)
                     lift_success = lift_success & contact_mask
-                    try:
-                        lift_weight = eval_ov_env.dextrah_adr.get_custom_param_value(
-                            "reward_weights", "lift_weight"
-                        )
-                    except Exception:
-                        lift_weight = 1.0
-                    if lift_weight == 0.0:
-                        lift_success = torch.zeros_like(lift_success)
                     active_envs = ~dones
                     lift_hold_counts = torch.where(
                         active_envs & lift_success,
@@ -1342,12 +1562,76 @@ class SafeDagger:
                 success_rates.append(ever_lifted.float().mean().item())
                 reward_means.append(reward_sum.mean().item())
                 unsafe_rates.append(ever_unsafe_terminated.float().mean().item())
+                unsafe_count = int(ever_unsafe_terminated.sum().item())
+                reason_counts = {
+                    name: int((unsafe_reason_idx == idx).sum().item())
+                    for name, idx in self.unsafe_reason_to_idx.items()
+                }
+                reason_pct = unsafe_reason_percentages_from_counts(
+                    reason_counts,
+                    unsafe_count,
+                    self.unsafe_reason_names,
+                )
+                for name in self.unsafe_reason_names:
+                    unsafe_reason_pct_series[name].append(reason_pct.get(name, 0.0))
+                for obj_idx, object_name in enumerate(eval_object_names):
+                    obj_mask = eval_object_idx == obj_idx
+                    if not obj_mask.any():
+                        continue
+                    per_object_lift_series[object_name].append(
+                        ever_lifted[obj_mask].float().mean().item()
+                    )
+                    per_object_unsafe_rate_series[object_name].append(
+                        ever_unsafe_terminated[obj_mask].float().mean().item()
+                    )
+                    obj_unsafe_count = int(ever_unsafe_terminated[obj_mask].sum().item())
+                    obj_reason_counts = {
+                        name: int((unsafe_reason_idx[obj_mask] == idx).sum().item())
+                        for name, idx in self.unsafe_reason_to_idx.items()
+                    }
+                    obj_reason_pct = unsafe_reason_percentages_from_counts(
+                        obj_reason_counts,
+                        obj_unsafe_count,
+                        self.unsafe_reason_names,
+                    )
+                    for reason_name in self.unsafe_reason_names:
+                        per_object_unsafe_reason_pct_series[object_name][reason_name].append(
+                            obj_reason_pct.get(reason_name, 0.0)
+                        )
         if was_training:
             self.student_model.train()
+        eval_reason_pct = {
+            name: float(np.mean(unsafe_reason_pct_series[name])) if len(unsafe_reason_pct_series[name]) > 0 else 0.0
+            for name in self.unsafe_reason_names
+        }
+        eval_per_object_metrics = {}
+        for object_name in eval_object_names:
+            eval_per_object_metrics[object_name] = {
+                "lift_success": (
+                    float(np.mean(per_object_lift_series[object_name]))
+                    if len(per_object_lift_series[object_name]) > 0
+                    else 0.0
+                ),
+                "unsafe_episode_rate": (
+                    float(np.mean(per_object_unsafe_rate_series[object_name]))
+                    if len(per_object_unsafe_rate_series[object_name]) > 0
+                    else 0.0
+                ),
+                "unsafe_reason_pct": {
+                    name: (
+                        float(np.mean(per_object_unsafe_reason_pct_series[object_name][name]))
+                        if len(per_object_unsafe_reason_pct_series[object_name][name]) > 0
+                        else 0.0
+                    )
+                    for name in self.unsafe_reason_names
+                },
+            }
         return (
             float(np.mean(success_rates)),
             float(np.mean(reward_means)),
             float(np.mean(unsafe_rates)),
+            eval_reason_pct,
+            eval_per_object_metrics,
         )
 
     def loss(self, student_result, target_result, fn="l2", weights=None):
