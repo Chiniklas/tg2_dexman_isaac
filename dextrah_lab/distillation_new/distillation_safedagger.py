@@ -207,7 +207,7 @@ class SafeDagger:
         if self.rank == 0:
             print(f"Using imitation loss: {self.imitation_loss_type}")
         self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-4, eps=1e-8) # default lr = 1e-4
-        self.num_iters = 100_000
+        self.num_iters = int(self.config.get("num_iters", 100_000) or 100_000)
 
         # load weights for student and teacher
         if self.config["student"]["ckpt"] is not None:
@@ -813,9 +813,9 @@ class SafeDagger:
                 reason_to_idx=self.unsafe_reason_to_idx,
                 device=self.device,
             )
+            self.current_unsafe_terminated = self.current_unsafe_terminated | out_of_reach
             classified_out_of_reach = reason_idx >= 0
-            self.current_unsafe_terminated = self.current_unsafe_terminated | classified_out_of_reach
-            new_reason_mask = (self.current_unsafe_reason_idx < 0) & classified_out_of_reach
+            new_reason_mask = (self.current_unsafe_reason_idx < 0) & out_of_reach & classified_out_of_reach
             self.current_unsafe_reason_idx[new_reason_mask] = reason_idx[new_reason_mask]
             self.dones = out_of_reach | timed_out
             all_done_indices = self.dones.nonzero(as_tuple=False)
@@ -1575,9 +1575,9 @@ class SafeDagger:
                         reason_to_idx=self.unsafe_reason_to_idx,
                         device=self.device,
                     )
+                    ever_unsafe_terminated = ever_unsafe_terminated | out_of_reach
                     classified_out_of_reach = reason_idx >= 0
-                    ever_unsafe_terminated = ever_unsafe_terminated | classified_out_of_reach
-                    new_reason_mask = (unsafe_reason_idx < 0) & classified_out_of_reach
+                    new_reason_mask = (unsafe_reason_idx < 0) & out_of_reach & classified_out_of_reach
                     unsafe_reason_idx[new_reason_mask] = reason_idx[new_reason_mask]
                     prev_actions = actions.detach()
                     if self.is_rnn and dones.any():

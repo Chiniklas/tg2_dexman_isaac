@@ -20,7 +20,7 @@ parser.add_argument("--seed", type=int, default=None, help="Seed used for the en
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
-parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument("--max_iterations", type=int, default=100000, help="Total distillation iterations.")
 parser.add_argument("--teacher", type=str, default=None, help="Teacher checkpoint to use")
 parser.add_argument("--student", type=str, default=None, help="Student checkpoint to use")
 parser.add_argument("--play_policy", type=bool, default=False, help="Play a distilled policy.")
@@ -314,6 +314,7 @@ def main(env_cfg, agent_cfg: dict):
         "eval_num_episodes": args_cli.eval_num_episodes,
         "eval_max_steps": args_cli.eval_max_steps,
         "eval_lift_hold_s": distill_cfg.get("eval_lift_hold_s", 0.5),
+        "num_iters": args_cli.max_iterations,
     }
     if isinstance(distill_cfg.get("failure_predictor", None), dict):
         dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])

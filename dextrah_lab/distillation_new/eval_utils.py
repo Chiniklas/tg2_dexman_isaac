@@ -8,8 +8,7 @@ Evaluation metrics used by teacher eval and distillation eval:
    - Reported as the mean over evaluated episodes.
 
 2) `unsafe_episode_rate`
-   - Episode is unsafe if any `out_of_reach` step is classified into one of:
-     `object_out_of_bound`, `hand_too_far`, `harmful_collision`.
+   - Episode is unsafe if any raw `out_of_reach` step occurs.
    - Formula: `unsafe_episode_rate = (# unsafe episodes) / (# evaluated episodes)`.
 
 3) `unsafe_reason_pct/<category>`
@@ -20,6 +19,7 @@ Evaluation metrics used by teacher eval and distillation eval:
      `object_out_of_bound`: object_x_out/object_y_out/object_too_low grouped.
      `hand_too_far`: standalone category.
      `harmful_collision`: hand_too_close/arm_table_contact grouped.
+     `palm_flipped`: palm orientation flip termination.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ UNSAFE_REASON_NAMES: tuple[str, ...] = (
     "object_out_of_bound",
     "hand_too_far",
     "harmful_collision",
+    "palm_flipped",
 )
 
 
@@ -58,6 +59,7 @@ def compute_out_of_reach_reason_masks(ov_env, num_envs: int, device: torch.devic
     hand_too_far = zeros.clone()
     hand_too_close = zeros.clone()
     arm_table_contact = zeros.clone()
+    palm_flipped = zeros.clone()
 
     try:
         object_outside_upper_x = ov_env.object_pos[:, 0] > (ov_env.cfg.x_center + ov_env.cfg.x_width / 2.0)
@@ -109,9 +111,16 @@ def compute_out_of_reach_reason_masks(ov_env, num_envs: int, device: torch.devic
     except Exception:
         pass
 
+    try:
+        palm_flip_cos = torch.sum(ov_env.palm_direction_vec * ov_env._palm_dir_target_world, dim=-1)
+        palm_flipped = palm_flip_cos < ov_env.cfg.palm_flip_cos_thresh
+    except Exception:
+        pass
+
     masks["object_out_of_bound"] = object_out_of_bound
     masks["hand_too_far"] = hand_too_far
     masks["harmful_collision"] = hand_too_close | arm_table_contact
+    masks["palm_flipped"] = palm_flipped
     return masks
 
 

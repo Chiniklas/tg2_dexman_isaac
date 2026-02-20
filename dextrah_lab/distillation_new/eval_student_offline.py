@@ -415,9 +415,9 @@ class PolicyEvaluator:
                         reason_to_idx=UNSAFE_REASON_TO_IDX,
                         device=self.device,
                     )
+                    ever_unsafe = ever_unsafe | out_of_reach
                     classified_unsafe = reason_idx >= 0
-                    ever_unsafe = ever_unsafe | classified_unsafe
-                    new_reason = (unsafe_reason_idx < 0) & classified_unsafe
+                    new_reason = (unsafe_reason_idx < 0) & out_of_reach & classified_unsafe
                     unsafe_reason_idx[new_reason] = reason_idx[new_reason]
 
                     step_lift_success = _compute_lift_success(self.ov_env)

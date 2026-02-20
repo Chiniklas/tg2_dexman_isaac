@@ -104,6 +104,7 @@ UNSAFE_REASON_NAMES: tuple[str, ...] = (
     "object_out_of_bound",
     "hand_too_far",
     "harmful_collision",
+    "palm_flipped",
 )
 
 
@@ -312,6 +313,7 @@ def _compute_out_of_reach_reason_masks(eval_env, num_envs: int, device: torch.de
     object_out_of_bound = zeros.clone()
     hand_too_far = zeros.clone()
     harmful_collision = zeros.clone()
+    palm_flipped = zeros.clone()
 
     try:
         object_outside_upper_x = eval_env.object_pos[:, 0] > (eval_env.cfg.x_center + eval_env.cfg.x_width / 2.0)
@@ -367,9 +369,16 @@ def _compute_out_of_reach_reason_masks(eval_env, num_envs: int, device: torch.de
         pass
 
     harmful_collision = hand_too_close | arm_table_contact
+    try:
+        palm_flip_cos = torch.sum(eval_env.palm_direction_vec * eval_env._palm_dir_target_world, dim=-1)
+        palm_flipped = palm_flip_cos < eval_env.cfg.palm_flip_cos_thresh
+    except Exception:
+        pass
+
     masks["object_out_of_bound"] = object_out_of_bound
     masks["hand_too_far"] = hand_too_far
     masks["harmful_collision"] = harmful_collision
+    masks["palm_flipped"] = palm_flipped
 
     return masks
 
@@ -507,12 +516,11 @@ def _run_eval_for_checkpoint(
                     if total_done >= total_target:
                         break
                     total_success += float(ever_lifted[idx].item())
-                    unsafe_flag = False
-                    if bool(out_of_reach[idx].item()):
+                    unsafe_flag = bool(out_of_reach[idx].item())
+                    if unsafe_flag:
                         reason = _select_primary_reason(reason_masks, idx)
                         if reason is not None:
                             unsafe_reason_counts[reason] = unsafe_reason_counts.get(reason, 0) + 1
-                            unsafe_flag = True
                     total_unsafe += float(unsafe_flag)
                     total_done += 1
                     steps_per_env[idx] = 0
