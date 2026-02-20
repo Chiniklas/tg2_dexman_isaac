@@ -49,9 +49,56 @@ def as_bool_mask(values, num_envs: int, device: torch.device) -> torch.Tensor:
     return mask[:num_envs]
 
 
+def _get_raw_out_of_reach_reason_masks(ov_env, num_envs: int, device: torch.device) -> dict[str, torch.Tensor]:
+    raw_masks: dict[str, torch.Tensor] = {}
+
+    # Prefer raw termination signals produced in _get_dones() for this exact step.
+    if hasattr(ov_env, "last_hand_too_far"):
+        raw_masks["hand_too_far"] = as_bool_mask(ov_env.last_hand_too_far, num_envs, device)
+    if hasattr(ov_env, "last_palm_flipped"):
+        raw_masks["palm_flipped"] = as_bool_mask(ov_env.last_palm_flipped, num_envs, device)
+
+    object_x_parts = []
+    if hasattr(ov_env, "last_object_outside_upper_x"):
+        object_x_parts.append(as_bool_mask(ov_env.last_object_outside_upper_x, num_envs, device))
+    if hasattr(ov_env, "last_object_outside_lower_x"):
+        object_x_parts.append(as_bool_mask(ov_env.last_object_outside_lower_x, num_envs, device))
+
+    object_y_parts = []
+    if hasattr(ov_env, "last_object_outside_upper_y"):
+        object_y_parts.append(as_bool_mask(ov_env.last_object_outside_upper_y, num_envs, device))
+    if hasattr(ov_env, "last_object_outside_lower_y"):
+        object_y_parts.append(as_bool_mask(ov_env.last_object_outside_lower_y, num_envs, device))
+
+    object_low = as_bool_mask(getattr(ov_env, "last_object_too_low", False), num_envs, device)
+    if object_x_parts or object_y_parts or bool(object_low.any().item()):
+        object_x_out = torch.zeros((num_envs,), dtype=torch.bool, device=device)
+        for part in object_x_parts:
+            object_x_out |= part
+        object_y_out = torch.zeros((num_envs,), dtype=torch.bool, device=device)
+        for part in object_y_parts:
+            object_y_out |= part
+        raw_masks["object_out_of_bound"] = object_x_out | object_y_out | object_low
+
+    hand_too_close = as_bool_mask(getattr(ov_env, "last_hand_too_close", False), num_envs, device)
+    arm_table_contact = as_bool_mask(getattr(ov_env, "last_arm_table_contact_mask", False), num_envs, device)
+    if bool(hand_too_close.any().item()) or bool(arm_table_contact.any().item()) or hasattr(
+        ov_env, "last_hand_too_close"
+    ) or hasattr(ov_env, "last_arm_table_contact_mask"):
+        raw_masks["harmful_collision"] = hand_too_close | arm_table_contact
+
+    return raw_masks
+
+
 def compute_out_of_reach_reason_masks(ov_env, num_envs: int, device: torch.device) -> dict[str, torch.Tensor]:
     zeros = torch.zeros((num_envs,), dtype=torch.bool, device=device)
     masks = {name: zeros.clone() for name in UNSAFE_REASON_NAMES}
+    raw_masks = _get_raw_out_of_reach_reason_masks(ov_env, num_envs, device)
+    for reason_name, reason_mask in raw_masks.items():
+        masks[reason_name] = reason_mask
+    if len(raw_masks) == len(UNSAFE_REASON_NAMES):
+        return masks
+
     if not hasattr(ov_env, "object_pos"):
         return masks
 
@@ -117,10 +164,14 @@ def compute_out_of_reach_reason_masks(ov_env, num_envs: int, device: torch.devic
     except Exception:
         pass
 
-    masks["object_out_of_bound"] = object_out_of_bound
-    masks["hand_too_far"] = hand_too_far
-    masks["harmful_collision"] = hand_too_close | arm_table_contact
-    masks["palm_flipped"] = palm_flipped
+    if "object_out_of_bound" not in raw_masks:
+        masks["object_out_of_bound"] = object_out_of_bound
+    if "hand_too_far" not in raw_masks:
+        masks["hand_too_far"] = hand_too_far
+    if "harmful_collision" not in raw_masks:
+        masks["harmful_collision"] = hand_too_close | arm_table_contact
+    if "palm_flipped" not in raw_masks:
+        masks["palm_flipped"] = palm_flipped
     return masks
 
 

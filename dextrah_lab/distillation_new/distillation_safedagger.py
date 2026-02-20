@@ -955,6 +955,10 @@ class SafeDagger:
 
         if self.rank == 0 and self.use_wandb:
             wandb.finish()
+        if self.rank == 0 and hasattr(self, "writer") and self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+        return log_counter
 
     # --- Logging and Visualization ---
     def log_information(

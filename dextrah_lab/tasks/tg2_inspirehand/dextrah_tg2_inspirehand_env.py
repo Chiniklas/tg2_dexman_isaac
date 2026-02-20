@@ -83,6 +83,18 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.distill_max_episode_length = int(self.cfg.distillation_episode_length_s / step_dt)
         # Track whether any arm link is in contact with the table (per-env mask).
         self.arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Raw termination signals from the most recent _get_dones() call.
+        self.last_out_of_reach = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_time_out = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_object_outside_upper_x = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_object_outside_lower_x = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_object_outside_upper_y = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_object_outside_lower_y = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_object_too_low = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_hand_too_far = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_hand_too_close = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_arm_table_contact_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_palm_flipped = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # Track hand-object contact counts per env.
         self.object_contact_counts = torch.zeros(self.num_envs, device=self.device)
         # Track per-env good-grasp mask (thumb + at least one other finger).
@@ -1183,7 +1195,19 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         else:
             time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        #return out_of_reach, time_out
+        # Cache raw per-signal termination components for downstream metric extraction.
+        self.last_out_of_reach.copy_(out_of_reach)
+        self.last_time_out.copy_(time_out)
+        self.last_object_outside_upper_x.copy_(object_outside_upper_x)
+        self.last_object_outside_lower_x.copy_(object_outside_lower_x)
+        self.last_object_outside_upper_y.copy_(object_outside_upper_y)
+        self.last_object_outside_lower_y.copy_(object_outside_lower_y)
+        self.last_object_too_low.copy_(object_too_low)
+        self.last_hand_too_far.copy_(hand_too_far)
+        self.last_hand_too_close.copy_(hand_too_close)
+        self.last_arm_table_contact_mask.copy_(self.arm_table_contact_mask)
+        self.last_palm_flipped.copy_(palm_flipped)
+
         return out_of_reach, time_out
 
     def _reset_idx(self, env_ids: Sequence[int] | None):

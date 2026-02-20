@@ -170,93 +170,96 @@ def main(env_cfg, agent_cfg: dict):
     )
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
-    # create isaac environment
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-    ov_env = env.env
-
+    env = None
     eval_env = None
-    if args_cli.eval_every is not None and args_cli.eval_every > 0:
-        if args_cli.eval_num_envs is not None and args_cli.eval_num_envs != env_cfg.scene.num_envs:
-            print(
-                "Inline eval uses the training environment; ignoring --eval_num_envs "
-                f"({args_cli.eval_num_envs} != {env_cfg.scene.num_envs})."
-            )
-        if args_cli.eval_objects_dir:
-            eval_env_cfg = copy.deepcopy(env_cfg)
-            eval_env_cfg.scene.num_envs = env_cfg.scene.num_envs
-            eval_env_cfg.objects_dir = args_cli.eval_objects_dir
-            if (
-                hasattr(eval_env_cfg, "valid_objects_dir")
-                and isinstance(eval_env_cfg.valid_objects_dir, list)
-                and args_cli.eval_objects_dir not in eval_env_cfg.valid_objects_dir
-            ):
-                eval_env_cfg.valid_objects_dir.append(args_cli.eval_objects_dir)
-            eval_env = gym.make(args_cli.task, cfg=eval_env_cfg, render_mode=None)
-            print(
-                f"Inline eval objects_dir={args_cli.eval_objects_dir} "
-                f"(train objects_dir={env_cfg.objects_dir})",
-                flush=True,
-            )
+    dagger = None
+    try:
+        # create isaac environment
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+        ov_env = env.env
 
-    parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
-    agent_cfg_folder = "dextrah_lab/tasks/tg2_inspirehand/agents"
+        if args_cli.eval_every is not None and args_cli.eval_every > 0:
+            if args_cli.eval_num_envs is not None and args_cli.eval_num_envs != env_cfg.scene.num_envs:
+                print(
+                    "Inline eval uses the training environment; ignoring --eval_num_envs "
+                    f"({args_cli.eval_num_envs} != {env_cfg.scene.num_envs})."
+                )
+            if args_cli.eval_objects_dir:
+                eval_env_cfg = copy.deepcopy(env_cfg)
+                eval_env_cfg.scene.num_envs = env_cfg.scene.num_envs
+                eval_env_cfg.objects_dir = args_cli.eval_objects_dir
+                if (
+                    hasattr(eval_env_cfg, "valid_objects_dir")
+                    and isinstance(eval_env_cfg.valid_objects_dir, list)
+                    and args_cli.eval_objects_dir not in eval_env_cfg.valid_objects_dir
+                ):
+                    eval_env_cfg.valid_objects_dir.append(args_cli.eval_objects_dir)
+                eval_env = gym.make(args_cli.task, cfg=eval_env_cfg, render_mode=None)
+                print(
+                    f"Inline eval objects_dir={args_cli.eval_objects_dir} "
+                    f"(train objects_dir={env_cfg.objects_dir})",
+                    flush=True,
+                )
 
-    if not ov_env.simulate_stereo:
-        raise ValueError("distillation_new only supports stereo transformer policies.")
-    student_cfg = os.path.join(
-        parent_path,
-        agent_cfg_folder,
-        "rl_games_ppo_stereo_transformer.yaml",
-    )
+        parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
+        agent_cfg_folder = "dextrah_lab/tasks/tg2_inspirehand/agents"
 
-    teacher_cfg = os.path.join(
-        parent_path,
-        agent_cfg_folder,
-        "rl_games_ppo_lstm_cfg.yaml"
-    )
+        if not ov_env.simulate_stereo:
+            raise ValueError("distillation_new only supports stereo transformer policies.")
+        student_cfg = os.path.join(
+            parent_path,
+            agent_cfg_folder,
+            "rl_games_ppo_stereo_transformer.yaml",
+        )
 
-    num_student_obs = ov_env.num_observations
-    num_teacher_obs = ov_env.num_teacher_observations
-    num_actions = ov_env.num_actions
-    # Determine checkpoints
-    teacher_ckpt = None
-    if not args_cli.play_policy:
-        if args_cli.teacher is not None:
-            teacher_ckpt = os.path.join(parent_path, "pretrained_ckpts", args_cli.teacher)
-        else:
-            teacher_ckpt = os.path.join(parent_path, "pretrained_ckpts/new_teacher.pth")
-    student_ckpt = None
-    if args_cli.student is not None:
-        student_ckpt = args_cli.student
-        if not os.path.isabs(student_ckpt):
-            student_ckpt = os.path.join(parent_path, "pretrained_ckpts", student_ckpt)
+        teacher_cfg = os.path.join(
+            parent_path,
+            agent_cfg_folder,
+            "rl_games_ppo_lstm_cfg.yaml"
+        )
 
-    train_dir = "runs"
-    experiment_name = (
-        "dextrah-tg2-inspirehand"
-        + datetime.now().strftime("_%d-%H-%M-%S")
-    )
-    experiment_dir = os.path.join(train_dir, experiment_name)
-    nn_dir = os.path.join(experiment_dir, "nn")
-    summaries_dir = os.path.join(experiment_dir, "summaries")
-    params_dir = os.path.join(experiment_dir, "params")
+        num_student_obs = ov_env.num_observations
+        num_teacher_obs = ov_env.num_teacher_observations
+        num_actions = ov_env.num_actions
+        # Determine checkpoints
+        teacher_ckpt = None
+        if not args_cli.play_policy:
+            if args_cli.teacher is not None:
+                teacher_ckpt = os.path.join(parent_path, "pretrained_ckpts", args_cli.teacher)
+            else:
+                teacher_ckpt = os.path.join(parent_path, "pretrained_ckpts/new_teacher.pth")
+        student_ckpt = None
+        if args_cli.student is not None:
+            student_ckpt = args_cli.student
+            if not os.path.isabs(student_ckpt):
+                student_ckpt = os.path.join(parent_path, "pretrained_ckpts", student_ckpt)
 
-    os.makedirs(train_dir, exist_ok=True)
-    os.makedirs(experiment_dir, exist_ok=True)
-    os.makedirs(nn_dir, exist_ok=True)
-    os.makedirs(summaries_dir, exist_ok=True)
-    os.makedirs(params_dir, exist_ok=True)
-    print(f"[INFO] Distillation logs in directory: {os.path.abspath(experiment_dir)}")
+        train_dir = "runs"
+        experiment_name = (
+            "dextrah-tg2-inspirehand"
+            + datetime.now().strftime("_%d-%H-%M-%S")
+        )
+        experiment_dir = os.path.join(train_dir, experiment_name)
+        nn_dir = os.path.join(experiment_dir, "nn")
+        summaries_dir = os.path.join(experiment_dir, "summaries")
+        params_dir = os.path.join(experiment_dir, "params")
 
-    with open(student_cfg, "r") as f:
-        student_cfg_yaml = yaml.safe_load(f) or {}
-    with open(teacher_cfg, "r") as f:
-        teacher_cfg_yaml = yaml.safe_load(f) or {}
-    distill_cfg = (
-        student_cfg_yaml.get("params", {}).get("distillation", {}) if isinstance(student_cfg_yaml, dict) else {}
-    )
+        os.makedirs(train_dir, exist_ok=True)
+        os.makedirs(experiment_dir, exist_ok=True)
+        os.makedirs(nn_dir, exist_ok=True)
+        os.makedirs(summaries_dir, exist_ok=True)
+        os.makedirs(params_dir, exist_ok=True)
+        print(f"[INFO] Distillation logs in directory: {os.path.abspath(experiment_dir)}")
 
-    dagger_config = {
+        with open(student_cfg, "r") as f:
+            student_cfg_yaml = yaml.safe_load(f) or {}
+        with open(teacher_cfg, "r") as f:
+            teacher_cfg_yaml = yaml.safe_load(f) or {}
+        distill_cfg = (
+            student_cfg_yaml.get("params", {}).get("distillation", {}) if isinstance(student_cfg_yaml, dict) else {}
+        )
+
+        dagger_config = {
         "student": {
             "cfg": student_cfg,
             "ckpt": student_ckpt,
@@ -316,39 +319,39 @@ def main(env_cfg, agent_cfg: dict):
         "eval_lift_hold_s": distill_cfg.get("eval_lift_hold_s", 0.5),
         "num_iters": args_cli.max_iterations,
     }
-    if isinstance(distill_cfg.get("failure_predictor", None), dict):
-        dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])
-    if isinstance(distill_cfg.get("ood", None), dict):
-        dagger_config["ood"].update(distill_cfg["ood"])
-    if args_cli.imitation_target is not None:
-        dagger_config["imitation_target"] = args_cli.imitation_target
-    if args_cli.loss_type is not None:
-        dagger_config["loss_type"] = args_cli.loss_type
-    if args_cli.unsafe_mode is not None:
-        dagger_config["unsafe_mode"] = args_cli.unsafe_mode
-    mode = dagger_config["unsafe_mode"]
-    if mode == "ood":
-        dagger_config["ood"]["enabled"] = True
-        dagger_config["failure_predictor"]["enabled"] = False
-    elif mode == "failure_predictor":
-        dagger_config["failure_predictor"]["enabled"] = True
-        dagger_config["ood"]["enabled"] = False
-    elif mode in {"none", "l2"}:
-        dagger_config["ood"]["enabled"] = False
-        dagger_config["failure_predictor"]["enabled"] = False
-    if args_cli.unsafe_l2_threshold_mode is not None:
-        dagger_config["unsafe_l2_threshold_mode"] = args_cli.unsafe_l2_threshold_mode
-    if args_cli.unsafe_l2_threshold_start is not None:
-        dagger_config["unsafe_l2_threshold_start"] = args_cli.unsafe_l2_threshold_start
-    if args_cli.unsafe_l2_threshold_end is not None:
-        dagger_config["unsafe_l2_threshold_end"] = args_cli.unsafe_l2_threshold_end
-    if args_cli.unsafe_l2_threshold_anneal_iters is not None:
-        dagger_config["unsafe_l2_threshold_anneal_iters"] = args_cli.unsafe_l2_threshold_anneal_iters
-    if args_cli.eval_lift_hold_s is not None:
-        dagger_config["eval_lift_hold_s"] = args_cli.eval_lift_hold_s
+        if isinstance(distill_cfg.get("failure_predictor", None), dict):
+            dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])
+        if isinstance(distill_cfg.get("ood", None), dict):
+            dagger_config["ood"].update(distill_cfg["ood"])
+        if args_cli.imitation_target is not None:
+            dagger_config["imitation_target"] = args_cli.imitation_target
+        if args_cli.loss_type is not None:
+            dagger_config["loss_type"] = args_cli.loss_type
+        if args_cli.unsafe_mode is not None:
+            dagger_config["unsafe_mode"] = args_cli.unsafe_mode
+        mode = dagger_config["unsafe_mode"]
+        if mode == "ood":
+            dagger_config["ood"]["enabled"] = True
+            dagger_config["failure_predictor"]["enabled"] = False
+        elif mode == "failure_predictor":
+            dagger_config["failure_predictor"]["enabled"] = True
+            dagger_config["ood"]["enabled"] = False
+        elif mode in {"none", "l2"}:
+            dagger_config["ood"]["enabled"] = False
+            dagger_config["failure_predictor"]["enabled"] = False
+        if args_cli.unsafe_l2_threshold_mode is not None:
+            dagger_config["unsafe_l2_threshold_mode"] = args_cli.unsafe_l2_threshold_mode
+        if args_cli.unsafe_l2_threshold_start is not None:
+            dagger_config["unsafe_l2_threshold_start"] = args_cli.unsafe_l2_threshold_start
+        if args_cli.unsafe_l2_threshold_end is not None:
+            dagger_config["unsafe_l2_threshold_end"] = args_cli.unsafe_l2_threshold_end
+        if args_cli.unsafe_l2_threshold_anneal_iters is not None:
+            dagger_config["unsafe_l2_threshold_anneal_iters"] = args_cli.unsafe_l2_threshold_anneal_iters
+        if args_cli.eval_lift_hold_s is not None:
+            dagger_config["eval_lift_hold_s"] = args_cli.eval_lift_hold_s
 
     # Save run metadata/config snapshots in the same style as rl_games train logs.
-    run_meta = {
+        run_meta = {
         "timestamp": datetime.now().isoformat(),
         "entrypoint": os.path.abspath(__file__),
         "cwd": os.getcwd(),
@@ -359,26 +362,35 @@ def main(env_cfg, agent_cfg: dict):
         "args_cli": vars(args_cli),
         "hydra_args": hydra_args,
     }
-    dump_yaml(os.path.join(params_dir, "env.yaml"), env_cfg)
-    dump_pickle(os.path.join(params_dir, "env.pkl"), env_cfg)
-    dump_yaml(os.path.join(params_dir, "student_agent.yaml"), student_cfg_yaml)
-    dump_pickle(os.path.join(params_dir, "student_agent.pkl"), student_cfg_yaml)
-    dump_yaml(os.path.join(params_dir, "teacher_agent.yaml"), teacher_cfg_yaml)
-    dump_pickle(os.path.join(params_dir, "teacher_agent.pkl"), teacher_cfg_yaml)
-    dump_yaml(os.path.join(params_dir, "dagger.yaml"), dagger_config)
-    dump_pickle(os.path.join(params_dir, "dagger.pkl"), dagger_config)
-    dump_yaml(os.path.join(params_dir, "run_meta.yaml"), run_meta)
-    dump_pickle(os.path.join(params_dir, "run_meta.pkl"), run_meta)
-    with open(os.path.join(params_dir, "hydra_overrides.txt"), "w", encoding="utf-8") as f:
-        f.write("\n".join(hydra_args))
+        dump_yaml(os.path.join(params_dir, "env.yaml"), env_cfg)
+        dump_pickle(os.path.join(params_dir, "env.pkl"), env_cfg)
+        dump_yaml(os.path.join(params_dir, "student_agent.yaml"), student_cfg_yaml)
+        dump_pickle(os.path.join(params_dir, "student_agent.pkl"), student_cfg_yaml)
+        dump_yaml(os.path.join(params_dir, "teacher_agent.yaml"), teacher_cfg_yaml)
+        dump_pickle(os.path.join(params_dir, "teacher_agent.pkl"), teacher_cfg_yaml)
+        dump_yaml(os.path.join(params_dir, "dagger.yaml"), dagger_config)
+        dump_pickle(os.path.join(params_dir, "dagger.pkl"), dagger_config)
+        dump_yaml(os.path.join(params_dir, "run_meta.yaml"), run_meta)
+        dump_pickle(os.path.join(params_dir, "run_meta.pkl"), run_meta)
+        with open(os.path.join(params_dir, "hydra_overrides.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(hydra_args))
 
-    model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)
+        model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)
 
-    dagger = SafeDagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir, eval_env=eval_env)
-    dagger.distill()
-    final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_safe_dagger.pth")
-    if getattr(dagger, "rank", 0) == 0:
-        dagger.save(final_ckpt)
+        dagger = SafeDagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir, eval_env=eval_env)
+        reached_iters = dagger.distill()
+        final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_safe_dagger.pth")
+        if getattr(dagger, "rank", 0) == 0:
+            dagger.save(final_ckpt)
+            print(
+                f"[INFO] Distillation finished automatically at iter {reached_iters} / {dagger.num_iters}.",
+                flush=True,
+            )
+    finally:
+        if eval_env is not None:
+            eval_env.close()
+        if env is not None:
+            env.close()
 
 
 if __name__ == "__main__":

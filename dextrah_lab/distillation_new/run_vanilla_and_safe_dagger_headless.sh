@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT="/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py"
+MAX_ITERS="${MAX_ITERS:-100000}"
 
 COMMON_ARGS=(
   --task=dextrah_tg2_inspirehand
@@ -13,6 +14,7 @@ COMMON_ARGS=(
   --loss_type l2
   --eval_every 2500
   --eval_num_episodes 3
+  --max_iterations "${MAX_ITERS}"
   env.distillation=True
   env.simulate_stereo=True
   env.objects_dir=distill_multi_objects
