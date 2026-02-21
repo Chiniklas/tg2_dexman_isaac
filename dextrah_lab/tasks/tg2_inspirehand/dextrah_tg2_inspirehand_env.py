@@ -583,7 +583,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
         if not sub_dirs:
             raise ValueError(f"No objects found under {objects_full_path}")
 
-        if self.cfg.distillation:
+        if self.cfg.distillation or getattr(self.cfg, "multi_object_eval", False):
             # Track all available objects for multi-teacher distillation.
             self.object_names = list(sub_dirs)
             self.num_unique_objects = len(self.object_names)

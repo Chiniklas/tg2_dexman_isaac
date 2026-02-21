@@ -118,7 +118,7 @@ params:
       lr: 0.001
       dropout: 0.0
       buffer_size: 100000
-      batch_size: 1024
+      batch_size: 128
       min_samples: 10000 # default 10000
       update_interval: 250
       train_steps: 5
@@ -126,11 +126,12 @@ params:
       failure_threshold: 0.6
       include_current_step: false
       pos_weight: 2.0
+      pos_fraction: 0.1
       device: cuda
     ood:
       enabled: false
       type: gaussian
-      obs_key: policy # defines which obs does the classifier see
+      obs_key: ood_policy_embed # defines which obs does the classifier see
       buffer_size: 100000
       min_samples: 5000
       update_interval: 1000
@@ -145,6 +146,15 @@ params:
       threshold_samples: 50000
       dropout_prob: 0.1
       device: cpu
+    warm_start:
+      enabled: true
+      collect_steps: 500
+      predictor_train_steps: 200
+      ood_force_refit: true
+      save_collected_data: true
+      save_steps: 500
+      save_envs: 32
+      save_images: false
 
     # central_value_config:
     #   minibatch_size: 32768

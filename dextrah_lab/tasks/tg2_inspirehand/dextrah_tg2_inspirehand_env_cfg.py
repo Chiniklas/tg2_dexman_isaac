@@ -139,6 +139,9 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
     success_timeout = 2.
     # num_observations = 94
     distillation = False
+    # Enable multi-object assignment across parallel envs without switching to
+    # distillation observations/cameras (used by standalone teacher eval).
+    multi_object_eval = False
     num_student_observations = 0
     num_teacher_observations = 0
     num_observations = 0

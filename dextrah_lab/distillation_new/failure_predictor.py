@@ -99,12 +99,21 @@ class FailurePredictorCritic:
         self.lr = float(cfg.get("lr", 1e-3))
         self.dropout = float(cfg.get("dropout", 0.0))
         self.gamma = float(cfg.get("gamma", 0.99))
-        self.polyak = float(cfg.get("polyak", 0.995))
+        # Reference alignment: use fixed target-network averaging factor.
+        self.polyak = 0.995
         self.failure_threshold = float(cfg.get("failure_threshold", 0.5))
         self.pos_weight = cfg.get("pos_weight", None)
+        self.pos_fraction = cfg.get("pos_fraction", 0.1)
+        if self.pos_fraction is None:
+            self.pos_fraction = 0.0
+        self.pos_fraction = float(self.pos_fraction)
+        if not (0.0 <= self.pos_fraction <= 1.0):
+            raise ValueError(
+                f"pos_fraction must be in [0, 1], got {self.pos_fraction}."
+            )
 
         self.buffer_size = int(cfg.get("buffer_size", 100_000))
-        self.batch_size = int(cfg.get("batch_size", 1024))
+        self.batch_size = int(cfg.get("batch_size", 128))
         self.min_samples = int(cfg.get("min_samples", 10_000))
         self.update_interval = int(cfg.get("update_interval", 1_000))
         self.train_steps = int(cfg.get("train_steps", 1))
@@ -118,6 +127,7 @@ class FailurePredictorCritic:
 
         self._initialized = False
         self._steps = 0
+        self._q_update_steps = 0
         self._buf_idx = 0
         self._buf_count = 0
         self._token_counter = 0
@@ -146,7 +156,8 @@ class FailurePredictorCritic:
                 "FailurePredictorCritic enabled: "
                 f"buffer_size={self.buffer_size}, min_samples={self.min_samples}, "
                 f"update_interval={self.update_interval}, train_steps={self.train_steps}, "
-                f"gamma={self.gamma}, polyak={self.polyak}, failure_threshold={self.failure_threshold}",
+                f"gamma={self.gamma}, polyak={self.polyak}, failure_threshold={self.failure_threshold}, "
+                f"pos_fraction={self.pos_fraction}",
                 flush=True,
             )
 
@@ -229,8 +240,12 @@ class FailurePredictorCritic:
         boot_frac = []
         target_means = []
         pred_means = []
+        sampled_pos_frac = []
+        replay_pos_frac = float(
+            (self._fail_buf[: self._buf_count] > 0.5).to(dtype=torch.float32).mean().item()
+        )
         for _ in range(self.train_steps):
-            idx = torch.randint(0, self._buf_count, (self.batch_size,), dtype=torch.long)
+            idx = self._sample_batch_indices(self.batch_size)
             obs = self._obs_buf[idx].to(self.device)
             act = self._act_buf[idx].to(self.device)
             obs2 = self._obs2_buf[idx].to(self.device)
@@ -238,6 +253,7 @@ class FailurePredictorCritic:
             has_next_act = self._has_next_act[idx].to(self.device)
             fail = self._fail_buf[idx].to(self.device)
             done = self._done_buf[idx].to(self.device)
+            sampled_pos_frac.append(float((fail > 0.5).to(dtype=torch.float32).mean().item()))
 
             d_eff = torch.maximum(done, (~has_next_act).to(dtype=torch.float32))
             with torch.no_grad():
@@ -261,7 +277,10 @@ class FailurePredictorCritic:
             self._optim.zero_grad()
             loss.backward()
             self._optim.step()
-            self._polyak_update()
+            self._q_update_steps += 1
+            # Reference alignment: update target networks every 2 Q updates.
+            if self._q_update_steps % 2 == 0:
+                self._polyak_update()
 
             losses.append(float(loss.detach().item()))
             q1_losses.append(float(loss_q1.detach().item()))
@@ -282,6 +301,8 @@ class FailurePredictorCritic:
             "pred_mean": float(sum(pred_means) / len(pred_means)),
             "buffer_size": int(self._buf_count),
             "used_next_obs_fallback": int(self._used_next_obs_fallback),
+            "sampled_pos_frac": float(sum(sampled_pos_frac) / len(sampled_pos_frac)),
+            "replay_pos_frac": replay_pos_frac,
         }
         if self.debug_print_interval > 0 and (self._steps % self.debug_print_interval == 0) and self.rank == 0:
             print(f"[FailurePredictorCritic] {self.last_train_stats}", flush=True)
@@ -387,6 +408,36 @@ class FailurePredictorCritic:
             return
         self._next_act_buf[idx] = torch.as_tensor(next_action, dtype=torch.float32, device="cpu")
         self._has_next_act[idx] = True
+
+    def _sample_batch_indices(self, batch_size: int):
+        if self._buf_count <= 0:
+            raise ValueError("Cannot sample replay indices: empty buffer.")
+        if self.pos_fraction <= 0.0:
+            return torch.randint(0, self._buf_count, (batch_size,), dtype=torch.long)
+        fail_mask = (self._fail_buf[: self._buf_count] > 0.5)
+        pos_idx = torch.nonzero(fail_mask, as_tuple=False).squeeze(-1)
+        neg_idx = torch.nonzero(~fail_mask, as_tuple=False).squeeze(-1)
+        if pos_idx.numel() == 0 or neg_idx.numel() == 0:
+            return torch.randint(0, self._buf_count, (batch_size,), dtype=torch.long)
+
+        pos_count = int(batch_size * self.pos_fraction)
+        if self.pos_fraction > 0.0 and pos_count == 0:
+            pos_count = 1
+        pos_count = min(max(pos_count, 1), batch_size)
+        neg_count = batch_size - pos_count
+
+        pos_pick = pos_idx[
+            torch.randint(0, pos_idx.numel(), (pos_count,), dtype=torch.long)
+        ]
+        if neg_count > 0:
+            neg_pick = neg_idx[
+                torch.randint(0, neg_idx.numel(), (neg_count,), dtype=torch.long)
+            ]
+            idx = torch.cat([pos_pick, neg_pick], dim=0)
+        else:
+            idx = pos_pick
+        perm = torch.randperm(idx.shape[0])
+        return idx[perm]
 
     def _extract_features(self, obs):
         if obs is None:

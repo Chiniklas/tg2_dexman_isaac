@@ -279,7 +279,8 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
 
 # 2- vanilla safe dagger
 python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+  --pipeline safedagger \
+  --task dextrah_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -337,19 +338,27 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   env.objects_dir=distill_multi_objects \
   env.enable_adr=False
 
-# 4- safe dagger with failure predictor
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+# warm start only
+python run_distillation_safedagger.py \
+  --pipeline warmstart \
+  --task dextrah_tg2_inspirehand \
   --num_envs 32 \
+  --headless \
   --enable_cameras \
   --teacher multi_object_distillation \
-  --imitation_target action_distribution \
-  --loss_type kl \
   --unsafe_mode failure_predictor \
-  --eval_every 2500 \
-  --eval_num_episodes 3 \
+  --failure_predictor_type critic \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
   env.enable_adr=False
-# seems to be not working
+
+
+# teacher evaluation
+python3 eval.py \
+  --headless \
+  --task dextrah_tg2_inspirehand \
+  --num_envs 32 \
+  --eval_episodes 10 \
+  --teacher_policy_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/teacher_eval \
+  --teacher_object_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/teacher_eval

@@ -9,12 +9,13 @@ Example usage:
     python dextrah_lab/rl_games/eval.py \
         --task Dextrah-TG2-InspireHand-Direct-v0 \
         --eval_episodes 10 \
-        --deterministic \
         --teacher_policy_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/multi_object_distillation \
         --teacher_object_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/teacher_eval
 """
 
 import argparse
+import copy
+import json
 
 from isaaclab.app import AppLauncher
 
@@ -39,7 +40,7 @@ parser.add_argument(
     "--eval_episodes",
     type=int,
     default=10,
-    help="Total number of episodes to evaluate across all envs.",
+    help="Number of eval rollouts; each rollout evaluates all env slots (matches student eval semantics).",
 )
 parser.add_argument(
     "--eval_max_steps",
@@ -54,18 +55,23 @@ parser.add_argument(
     help="Require lift condition to hold this many seconds consecutively before counting success.",
 )
 parser.add_argument(
-    "--deterministic",
-    action="store_true",
-    help="Use deterministic actions during evaluation.",
-)
-parser.add_argument(
     "--metrics_output_npy",
     type=str,
     default=None,
     help=(
-        "Optional output path for metrics .npy. "
-        "Defaults to ./teacher_eval_metrics.npy in teacher-folder mode "
-        "or ./eval_metrics.npy in single-checkpoint mode."
+        "Optional output path for metrics JSON file (legacy flag name kept for compatibility). "
+        "Defaults to the TensorBoard run directory under ./logs. "
+        "If a relative path is provided, it is resolved under the same run directory."
+    ),
+)
+parser.add_argument(
+    "--tb_logdir",
+    type=str,
+    default=None,
+    help=(
+        "Optional TensorBoard log directory. "
+        "Defaults to ./logs/teacher_eval_tb_<timestamp> in teacher-folder mode "
+        "or ./logs/eval_tb_<timestamp> in single-checkpoint mode."
     ),
 )
 # AppLauncher args
@@ -82,12 +88,17 @@ import numpy as np
 import os
 import pathlib
 import shutil
+import time
 import torch
 from datetime import datetime
 
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.player import BasePlayer
 from rl_games.torch_runner import Runner
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:
+    from tensorboardX import SummaryWriter
 
 from isaaclab.utils.assets import retrieve_file_path
 
@@ -98,14 +109,20 @@ from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 import dextrah_lab.tasks.dextrah_kuka_allegro.gym_setup
 import dextrah_lab.tasks.dextrah_kuka_inspirehand.gym_setup
 import dextrah_lab.tasks.tg2_inspirehand.gym_setup
+from dextrah_lab.distillation_new.eval_utils import (
+    UNSAFE_REASON_NAMES,
+    classify_out_of_reach_reasons,
+    unsafe_reason_percentages_from_counts,
+)
 
 _ENV_HOLDER = {"env": None}
-UNSAFE_REASON_NAMES: tuple[str, ...] = (
-    "object_out_of_bound",
-    "hand_too_far",
-    "harmful_collision",
-    "palm_flipped",
-)
+_PROGRESS_TIME_INTERVAL_S = 20.0
+_TB_LOGDIR_HOLDER = {"path": None}
+_TB_STATE = {"disabled": False}
+
+
+def _default_logs_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parent / "logs"
 
 
 def _compute_lift_success(eval_env):
@@ -208,6 +225,33 @@ def _prepare_teacher_single_object_dir(teacher_object_dir: str, object_name: str
     return target_dir_name, target_root
 
 
+def _prepare_teacher_multi_object_dir(
+    teacher_object_dir: str, object_names: list[str]
+) -> tuple[str, pathlib.Path]:
+    root_path = pathlib.Path(__file__).resolve().parents[1]
+    assets_dir = root_path / "assets"
+    source_root = pathlib.Path(teacher_object_dir).expanduser().resolve()
+    if not source_root.is_dir():
+        raise FileNotFoundError(f"Teacher object directory missing: {source_root}")
+
+    target_dir_name = "__teacher_eval_multi"
+    target_root = assets_dir / target_dir_name
+    if target_root.exists():
+        shutil.rmtree(target_root)
+
+    target_usd_dir = target_root / "USD"
+    target_usd_dir.mkdir(parents=True, exist_ok=True)
+
+    for object_name in object_names:
+        source_object_dir = source_root / object_name
+        if not source_object_dir.is_dir():
+            raise FileNotFoundError(f"Object folder missing for '{object_name}': {source_object_dir}")
+        link_path = target_usd_dir / object_name
+        link_path.symlink_to(source_object_dir, target_is_directory=True)
+
+    return target_dir_name, target_root
+
+
 def _resolve_checkpoint_path(agent_cfg: dict, explicit_checkpoint: str | None = None) -> str:
     if explicit_checkpoint is not None:
         return retrieve_file_path(explicit_checkpoint)
@@ -226,13 +270,6 @@ def _resolve_checkpoint_path(agent_cfg: dict, explicit_checkpoint: str | None = 
 def _resolve_eval_max_steps(eval_env) -> int:
     if args_cli.eval_max_steps is not None:
         return int(args_cli.eval_max_steps)
-
-    sim_dt = getattr(eval_env.cfg, "sim_dt", None)
-    if sim_dt is None and hasattr(eval_env.cfg, "sim"):
-        sim_dt = getattr(eval_env.cfg.sim, "dt", None)
-    decimation = getattr(eval_env.cfg, "decimation", 1)
-    if sim_dt is not None and sim_dt > 0:
-        return int(max(1, round(4.0 / (sim_dt * decimation))))
 
     max_steps = getattr(eval_env, "distill_max_episode_length", None)
     if max_steps is None:
@@ -304,108 +341,11 @@ def _extract_out_of_reach_mask(eval_env, num_envs: int, device: torch.device) ->
     return torch.zeros((num_envs,), dtype=torch.bool, device=device)
 
 
-def _compute_out_of_reach_reason_masks(eval_env, num_envs: int, device: torch.device) -> dict[str, torch.Tensor]:
-    # Mirrors tg2_inspirehand _get_dones() reason components where available.
-    masks: dict[str, torch.Tensor] = {}
-    zeros = torch.zeros((num_envs,), dtype=torch.bool, device=device)
-    if not hasattr(eval_env, "object_pos"):
-        return masks
-    object_out_of_bound = zeros.clone()
-    hand_too_far = zeros.clone()
-    harmful_collision = zeros.clone()
-    palm_flipped = zeros.clone()
-
-    try:
-        object_outside_upper_x = eval_env.object_pos[:, 0] > (eval_env.cfg.x_center + eval_env.cfg.x_width / 2.0)
-        object_outside_lower_x = eval_env.object_pos[:, 0] < (eval_env.cfg.x_center - eval_env.cfg.x_width / 2.0)
-        object_outside_upper_y = eval_env.object_pos[:, 1] > (eval_env.cfg.y_center + eval_env.cfg.y_width / 2.0)
-        object_outside_lower_y = eval_env.object_pos[:, 1] < (eval_env.cfg.y_center - eval_env.cfg.y_width / 2.0)
-        object_too_low = eval_env.object_pos[:, 2] < 0.2
-
-        object_out_of_bound = (
-            object_outside_upper_x
-            | object_outside_lower_x
-            | object_outside_upper_y
-            | object_outside_lower_y
-            | object_too_low
-        )
-    except Exception:
-        pass
-
-    hand_too_close = zeros.clone()
-    arm_table_contact = zeros.clone()
-    try:
-        bbox_margin = getattr(eval_env.cfg, "hand_bbox_margin", 0.0)
-        table_half_x = eval_env.cfg.table_size_x * 0.5 + bbox_margin
-        table_half_y = eval_env.cfg.table_size_y * 0.5 + bbox_margin
-
-        if hasattr(eval_env, "table_pos"):
-            table_pos = eval_env.table_pos
-            table_pos_z = eval_env.table_pos[:, 2]
-        else:
-            table_pos = eval_env.table.data.root_pos_w - eval_env.scene.env_origins
-            table_pos_z = table_pos[:, 2]
-        table_top_z = table_pos_z + eval_env.cfg.table_size_z * 0.5
-
-        middle_pos = eval_env.robot.data.body_pos_w[:, eval_env.middle_link_0_body_idx] - eval_env.scene.env_origins
-        middle_x_out = (middle_pos[:, 0] > (table_pos[:, 0] + table_half_x)) | (
-            middle_pos[:, 0] < (table_pos[:, 0] - table_half_x)
-        )
-        middle_y_out = (middle_pos[:, 1] > (table_pos[:, 1] + table_half_y)) | (
-            middle_pos[:, 1] < (table_pos[:, 1] - table_half_y)
-        )
-        middle_z_out = (middle_pos[:, 2] < table_top_z) | (middle_pos[:, 2] > (table_top_z + 1.0 + bbox_margin))
-        hand_too_far = middle_x_out | middle_y_out | middle_z_out
-
-        hand_min_z = eval_env.hand_pos[..., 2].min(dim=1).values
-        clearance_thresh = table_top_z + 0.01
-        hand_too_close = hand_min_z < clearance_thresh
-    except Exception:
-        pass
-
-    try:
-        arm_table_contact = _as_bool_mask(eval_env.arm_table_contact_mask, num_envs, device)
-    except Exception:
-        pass
-
-    harmful_collision = hand_too_close | arm_table_contact
-    try:
-        palm_flip_cos = torch.sum(eval_env.palm_direction_vec * eval_env._palm_dir_target_world, dim=-1)
-        palm_flipped = palm_flip_cos < eval_env.cfg.palm_flip_cos_thresh
-    except Exception:
-        pass
-
-    masks["object_out_of_bound"] = object_out_of_bound
-    masks["hand_too_far"] = hand_too_far
-    masks["harmful_collision"] = harmful_collision
-    masks["palm_flipped"] = palm_flipped
-
-    return masks
-
-
-def _select_primary_reason(reason_masks: dict[str, torch.Tensor], env_idx: int) -> str | None:
-    reason_order = UNSAFE_REASON_NAMES
-    for name in reason_order:
-        mask = reason_masks.get(name)
-        if mask is not None and bool(mask[env_idx].item()):
-            return name
-    return None
-
-
 def _format_reason_percentages(reason_percentages: dict[str, float]) -> str:
     if not reason_percentages:
         return "none"
     ordered = sorted(reason_percentages.items(), key=lambda x: (-x[1], x[0]))
     return ", ".join([f"{name}={value:.1f}%" for name, value in ordered])
-
-
-def _reason_counts_to_percentages(reason_counts: dict[str, int], total_unsafe_eps: int) -> dict[str, float]:
-    if total_unsafe_eps <= 0:
-        return {}
-    return {
-        name: 100.0 * float(count) / float(total_unsafe_eps)
-        for name, count in reason_counts.items()
-    }
 
 
 def _reason_percentages_with_defaults(reason_percentages: dict[str, float]) -> dict[str, float]:
@@ -415,60 +355,180 @@ def _reason_percentages_with_defaults(reason_percentages: dict[str, float]) -> d
     }
 
 
-def _save_metrics_npy(metrics_payload: dict, teacher_mode: bool) -> None:
+def _to_jsonable(value):
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if torch.is_tensor(value):
+        if value.numel() == 1:
+            return value.item()
+        return value.detach().cpu().tolist()
+    return value
+
+
+def _save_metrics_json(metrics_payload: dict, teacher_mode: bool) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args_cli.metrics_output_npy is not None:
-        raw_output_path = pathlib.Path(args_cli.metrics_output_npy).expanduser().resolve()
-        output_path = raw_output_path.with_name(f"{raw_output_path.stem}_{timestamp}.npy")
+        raw_output_path = pathlib.Path(args_cli.metrics_output_npy).expanduser()
+        if not raw_output_path.is_absolute():
+            if _TB_LOGDIR_HOLDER["path"] is not None:
+                raw_output_path = pathlib.Path(_TB_LOGDIR_HOLDER["path"]) / raw_output_path
+            else:
+                raw_output_path = _default_logs_root() / raw_output_path
+        raw_output_path = raw_output_path.resolve()
+        output_path = raw_output_path.with_name(f"{raw_output_path.stem}_{timestamp}.json")
     else:
         default_name = (
-            f"teacher_eval_metrics_{timestamp}.npy"
+            f"teacher_eval_metrics_{timestamp}.json"
             if teacher_mode
-            else f"eval_metrics_{timestamp}.npy"
+            else f"eval_metrics_{timestamp}.json"
         )
-        output_path = pathlib.Path.cwd() / default_name
+        if _TB_LOGDIR_HOLDER["path"] is not None:
+            output_path = pathlib.Path(_TB_LOGDIR_HOLDER["path"]) / default_name
+        else:
+            output_path = _default_logs_root() / default_name
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(output_path, metrics_payload, allow_pickle=True)
-    print(f"[INFO] Saved evaluation metrics to: {output_path}")
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(metrics_payload), f, indent=2, sort_keys=True)
+    print(f"[INFO] Saved evaluation metrics JSON to: {output_path}")
+
+
+def _create_tb_writer(teacher_mode: bool) -> tuple[SummaryWriter, pathlib.Path]:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _TB_STATE["disabled"] = False
+    if args_cli.tb_logdir is not None:
+        tb_path = pathlib.Path(args_cli.tb_logdir).expanduser().resolve()
+    else:
+        default_name = (
+            f"teacher_eval_tb_{timestamp}"
+            if teacher_mode
+            else f"eval_tb_{timestamp}"
+        )
+        tb_path = _default_logs_root() / default_name
+    tb_path.mkdir(parents=True, exist_ok=True)
+    _TB_LOGDIR_HOLDER["path"] = str(tb_path)
+    writer = SummaryWriter(str(tb_path))
+    print(f"[INFO] TensorBoard logdir: {tb_path}", flush=True)
+    return writer, tb_path
+
+
+def _tb_log_reason_percentages(writer: SummaryWriter, prefix: str, reason_pct: dict[str, float], step: int) -> None:
+    if writer is None or _TB_STATE["disabled"]:
+        return
+    for reason_name in UNSAFE_REASON_NAMES:
+        _tb_add_scalar(
+            writer,
+            f"{prefix}/unsafe_reason_pct/{reason_name}",
+            float(reason_pct.get(reason_name, 0.0)),
+            step,
+        )
+
+
+def _tb_add_scalar(writer: SummaryWriter | None, tag: str, value: float, step: int) -> None:
+    if writer is None or _TB_STATE["disabled"]:
+        return
+    try:
+        writer.add_scalar(tag, value, step)
+    except Exception as exc:
+        _TB_STATE["disabled"] = True
+        print(
+            f"[WARN] TensorBoard write failed and will be disabled for this run: {exc}",
+            flush=True,
+        )
+
+
+def _resolve_eval_object_names_and_idx(
+    eval_env, num_envs: int, device: torch.device, fallback_names: list[str] | None = None
+) -> tuple[list[str], torch.Tensor]:
+    eval_object_names = list(getattr(eval_env, "object_names", []))
+    if len(eval_object_names) == 0 and fallback_names is not None and len(fallback_names) > 0:
+        eval_object_names = list(fallback_names)
+    if len(eval_object_names) == 0:
+        eval_object_names = ["object_0"]
+    eval_object_names = [str(name) for name in eval_object_names]
+
+    eval_object_idx = getattr(eval_env, "multi_object_idx", None)
+    if eval_object_idx is None:
+        eval_object_idx = torch.zeros((num_envs,), dtype=torch.long, device=device)
+    else:
+        eval_object_idx = torch.as_tensor(eval_object_idx, dtype=torch.long, device=device).flatten()
+        if eval_object_idx.numel() < num_envs:
+            padded = torch.zeros((num_envs,), dtype=torch.long, device=device)
+            padded[: eval_object_idx.numel()] = eval_object_idx
+            eval_object_idx = padded
+        elif eval_object_idx.numel() > num_envs:
+            eval_object_idx = eval_object_idx[:num_envs]
+    eval_object_idx = torch.clamp(eval_object_idx, min=0, max=len(eval_object_names) - 1)
+    return eval_object_names, eval_object_idx
 
 
 def _run_eval_for_checkpoint(
     checkpoint_path: str, objects_dir_override: str | None = None
-) -> tuple[float, float, int, int, dict[str, int], int]:
+) -> tuple[float, float, int, int, dict[str, float], int]:
+    eval_start_t = time.time()
+    print(
+        f"[INFO] Eval start: task={args_cli.task}, objects_dir={objects_dir_override}, "
+        f"checkpoint={checkpoint_path}",
+        flush=True,
+    )
+
+    stage_t = time.time()
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
+    print(f"[INFO] Parsed env cfg in {time.time() - stage_t:.1f}s", flush=True)
     if objects_dir_override is not None:
         env_cfg.objects_dir = objects_dir_override
         if env_cfg.objects_dir not in env_cfg.valid_objects_dir:
             env_cfg.valid_objects_dir.append(env_cfg.objects_dir)
 
+    stage_t = time.time()
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
     resume_path = _resolve_checkpoint_path(agent_cfg, explicit_checkpoint=checkpoint_path)
+    print(
+        f"[INFO] Loaded agent cfg + resolved checkpoint in {time.time() - stage_t:.1f}s",
+        flush=True,
+    )
 
     rl_device = agent_cfg["params"]["config"]["device"]
     clip_obs = agent_cfg["params"]["env"].get("clip_observations", math.inf)
     clip_actions = agent_cfg["params"]["env"].get("clip_actions", math.inf)
 
+    stage_t = time.time()
+    print("[INFO] Creating evaluation environment...", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg)
     env = RlGamesVecEnvWrapper(env, rl_device, clip_obs, clip_actions)
+    print(
+        f"[INFO] Environment ready in {time.time() - stage_t:.1f}s "
+        f"(num_envs={env.unwrapped.num_envs}).",
+        flush=True,
+    )
     _ENV_HOLDER["env"] = env
     try:
         agent_cfg["params"]["load_checkpoint"] = True
         agent_cfg["params"]["load_path"] = resume_path
-        print(f"[INFO] Loading model checkpoint from: {agent_cfg['params']['load_path']}")
+        print(f"[INFO] Loading model checkpoint from: {agent_cfg['params']['load_path']}", flush=True)
 
+        stage_t = time.time()
         agent_cfg["params"]["config"]["num_actors"] = env.unwrapped.num_envs
         runner = Runner()
         runner.load(agent_cfg)
         agent: BasePlayer = runner.create_player()
         agent.restore(resume_path)
         agent.reset()
+        print(f"[INFO] Player initialized in {time.time() - stage_t:.1f}s", flush=True)
 
+        stage_t = time.time()
         obs = env.reset()
         if isinstance(obs, dict):
             obs = obs["obs"]
         _ = agent.get_batch_size(obs, 1)
         if agent.is_rnn:
             agent.init_rnn()
+        print(f"[INFO] First reset complete in {time.time() - stage_t:.1f}s", flush=True)
 
         eval_env = env.unwrapped
         num_envs = eval_env.num_envs
@@ -476,69 +536,465 @@ def _run_eval_for_checkpoint(
         hold_steps, step_dt = _resolve_eval_hold_steps(eval_env)
         print(
             f"[INFO] Eval lift hold gate: {hold_steps} steps "
-            f"(~{args_cli.eval_lift_hold_s:.3f}s target, dt={step_dt:.5f}s)"
+            f"(~{args_cli.eval_lift_hold_s:.3f}s target, dt={step_dt:.5f}s)",
+            flush=True,
         )
 
-        total_target = int(args_cli.eval_episodes)
-        total_done = 0
-        total_success = 0.0
-        total_unsafe = 0.0
-        unsafe_reason_counts: dict[str, int] = {}
-        steps_per_env = torch.zeros((num_envs,), dtype=torch.long, device=args_cli.device)
-        dones = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
-        ever_lifted = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
-        lift_hold_counts = torch.zeros((num_envs,), dtype=torch.long, device=args_cli.device)
+        total_rollouts = int(args_cli.eval_episodes)
+        # Automatic progress defaults: about 10 rollout-based updates plus a time heartbeat.
+        progress_rollout_interval = max(1, min(50, total_rollouts // 10 if total_rollouts > 10 else 1))
+        progress_time_interval_s = _PROGRESS_TIME_INTERVAL_S
+        next_rollout_progress = progress_rollout_interval
+        loop_start_t = time.time()
+        last_progress_t = loop_start_t
+        print(
+            f"[INFO] Rollout loop started: target_rollouts={total_rollouts}, "
+            f"rollout_interval={progress_rollout_interval}, "
+            f"time_interval_s={progress_time_interval_s:.1f}",
+            flush=True,
+        )
+        success_rates: list[float] = []
+        unsafe_rates: list[float] = []
+        unsafe_reason_pct_series = {
+            name: [] for name in UNSAFE_REASON_NAMES
+        }
+        reason_to_idx = {name: idx for idx, name in enumerate(UNSAFE_REASON_NAMES)}
+        total_unsafe_eps = 0
+        for rollout_idx in range(total_rollouts):
+            obs = env.reset()
+            if isinstance(obs, dict):
+                obs = obs["obs"]
+            if agent.is_rnn:
+                agent.init_rnn()
+            dones = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
+            ever_lifted = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
+            ever_unsafe_terminated = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
+            unsafe_reason_idx = torch.full((num_envs,), -1, dtype=torch.long, device=args_cli.device)
+            steps = 0
+            lift_hold_counts = torch.zeros((num_envs,), dtype=torch.long, device=args_cli.device)
 
-        while total_done < total_target:
-            with torch.inference_mode():
-                obs_t = agent.obs_to_torch(obs)
-                actions = agent.get_action(obs_t, is_deterministic=args_cli.deterministic)
-                obs, _, env_dones, _ = env.step(actions)
-            steps_per_env += 1
-            capped_timed_out = steps_per_env >= max_steps
-            env_dones = _as_bool_mask(env_dones, num_envs, args_cli.device)
-            dones = env_dones | capped_timed_out
-            out_of_reach = _extract_out_of_reach_mask(eval_env, num_envs, args_cli.device)
-            reason_masks = _compute_out_of_reach_reason_masks(eval_env, num_envs, args_cli.device)
-            step_lift_success = _compute_lift_success(eval_env)
-            active_envs = ~dones
-            lift_hold_counts = torch.where(
-                active_envs & step_lift_success,
-                lift_hold_counts + 1,
-                torch.where(active_envs, torch.zeros_like(lift_hold_counts), lift_hold_counts),
-            )
-            hold_lift_success = lift_hold_counts >= hold_steps
-            ever_lifted = ever_lifted | hold_lift_success
+            while steps < max_steps and not bool(dones.all().item()):
+                # Use no_grad (not inference_mode) so env tensors remain mutable across reset calls.
+                with torch.no_grad():
+                    obs_t = agent.obs_to_torch(obs)
+                    actions = agent.get_action(obs_t, is_deterministic=False)
+                    obs, _, env_dones, info = env.step(actions)
+                env_dones = _as_bool_mask(env_dones, num_envs, args_cli.device)
+                out_of_reach = _extract_out_of_reach_mask(eval_env, num_envs, args_cli.device)
+                timed_out = _extract_timeout_mask(info, num_envs, args_cli.device)
+                # If timeout signals are unavailable, treat done-but-not-out_of_reach as timeout.
+                timed_out = timed_out | (env_dones & (~out_of_reach))
+                dones = out_of_reach | timed_out
+                reason_idx = classify_out_of_reach_reasons(
+                    ov_env=eval_env,
+                    out_of_reach=out_of_reach,
+                    reason_names=UNSAFE_REASON_NAMES,
+                    reason_to_idx=reason_to_idx,
+                    device=args_cli.device,
+                )
+                ever_unsafe_terminated = ever_unsafe_terminated | out_of_reach
+                classified_out_of_reach = reason_idx >= 0
+                new_reason_mask = (unsafe_reason_idx < 0) & out_of_reach & classified_out_of_reach
+                unsafe_reason_idx[new_reason_mask] = reason_idx[new_reason_mask]
 
-            if dones.any():
-                done_indices = dones.nonzero(as_tuple=False).flatten()
-                for idx in done_indices.tolist():
-                    if total_done >= total_target:
-                        break
-                    total_success += float(ever_lifted[idx].item())
-                    unsafe_flag = bool(out_of_reach[idx].item())
-                    if unsafe_flag:
-                        reason = _select_primary_reason(reason_masks, idx)
-                        if reason is not None:
-                            unsafe_reason_counts[reason] = unsafe_reason_counts.get(reason, 0) + 1
-                    total_unsafe += float(unsafe_flag)
-                    total_done += 1
-                    steps_per_env[idx] = 0
-                    ever_lifted[idx] = False
-                    lift_hold_counts[idx] = 0
-                if agent.is_rnn and agent.states is not None:
+                if agent.is_rnn and agent.states is not None and bool(dones.any().item()):
+                    done_indices = dones.nonzero(as_tuple=False).flatten()
                     new_states = []
                     for s in agent.states:
                         s_clone = s.clone()
                         s_clone[:, done_indices, :] = 0.0
                         new_states.append(s_clone)
                     agent.states = new_states
-                dones = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
 
-        avg_success = total_success / max(total_done, 1)
-        unsafe_episode_rate = total_unsafe / max(total_done, 1)
-        total_unsafe_eps = int(round(total_unsafe))
-        return avg_success, unsafe_episode_rate, total_done, num_envs, unsafe_reason_counts, total_unsafe_eps
+                step_lift_success = _compute_lift_success(eval_env)
+                active_envs = ~dones
+                lift_hold_counts = torch.where(
+                    active_envs & step_lift_success,
+                    lift_hold_counts + 1,
+                    torch.where(active_envs, torch.zeros_like(lift_hold_counts), lift_hold_counts),
+                )
+                hold_lift_success = lift_hold_counts >= hold_steps
+                ever_lifted = ever_lifted | hold_lift_success
+                steps += 1
+
+            if steps >= max_steps:
+                dones = torch.ones_like(dones)
+
+            success_rates.append(ever_lifted.float().mean().item())
+            unsafe_rates.append(ever_unsafe_terminated.float().mean().item())
+            unsafe_count = int(ever_unsafe_terminated.sum().item())
+            total_unsafe_eps += unsafe_count
+            reason_counts = {
+                name: int((unsafe_reason_idx == idx).sum().item())
+                for idx, name in enumerate(UNSAFE_REASON_NAMES)
+            }
+            reason_pct = unsafe_reason_percentages_from_counts(
+                reason_counts,
+                unsafe_count,
+                UNSAFE_REASON_NAMES,
+            )
+            for name in UNSAFE_REASON_NAMES:
+                unsafe_reason_pct_series[name].append(reason_pct.get(name, 0.0))
+
+            now_t = time.time()
+            rollout_done = rollout_idx + 1
+            rollout_trigger = rollout_done >= next_rollout_progress
+            time_trigger = (now_t - last_progress_t) >= progress_time_interval_s
+            if rollout_trigger or time_trigger:
+                completion = 100.0 * float(rollout_done) / float(max(total_rollouts, 1))
+                avg_success_so_far = float(np.mean(success_rates)) if len(success_rates) > 0 else 0.0
+                avg_unsafe_so_far = float(np.mean(unsafe_rates)) if len(unsafe_rates) > 0 else 0.0
+                print(
+                    f"[INFO] Eval progress: {rollout_done}/{total_rollouts} rollouts ({completion:.1f}%) "
+                    f"| lift_success={avg_success_so_far:.4f} | unsafe_rate={avg_unsafe_so_far:.4f} "
+                    f"| elapsed={now_t - loop_start_t:.1f}s",
+                    flush=True,
+                )
+                if rollout_trigger:
+                    while (
+                        next_rollout_progress <= rollout_done
+                        and next_rollout_progress < total_rollouts
+                    ):
+                        next_rollout_progress += progress_rollout_interval
+                last_progress_t = now_t
+
+        avg_success = float(np.mean(success_rates)) if len(success_rates) > 0 else 0.0
+        unsafe_episode_rate = float(np.mean(unsafe_rates)) if len(unsafe_rates) > 0 else 0.0
+        eval_reason_pct = {
+            name: float(np.mean(unsafe_reason_pct_series[name])) if len(unsafe_reason_pct_series[name]) > 0 else 0.0
+            for name in UNSAFE_REASON_NAMES
+        }
+        total_done = int(total_rollouts * num_envs)
+        print(
+            f"[INFO] Eval complete in {time.time() - eval_start_t:.1f}s: "
+            f"episodes={total_done}, lift_success={avg_success:.4f}, unsafe_rate={unsafe_episode_rate:.4f}",
+            flush=True,
+        )
+        return avg_success, unsafe_episode_rate, total_done, num_envs, eval_reason_pct, total_unsafe_eps
+    finally:
+        env.close()
+        _ENV_HOLDER["env"] = None
+
+
+def _run_eval_for_teacher_pool(
+    teacher_policy_dir: str,
+    object_names: list[str],
+    objects_dir_override: str,
+) -> tuple[float, float, int, int, dict[str, float], int, dict[str, dict]]:
+    eval_start_t = time.time()
+    print(
+        f"[INFO] Eval start (multi-teacher): task={args_cli.task}, "
+        f"objects_dir={objects_dir_override}, num_objects={len(object_names)}",
+        flush=True,
+    )
+
+    stage_t = time.time()
+    env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
+    env_cfg.objects_dir = objects_dir_override
+    if env_cfg.objects_dir not in env_cfg.valid_objects_dir:
+        env_cfg.valid_objects_dir.append(env_cfg.objects_dir)
+    # Teacher standalone eval needs per-env multi-object spawning while keeping
+    # teacher observations (distillation=False).
+    env_cfg.multi_object_eval = True
+    print(f"[INFO] Parsed env cfg in {time.time() - stage_t:.1f}s", flush=True)
+
+    stage_t = time.time()
+    agent_cfg_template = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
+    checkpoint_map = {
+        object_name: _resolve_teacher_checkpoint(teacher_policy_dir, object_name)
+        for object_name in object_names
+    }
+    print(
+        f"[INFO] Loaded agent cfg + resolved {len(checkpoint_map)} checkpoints in {time.time() - stage_t:.1f}s",
+        flush=True,
+    )
+
+    rl_device = agent_cfg_template["params"]["config"]["device"]
+    clip_obs = agent_cfg_template["params"]["env"].get("clip_observations", math.inf)
+    clip_actions = agent_cfg_template["params"]["env"].get("clip_actions", math.inf)
+
+    stage_t = time.time()
+    print("[INFO] Creating evaluation environment...", flush=True)
+    env = gym.make(args_cli.task, cfg=env_cfg)
+    env = RlGamesVecEnvWrapper(env, rl_device, clip_obs, clip_actions)
+    print(
+        f"[INFO] Environment ready in {time.time() - stage_t:.1f}s "
+        f"(num_envs={env.unwrapped.num_envs}).",
+        flush=True,
+    )
+    _ENV_HOLDER["env"] = env
+    try:
+        eval_env = env.unwrapped
+        num_envs = eval_env.num_envs
+        max_steps = _resolve_eval_max_steps(eval_env)
+        hold_steps, step_dt = _resolve_eval_hold_steps(eval_env)
+        eval_object_names, _ = _resolve_eval_object_names_and_idx(
+            eval_env, num_envs, args_cli.device, fallback_names=object_names
+        )
+        print(
+            f"[INFO] Teacher pool object names from env: {eval_object_names} "
+            f"(requested={len(object_names)})",
+            flush=True,
+        )
+        missing_policy = [name for name in eval_object_names if name not in checkpoint_map]
+        if len(missing_policy) > 0:
+            raise ValueError(
+                "Missing teacher checkpoints for object names exposed by eval env: "
+                f"{missing_policy}"
+            )
+
+        players_by_name: dict[str, BasePlayer] = {}
+        for object_name in eval_object_names:
+            resume_path = retrieve_file_path(checkpoint_map[object_name])
+            cfg = copy.deepcopy(agent_cfg_template)
+            cfg["params"]["load_checkpoint"] = True
+            cfg["params"]["load_path"] = resume_path
+            cfg["params"]["config"]["num_actors"] = num_envs
+            runner = Runner()
+            runner.load(cfg)
+            player: BasePlayer = runner.create_player()
+            player.restore(resume_path)
+            player.reset()
+            players_by_name[object_name] = player
+            print(f"[INFO] Loaded teacher player for {object_name}: {resume_path}", flush=True)
+
+        stage_t = time.time()
+        obs = env.reset()
+        if isinstance(obs, dict):
+            obs = obs["obs"]
+        for player in players_by_name.values():
+            _ = player.get_batch_size(obs, 1)
+            if player.is_rnn:
+                player.init_rnn()
+        print(f"[INFO] First reset complete in {time.time() - stage_t:.1f}s", flush=True)
+        print(
+            f"[INFO] Eval lift hold gate: {hold_steps} steps "
+            f"(~{args_cli.eval_lift_hold_s:.3f}s target, dt={step_dt:.5f}s)",
+            flush=True,
+        )
+
+        total_rollouts = int(args_cli.eval_episodes)
+        progress_rollout_interval = max(1, min(50, total_rollouts // 10 if total_rollouts > 10 else 1))
+        progress_time_interval_s = _PROGRESS_TIME_INTERVAL_S
+        next_rollout_progress = progress_rollout_interval
+        loop_start_t = time.time()
+        last_progress_t = loop_start_t
+        print(
+            f"[INFO] Rollout loop started: target_rollouts={total_rollouts}, "
+            f"rollout_interval={progress_rollout_interval}, "
+            f"time_interval_s={progress_time_interval_s:.1f}",
+            flush=True,
+        )
+
+        success_rates: list[float] = []
+        unsafe_rates: list[float] = []
+        unsafe_reason_pct_series = {name: [] for name in UNSAFE_REASON_NAMES}
+        per_object_lift_series = {
+            object_name: [] for object_name in eval_object_names
+        }
+        per_object_unsafe_rate_series = {
+            object_name: [] for object_name in eval_object_names
+        }
+        per_object_unsafe_reason_pct_series = {
+            object_name: {name: [] for name in UNSAFE_REASON_NAMES}
+            for object_name in eval_object_names
+        }
+        reason_to_idx = {name: idx for idx, name in enumerate(UNSAFE_REASON_NAMES)}
+        total_unsafe_eps = 0
+
+        for rollout_idx in range(total_rollouts):
+            obs = env.reset()
+            if isinstance(obs, dict):
+                obs = obs["obs"]
+            eval_object_names, eval_object_idx = _resolve_eval_object_names_and_idx(
+                eval_env, num_envs, args_cli.device, fallback_names=object_names
+            )
+            for player in players_by_name.values():
+                if player.is_rnn:
+                    player.init_rnn()
+
+            dones = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
+            ever_lifted = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
+            ever_unsafe_terminated = torch.zeros((num_envs,), dtype=torch.bool, device=args_cli.device)
+            unsafe_reason_idx = torch.full((num_envs,), -1, dtype=torch.long, device=args_cli.device)
+            steps = 0
+            lift_hold_counts = torch.zeros((num_envs,), dtype=torch.long, device=args_cli.device)
+
+            while steps < max_steps and not bool(dones.all().item()):
+                # Use no_grad (not inference_mode) so env tensors remain mutable across reset calls.
+                with torch.no_grad():
+                    actions = None
+                    for obj_idx, object_name in enumerate(eval_object_names):
+                        obj_mask = eval_object_idx == obj_idx
+                        if not bool(obj_mask.any().item()):
+                            continue
+                        player = players_by_name.get(object_name, None)
+                        if player is None:
+                            raise RuntimeError(
+                                f"No loaded teacher player for object '{object_name}' "
+                                f"(object index {obj_idx})."
+                            )
+                        obs_t = player.obs_to_torch(obs)
+                        action_by_obj = player.get_action(obs_t, is_deterministic=False)
+                        action_by_obj = torch.as_tensor(action_by_obj, device=args_cli.device)
+                        if actions is None:
+                            actions = torch.zeros_like(action_by_obj)
+                        actions[obj_mask] = action_by_obj[obj_mask]
+                    if actions is None:
+                        raise RuntimeError(
+                            "No teacher actions were produced. Check object-name alignment between "
+                            "env object_names and teacher policy folders."
+                        )
+                    obs, _, env_dones, info = env.step(actions)
+
+                env_dones = _as_bool_mask(env_dones, num_envs, args_cli.device)
+                out_of_reach = _extract_out_of_reach_mask(eval_env, num_envs, args_cli.device)
+                timed_out = _extract_timeout_mask(info, num_envs, args_cli.device)
+                timed_out = timed_out | (env_dones & (~out_of_reach))
+                dones = out_of_reach | timed_out
+                reason_idx = classify_out_of_reach_reasons(
+                    ov_env=eval_env,
+                    out_of_reach=out_of_reach,
+                    reason_names=UNSAFE_REASON_NAMES,
+                    reason_to_idx=reason_to_idx,
+                    device=args_cli.device,
+                )
+                ever_unsafe_terminated = ever_unsafe_terminated | out_of_reach
+                classified_out_of_reach = reason_idx >= 0
+                new_reason_mask = (unsafe_reason_idx < 0) & out_of_reach & classified_out_of_reach
+                unsafe_reason_idx[new_reason_mask] = reason_idx[new_reason_mask]
+
+                if bool(dones.any().item()):
+                    done_indices = dones.nonzero(as_tuple=False).flatten()
+                    for player in players_by_name.values():
+                        if player.is_rnn and player.states is not None:
+                            new_states = []
+                            for s in player.states:
+                                s_clone = s.clone()
+                                s_clone[:, done_indices, :] = 0.0
+                                new_states.append(s_clone)
+                            player.states = new_states
+
+                step_lift_success = _compute_lift_success(eval_env)
+                active_envs = ~dones
+                lift_hold_counts = torch.where(
+                    active_envs & step_lift_success,
+                    lift_hold_counts + 1,
+                    torch.where(active_envs, torch.zeros_like(lift_hold_counts), lift_hold_counts),
+                )
+                hold_lift_success = lift_hold_counts >= hold_steps
+                ever_lifted = ever_lifted | hold_lift_success
+                steps += 1
+
+            if steps >= max_steps:
+                dones = torch.ones_like(dones)
+
+            success_rates.append(ever_lifted.float().mean().item())
+            unsafe_rates.append(ever_unsafe_terminated.float().mean().item())
+            unsafe_count = int(ever_unsafe_terminated.sum().item())
+            total_unsafe_eps += unsafe_count
+            reason_counts = {
+                name: int((unsafe_reason_idx == idx).sum().item())
+                for idx, name in enumerate(UNSAFE_REASON_NAMES)
+            }
+            reason_pct = unsafe_reason_percentages_from_counts(
+                reason_counts,
+                unsafe_count,
+                UNSAFE_REASON_NAMES,
+            )
+            for name in UNSAFE_REASON_NAMES:
+                unsafe_reason_pct_series[name].append(reason_pct.get(name, 0.0))
+
+            for obj_idx, object_name in enumerate(eval_object_names):
+                obj_mask = eval_object_idx == obj_idx
+                if not bool(obj_mask.any().item()):
+                    continue
+                per_object_lift_series[object_name].append(
+                    ever_lifted[obj_mask].float().mean().item()
+                )
+                per_object_unsafe_rate_series[object_name].append(
+                    ever_unsafe_terminated[obj_mask].float().mean().item()
+                )
+                obj_unsafe_count = int(ever_unsafe_terminated[obj_mask].sum().item())
+                obj_reason_counts = {
+                    name: int((unsafe_reason_idx[obj_mask] == idx).sum().item())
+                    for idx, name in enumerate(UNSAFE_REASON_NAMES)
+                }
+                obj_reason_pct = unsafe_reason_percentages_from_counts(
+                    obj_reason_counts,
+                    obj_unsafe_count,
+                    UNSAFE_REASON_NAMES,
+                )
+                for reason_name in UNSAFE_REASON_NAMES:
+                    per_object_unsafe_reason_pct_series[object_name][reason_name].append(
+                        obj_reason_pct.get(reason_name, 0.0)
+                    )
+
+            now_t = time.time()
+            rollout_done = rollout_idx + 1
+            rollout_trigger = rollout_done >= next_rollout_progress
+            time_trigger = (now_t - last_progress_t) >= progress_time_interval_s
+            if rollout_trigger or time_trigger:
+                completion = 100.0 * float(rollout_done) / float(max(total_rollouts, 1))
+                avg_success_so_far = float(np.mean(success_rates)) if len(success_rates) > 0 else 0.0
+                avg_unsafe_so_far = float(np.mean(unsafe_rates)) if len(unsafe_rates) > 0 else 0.0
+                print(
+                    f"[INFO] Eval progress: {rollout_done}/{total_rollouts} rollouts ({completion:.1f}%) "
+                    f"| lift_success={avg_success_so_far:.4f} | unsafe_rate={avg_unsafe_so_far:.4f} "
+                    f"| elapsed={now_t - loop_start_t:.1f}s",
+                    flush=True,
+                )
+                if rollout_trigger:
+                    while (
+                        next_rollout_progress <= rollout_done
+                        and next_rollout_progress < total_rollouts
+                    ):
+                        next_rollout_progress += progress_rollout_interval
+                last_progress_t = now_t
+
+        avg_success = float(np.mean(success_rates)) if len(success_rates) > 0 else 0.0
+        unsafe_episode_rate = float(np.mean(unsafe_rates)) if len(unsafe_rates) > 0 else 0.0
+        eval_reason_pct = {
+            name: float(np.mean(unsafe_reason_pct_series[name])) if len(unsafe_reason_pct_series[name]) > 0 else 0.0
+            for name in UNSAFE_REASON_NAMES
+        }
+        eval_per_object_metrics = {}
+        for object_name in eval_object_names:
+            eval_per_object_metrics[object_name] = {
+                "eval/lift_success": (
+                    float(np.mean(per_object_lift_series[object_name]))
+                    if len(per_object_lift_series[object_name]) > 0
+                    else 0.0
+                ),
+                "eval/unsafe_episode_rate": (
+                    float(np.mean(per_object_unsafe_rate_series[object_name]))
+                    if len(per_object_unsafe_rate_series[object_name]) > 0
+                    else 0.0
+                ),
+                "eval/out_of_reach_reason_pct": {
+                    name: (
+                        float(np.mean(per_object_unsafe_reason_pct_series[object_name][name]))
+                        if len(per_object_unsafe_reason_pct_series[object_name][name]) > 0
+                        else 0.0
+                    )
+                    for name in UNSAFE_REASON_NAMES
+                },
+            }
+        total_done = int(total_rollouts * num_envs)
+        print(
+            f"[INFO] Eval complete in {time.time() - eval_start_t:.1f}s: "
+            f"episodes={total_done}, lift_success={avg_success:.4f}, unsafe_rate={unsafe_episode_rate:.4f}",
+            flush=True,
+        )
+        return (
+            avg_success,
+            unsafe_episode_rate,
+            total_done,
+            num_envs,
+            eval_reason_pct,
+            total_unsafe_eps,
+            eval_per_object_metrics,
+        )
     finally:
         env.close()
         _ENV_HOLDER["env"] = None
@@ -550,108 +1006,170 @@ def main():
     if (args_cli.teacher_policy_dir is None) != (args_cli.teacher_object_dir is None):
         raise ValueError("Provide both --teacher_policy_dir and --teacher_object_dir together.")
     _register_rlgames_env()
+    tb_writer = None
 
-    if args_cli.teacher_policy_dir is not None and args_cli.teacher_object_dir is not None:
-        if args_cli.checkpoint is not None:
-            raise ValueError("Do not pass --checkpoint when using teacher folder evaluation mode.")
+    try:
+        if args_cli.teacher_policy_dir is not None and args_cli.teacher_object_dir is not None:
+            if args_cli.checkpoint is not None:
+                raise ValueError("Do not pass --checkpoint when using teacher folder evaluation mode.")
 
-        object_names = _validate_teacher_policy_object_dirs(args_cli.teacher_policy_dir, args_cli.teacher_object_dir)
-        per_object_lift_results = []
-        per_object_unsafe_rates = []
-        per_object_metrics: dict[str, dict] = {}
-        flat_metrics: dict[str, object] = {}
-        aggregate_reason_counts: dict[str, int] = {}
-        aggregate_unsafe_eps = 0
-        for object_name in object_names:
-            checkpoint_path = _resolve_teacher_checkpoint(args_cli.teacher_policy_dir, object_name)
-            objects_dir_name, temp_root = _prepare_teacher_single_object_dir(args_cli.teacher_object_dir, object_name)
+            tb_writer, _ = _create_tb_writer(teacher_mode=True)
+            object_names = _validate_teacher_policy_object_dirs(args_cli.teacher_policy_dir, args_cli.teacher_object_dir)
+            teacher_start_t = time.time()
+            print(
+                f"[INFO] Teacher-folder evaluation started for {len(object_names)} objects in a single multi-object run.",
+                flush=True,
+            )
+            objects_dir_name, temp_root = _prepare_teacher_multi_object_dir(
+                args_cli.teacher_object_dir, object_names
+            )
+            print(
+                f"[INFO] [TeacherEval] Prepared temporary multi-object override: {objects_dir_name}",
+                flush=True,
+            )
             try:
-                obj_success, obj_unsafe, total_done, num_envs, reason_counts, obj_unsafe_eps = _run_eval_for_checkpoint(
-                    checkpoint_path, objects_dir_override=objects_dir_name
+                (
+                    avg_success,
+                    avg_unsafe,
+                    total_done,
+                    num_envs,
+                    avg_reason_percentages,
+                    unsafe_eps,
+                    per_object_metrics,
+                ) = _run_eval_for_teacher_pool(
+                    teacher_policy_dir=args_cli.teacher_policy_dir,
+                    object_names=object_names,
+                    objects_dir_override=objects_dir_name,
                 )
             finally:
                 if temp_root.exists():
                     shutil.rmtree(temp_root)
+                    print(
+                        f"[INFO] [TeacherEval] Removed temporary directory: {temp_root}",
+                        flush=True,
+                    )
 
-            per_object_lift_results.append(obj_success)
-            per_object_unsafe_rates.append(obj_unsafe)
-            aggregate_unsafe_eps += obj_unsafe_eps
-            for reason_name, count in reason_counts.items():
-                aggregate_reason_counts[reason_name] = aggregate_reason_counts.get(reason_name, 0) + count
-            reason_percentages = _reason_counts_to_percentages(reason_counts, obj_unsafe_eps)
-            reason_percentages_full = _reason_percentages_with_defaults(reason_percentages)
-            per_object_metrics[object_name] = {
-                "eval/lift_success": float(obj_success),
-                "eval/unsafe_episode_rate": float(obj_unsafe),
-                "eval/out_of_reach_reason_pct": reason_percentages_full,
+            avg_reason_percentages_full = _reason_percentages_with_defaults(avg_reason_percentages)
+            missing_metric_objects = [
+                object_name for object_name in object_names
+                if object_name not in per_object_metrics
+            ]
+            if len(missing_metric_objects) > 0:
+                raise RuntimeError(
+                    "Teacher pool eval did not produce metrics for all requested objects: "
+                    f"{missing_metric_objects}"
+                )
+            flat_metrics: dict[str, object] = {}
+            for object_idx, object_name in enumerate(object_names, start=1):
+                object_metrics = per_object_metrics.get(object_name, {})
+                reason_pct = _reason_percentages_with_defaults(
+                    object_metrics.get("eval/out_of_reach_reason_pct", {})
+                )
+                lift_val = float(object_metrics.get("eval/lift_success", 0.0))
+                unsafe_val = float(object_metrics.get("eval/unsafe_episode_rate", 0.0))
+                flat_metrics[f"eval/lift_success/{object_name}"] = lift_val
+                flat_metrics[f"eval/unsafe_episode_rate/{object_name}"] = unsafe_val
+                flat_metrics[f"eval/out_of_reach_reason_pct/{object_name}"] = reason_pct
+                tb_object_name = str(object_name).replace("/", "_")
+                _tb_add_scalar(tb_writer, f"eval/{tb_object_name}/lift_success", lift_val, object_idx)
+                _tb_add_scalar(tb_writer, f"eval/{tb_object_name}/unsafe_episode_rate", unsafe_val, object_idx)
+                _tb_log_reason_percentages(
+                    tb_writer,
+                    f"eval/{tb_object_name}",
+                    reason_pct,
+                    object_idx,
+                )
+                print(
+                    f"eval/lift_success/{object_name}: {lift_val:.4f} "
+                    f"| eval/unsafe_episode_rate/{object_name}: {unsafe_val:.4f} "
+                    f"| eval/out_of_reach_reason_pct/{object_name}: {_format_reason_percentages(reason_pct)}",
+                    flush=True,
+                )
+
+            print(f"eval/lift_success_avg: {avg_success:.4f} (objects: {len(object_names)})")
+            print(f"eval/unsafe_episode_rate_avg: {avg_unsafe:.4f} (objects: {len(object_names)})")
+            print(f"eval/out_of_reach_reason_pct_avg: {_format_reason_percentages(avg_reason_percentages_full)}")
+            flat_metrics["eval/lift_success_avg"] = float(avg_success)
+            flat_metrics["eval/unsafe_episode_rate_avg"] = float(avg_unsafe)
+            flat_metrics["eval/out_of_reach_reason_pct_avg"] = avg_reason_percentages_full
+            _tb_add_scalar(tb_writer, "eval/avg/lift_success", float(avg_success), len(object_names))
+            _tb_add_scalar(tb_writer, "eval/avg/unsafe_episode_rate", float(avg_unsafe), len(object_names))
+            _tb_log_reason_percentages(
+                tb_writer,
+                "eval/avg",
+                avg_reason_percentages_full,
+                len(object_names),
+            )
+            metrics_payload = {
+                "mode": "teacher_folder",
+                "task": args_cli.task,
+                "teacher_policy_dir": str(pathlib.Path(args_cli.teacher_policy_dir).expanduser().resolve()),
+                "teacher_object_dir": str(pathlib.Path(args_cli.teacher_object_dir).expanduser().resolve()),
+                "eval_episodes": int(args_cli.eval_episodes),
+                "objects": per_object_metrics,
+                "averages": {
+                    "eval/lift_success_avg": float(avg_success),
+                    "eval/unsafe_episode_rate_avg": float(avg_unsafe),
+                    "eval/out_of_reach_reason_pct_avg": avg_reason_percentages_full,
+                },
+                "flat": flat_metrics,
                 "total_episodes": int(total_done),
                 "num_envs": int(num_envs),
-                "unsafe_episodes": int(obj_unsafe_eps),
+                "unsafe_episodes": int(unsafe_eps),
             }
-            flat_metrics[f"eval/lift_success/{object_name}"] = float(obj_success)
-            flat_metrics[f"eval/unsafe_episode_rate/{object_name}"] = float(obj_unsafe)
-            flat_metrics[f"eval/out_of_reach_reason_pct/{object_name}"] = reason_percentages_full
+            _save_metrics_json(metrics_payload, teacher_mode=True)
             print(
-                f"eval/lift_success/{object_name}: {obj_success:.4f} "
-                f"| eval/unsafe_episode_rate/{object_name}: {obj_unsafe:.4f} "
-                f"| eval/out_of_reach_reason_pct/{object_name}: {_format_reason_percentages(reason_percentages)} "
-                f"(total episodes: {total_done}, envs: {num_envs})"
+                f"[INFO] Teacher-folder evaluation finished in {time.time() - teacher_start_t:.1f}s",
+                flush=True,
             )
+            return
 
-        avg_success = sum(per_object_lift_results) / max(len(per_object_lift_results), 1)
-        avg_unsafe = sum(per_object_unsafe_rates) / max(len(per_object_unsafe_rates), 1)
-        avg_reason_percentages = _reason_counts_to_percentages(aggregate_reason_counts, aggregate_unsafe_eps)
-        avg_reason_percentages_full = _reason_percentages_with_defaults(avg_reason_percentages)
-        print(f"eval/lift_success_avg: {avg_success:.4f} (objects: {len(per_object_lift_results)})")
-        print(f"eval/unsafe_episode_rate_avg: {avg_unsafe:.4f} (objects: {len(per_object_unsafe_rates)})")
-        print(f"eval/out_of_reach_reason_pct_avg: {_format_reason_percentages(avg_reason_percentages)}")
-        flat_metrics["eval/lift_success_avg"] = float(avg_success)
-        flat_metrics["eval/unsafe_episode_rate_avg"] = float(avg_unsafe)
-        flat_metrics["eval/out_of_reach_reason_pct_avg"] = avg_reason_percentages_full
+        tb_writer, _ = _create_tb_writer(teacher_mode=False)
+        avg_success, unsafe_episode_rate, total_done, num_envs, reason_percentages, unsafe_eps = _run_eval_for_checkpoint(
+            checkpoint_path=args_cli.checkpoint
+        )
+        reason_percentages_full = _reason_percentages_with_defaults(reason_percentages)
+        print(
+            f"eval/lift_success: {avg_success:.4f} | "
+            f"eval/unsafe_episode_rate: {unsafe_episode_rate:.4f} | "
+            f"eval/out_of_reach_reason_pct: {_format_reason_percentages(reason_percentages_full)} "
+            f"(total episodes: {total_done}, envs: {num_envs})"
+        )
+        _tb_add_scalar(tb_writer, "eval/lift_success", float(avg_success), 0)
+        _tb_add_scalar(tb_writer, "eval/unsafe_episode_rate", float(unsafe_episode_rate), 0)
+        _tb_log_reason_percentages(
+            tb_writer,
+            "eval",
+            reason_percentages_full,
+            0,
+        )
         metrics_payload = {
-            "mode": "teacher_folder",
+            "mode": "single_checkpoint",
             "task": args_cli.task,
-            "teacher_policy_dir": str(pathlib.Path(args_cli.teacher_policy_dir).expanduser().resolve()),
-            "teacher_object_dir": str(pathlib.Path(args_cli.teacher_object_dir).expanduser().resolve()),
+            "checkpoint": args_cli.checkpoint,
             "eval_episodes": int(args_cli.eval_episodes),
-            "deterministic": bool(args_cli.deterministic),
-            "objects": per_object_metrics,
-            "averages": {
-                "eval/lift_success_avg": float(avg_success),
-                "eval/unsafe_episode_rate_avg": float(avg_unsafe),
-                "eval/out_of_reach_reason_pct_avg": avg_reason_percentages_full,
+            "metrics": {
+                "eval/lift_success": float(avg_success),
+                "eval/unsafe_episode_rate": float(unsafe_episode_rate),
+                "eval/out_of_reach_reason_pct": reason_percentages_full,
             },
-            "flat": flat_metrics,
+            "total_episodes": int(total_done),
+            "num_envs": int(num_envs),
+            "unsafe_episodes": int(unsafe_eps),
         }
-        _save_metrics_npy(metrics_payload, teacher_mode=True)
-        return
-
-    avg_success, unsafe_episode_rate, total_done, num_envs, reason_counts, unsafe_eps = _run_eval_for_checkpoint(
-        checkpoint_path=args_cli.checkpoint
-    )
-    reason_percentages = _reason_counts_to_percentages(reason_counts, unsafe_eps)
-    print(
-        f"eval/lift_success: {avg_success:.4f} | "
-        f"eval/unsafe_episode_rate: {unsafe_episode_rate:.4f} | "
-        f"eval/out_of_reach_reason_pct: {_format_reason_percentages(reason_percentages)} "
-        f"(total episodes: {total_done}, envs: {num_envs})"
-    )
-    metrics_payload = {
-        "mode": "single_checkpoint",
-        "task": args_cli.task,
-        "checkpoint": args_cli.checkpoint,
-        "eval_episodes": int(args_cli.eval_episodes),
-        "deterministic": bool(args_cli.deterministic),
-        "metrics": {
-            "eval/lift_success": float(avg_success),
-            "eval/unsafe_episode_rate": float(unsafe_episode_rate),
-            "eval/out_of_reach_reason_pct": _reason_percentages_with_defaults(reason_percentages),
-        },
-        "total_episodes": int(total_done),
-        "num_envs": int(num_envs),
-        "unsafe_episodes": int(unsafe_eps),
-    }
-    _save_metrics_npy(metrics_payload, teacher_mode=False)
+        _save_metrics_json(metrics_payload, teacher_mode=False)
+    finally:
+        if tb_writer is not None:
+            try:
+                if not _TB_STATE["disabled"]:
+                    tb_writer.flush()
+            except Exception as exc:
+                print(f"[WARN] TensorBoard flush failed: {exc}", flush=True)
+            try:
+                tb_writer.close()
+            except Exception as exc:
+                print(f"[WARN] TensorBoard close failed: {exc}", flush=True)
+            print("[INFO] TensorBoard writer closed.", flush=True)
 
 
 if __name__ == "__main__":

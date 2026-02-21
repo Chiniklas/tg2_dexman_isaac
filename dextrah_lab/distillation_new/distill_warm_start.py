@@ -1,101 +1,57 @@
-"""Distillation warm-start bootstrap utilities."""
+"""Distillation warm-start bootstrap utilities.
+
+Warm-start pipeline (2 phases only):
+1) Collect teacher rollout data and save it explicitly.
+2) Fit safety models (OOD / failure predictor) from that collected data.
+
+BC is intentionally removed from warm-start.
+"""
+
+import os
+import time
 
 import torch
 
-from dextrah_lab.distillation_new.loss_utils import gaussian_kl, gaussian_nll
-
 
 class DistillWarmStart:
-    """Implements a 3-phase warm start: collect, BC pretrain, safety-model fit."""
+    """Implements a 2-phase warm start: collect dataset, then fit safety models."""
 
     def __init__(self, agent):
         self.a = agent
 
-    def _expand_rnn_state_batch(self, state, batch_size):
-        if state.dim() == 2:
-            curr = state.shape[0]
-            if curr == batch_size:
-                return state
-            if curr == 1:
-                return state.repeat(batch_size, 1)
-            idx = torch.arange(batch_size, device=state.device) % curr
-            return state.index_select(0, idx)
-        curr = state.shape[1]
-        if curr == batch_size:
-            return state
-        if curr == 1:
-            rep_shape = [1] * state.dim()
-            rep_shape[1] = batch_size
-            return state.repeat(*rep_shape)
-        idx = torch.arange(batch_size, device=state.device) % curr
-        return state.index_select(1, idx)
+    def _tb_add_scalar(self, tag, value, step=0):
+        if self.a.rank != 0:
+            return
+        if not hasattr(self.a, "writer") or self.a.writer is None:
+            return
+        self.a.writer.add_scalar(tag, float(value), int(step))
 
-    def _default_student_rnn_states_for_batch(self, batch_size):
-        states = self.a.student_model.get_default_rnn_state()
-        states = [s.to(self.a.device) for s in states]
-        return [self._expand_rnn_state_batch(s, batch_size) for s in states]
-
-    def _build_student_batch_from_obs(self, obs_batch, is_train=True):
-        batch_size = int(obs_batch[self.a.student_obs_type].shape[0])
-        batch_dict = {
-            "is_train": bool(is_train),
-            "obs": obs_batch[self.a.student_obs_type].to(self.a.device),
-            "prev_actions": torch.zeros(
-                (batch_size, self.a.num_actions_student),
-                dtype=torch.float32,
-                device=self.a.device,
-            ),
-            "finetune_backbone": False,
-        }
-        if "img" in obs_batch:
-            batch_dict["img"] = obs_batch["img"].to(self.a.device)
-            if "rgb" in obs_batch:
-                batch_dict["rgb_data"] = obs_batch["rgb"].to(self.a.device)
-                batch_dict["rgb"] = obs_batch["rgb"].to(self.a.device)
-        if "img_left" in obs_batch:
-            batch_dict["img_left"] = obs_batch["img_left"].to(self.a.device)
-            batch_dict["img_right"] = obs_batch["img_right"].to(self.a.device)
-        if self.a.is_rnn:
-            batch_dict["rnn_states"] = self._default_student_rnn_states_for_batch(batch_size)
-            batch_dict["seq_length"] = 1
-            batch_dict["rnn_masks"] = None
-        return batch_dict
-
-    def _compute_imitation_loss_from_teacher_targets(
-        self, actions_student, teacher_mus, teacher_sigmas, teacher_actions
-    ):
-        weights = 1 / teacher_sigmas[0]
-        weights = weights ** 2
-        if self.a.imitation_loss_type == "kl":
-            kl_per_env, _, _ = gaussian_kl(
-                actions_student["mus"],
-                actions_student["sigmas"],
-                teacher_mus,
-                teacher_sigmas,
+    def _prepare_ood_policy_embed(self, obs, step):
+        """Populate obs['ood_policy_embed'] = concat(policy, embeds) with strict checks."""
+        if self.a.student_obs_type not in obs:
+            raise KeyError(
+                f"[WarmStart] Missing student obs key '{self.a.student_obs_type}' at step {step}."
             )
-            return self.a.reduce_loss(kl_per_env)
-        if self.a.imitation_loss_type == "nll":
-            nll_per_env = gaussian_nll(
-                actions_student["mus"],
-                actions_student["sigmas"],
-                teacher_actions,
+        student_out = self.a.get_actions(obs, "student")
+        embeds = student_out.get("embeds", None)
+        if embeds is None:
+            raise RuntimeError(
+                "[WarmStart] Failed to build ood_policy_embed: student policy returned no embeds "
+                f"at step {step}. Fail-fast mode: no fallback is allowed."
             )
-            return self.a.reduce_loss(nll_per_env)
-        if self.a.imitation_loss_type == "mse":
-            mse_per_env = torch.mean(
-                (actions_student["actions"] - teacher_actions) ** 2, dim=-1
+        if not torch.is_tensor(embeds):
+            raise TypeError(
+                "[WarmStart] Failed to build ood_policy_embed: 'embeds' is not a tensor "
+                f"(type={type(embeds)}), step={step}."
             )
-            return self.a.reduce_loss(mse_per_env)
-        mu_loss = self.a.loss(
-            actions_student["mus"], teacher_mus, fn="weighted_l2", weights=weights
-        )
-        sigma_loss = self.a.loss(actions_student["sigmas"], teacher_sigmas)
-        return mu_loss + sigma_loss
+        embeds = embeds.detach()
+        obs["ood_embed"] = embeds
+        obs["ood_policy_embed"] = torch.cat([obs[self.a.student_obs_type], embeds], dim=-1)
 
-    def _snapshot_warm_obs(self, obs, env_indices):
+    def _snapshot_warm_obs(self, obs, env_indices, include_images=False):
         obs_snapshot = {}
-        capture_keys = [self.a.student_obs_type]
-        if self.a.warm_start_bc_record_images:
+        capture_keys = [self.a.student_obs_type, "ood_policy_embed"]
+        if include_images:
             for key in ("img", "rgb", "img_left", "img_right"):
                 if key in obs:
                     capture_keys.append(key)
@@ -108,76 +64,92 @@ class DistillWarmStart:
             obs_snapshot[key] = tensor
         return obs_snapshot
 
+    def _save_collected_data(self, collected_samples):
+        if self.a.rank != 0:
+            return
+        if self.a.warm_start_save_path is None:
+            print("[WarmStart] save_collected_data is enabled but no save_path was resolved.", flush=True)
+            return
+        image_keys = {"img", "rgb", "img_left", "img_right"}
+        samples_to_save = []
+        for sample in collected_samples:
+            obs_src = sample.get("obs", {})
+            obs_dst = {}
+            if "ood_policy_embed" in obs_src:
+                obs_dst["ood_policy_embed"] = obs_src["ood_policy_embed"]
+            if self.a.student_obs_type in obs_src:
+                obs_dst[self.a.student_obs_type] = obs_src[self.a.student_obs_type]
+            if self.a.warm_start_save_images:
+                for key in image_keys:
+                    if key in obs_src:
+                        obs_dst[key] = obs_src[key]
+            sample_dst = dict(sample)
+            sample_dst["obs"] = obs_dst
+            samples_to_save.append(sample_dst)
+        payload = {
+            "metadata": {
+                "student_obs_type": self.a.student_obs_type,
+                "safety_obs_key": "ood_policy_embed",
+                "collect_steps": int(self.a.warm_start_collect_steps),
+                "saved_steps": int(self.a.warm_start_save_steps),
+                "saved_envs": int(self.a.warm_start_save_envs),
+                "save_images": bool(self.a.warm_start_save_images),
+                "num_saved_samples": int(len(samples_to_save)),
+            },
+            "samples": samples_to_save,
+        }
+        save_dir = os.path.dirname(self.a.warm_start_save_path)
+        if len(save_dir) > 0:
+            os.makedirs(save_dir, exist_ok=True)
+        torch.save(payload, self.a.warm_start_save_path)
+        print(
+            f"[WarmStart] Saved collected rollout snapshots to {self.a.warm_start_save_path} "
+            f"(samples={len(samples_to_save)}).",
+            flush=True,
+        )
+
     def _warm_start_collect(self, obs):
-        warm_samples = []
-        record_steps = min(self.a.warm_start_collect_steps, self.a.warm_start_bc_record_steps)
-        record_env_ids = torch.arange(
-            self.a.warm_start_bc_record_envs, dtype=torch.long, device=self.a.device
+        collected_samples = []
+        save_steps = min(self.a.warm_start_collect_steps, self.a.warm_start_save_steps)
+        save_env_ids = torch.arange(
+            self.a.warm_start_save_envs, dtype=torch.long, device=self.a.device
         )
         if self.a.rank == 0:
             print(
                 f"[WarmStart] Collecting bootstrap data for {self.a.warm_start_collect_steps} steps.",
                 flush=True,
             )
+        collect_start_t = time.time()
+        progress_interval = max(1, min(200, self.a.warm_start_collect_steps // 20))
 
         with torch.no_grad():
             for step in range(self.a.warm_start_collect_steps):
+                self._prepare_ood_policy_embed(obs, step)
                 teacher_out = self.a.get_actions(obs, "teacher")
                 teacher_actions = teacher_out["actions"].detach()
 
-                if step < record_steps and self.a.warm_start_bc_updates > 0:
-                    warm_samples.append(
+                if step < save_steps:
+                    obs_snapshot = self._snapshot_warm_obs(
+                        obs,
+                        save_env_ids,
+                        include_images=self.a.warm_start_save_images,
+                    )
+                    collected_samples.append(
                         {
-                            "obs": self._snapshot_warm_obs(obs, record_env_ids),
-                            "teacher_mus": teacher_out["mus"].detach().index_select(0, record_env_ids).to("cpu"),
-                            "teacher_sigmas": teacher_out["sigmas"].detach().index_select(0, record_env_ids).to("cpu"),
-                            "teacher_actions": teacher_out["actions"].detach().index_select(0, record_env_ids).to("cpu"),
+                            "step": int(step),
+                            "obs": obs_snapshot,
+                            "teacher_mus": teacher_out["mus"].detach().index_select(0, save_env_ids).to("cpu"),
+                            "teacher_sigmas": teacher_out["sigmas"].detach().index_select(0, save_env_ids).to("cpu"),
+                            "teacher_actions": teacher_out["actions"].detach().index_select(0, save_env_ids).to("cpu"),
                         }
                     )
 
-                if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
-                    obs["ood_policy_embed"] = obs[self.a.student_obs_type]
-                    try:
-                        student_out = self.a.get_actions(obs, "student")
-                        if student_out.get("embeds") is not None:
-                            embeds = student_out["embeds"].detach()
-                            obs["ood_embed"] = embeds
-                            obs["ood_policy_embed"] = torch.cat(
-                                [obs[self.a.student_obs_type], embeds], dim=-1
-                            )
-                    except Exception as err:
-                        if self.a.rank == 0 and step == 0:
-                            print(f"[WarmStart] OOD embed prep failed; using obs key only. Error: {err}", flush=True)
-                    key = self.a.ood_classifier.obs_key or self.a.ood_classifier.default_obs_key
-                    if not self.a.ood_classifier.initialized and key is not None and key in obs:
-                        self.a.ood_classifier.init_buffer(obs)
-                    self.a.ood_classifier.check_ood(obs, self.a.device)
-
-                prev_obs = obs
-                obs, rew, out_of_reach, timed_out, info = self.a.env.step(teacher_actions)
-
-                if self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
-                    done_mask = out_of_reach | timed_out
-                    fp_info = dict(info) if isinstance(info, dict) else {}
-                    fp_info.setdefault("out_of_reach", out_of_reach)
-                    fp_info.setdefault("timed_out", timed_out)
-                    if getattr(self.a.failure_predictor, "supports_next_obs", False):
-                        self.a.failure_predictor.add_step(
-                            obs=prev_obs,
-                            action=teacher_actions,
-                            next_obs=obs,
-                            reward=rew,
-                            done=done_mask,
-                            info=fp_info,
-                        )
-                    else:
-                        self.a.failure_predictor.add_step(
-                            obs=prev_obs,
-                            action=teacher_actions,
-                            reward=rew,
-                            done=done_mask,
-                            info=fp_info,
-                        )
+                obs, rew, out_of_reach, timed_out, _ = self.a.env.step(teacher_actions)
+                if step < save_steps and len(collected_samples) > 0:
+                    sample = collected_samples[-1]
+                    sample["reward"] = rew.detach().index_select(0, save_env_ids).to("cpu")
+                    sample["out_of_reach"] = out_of_reach.detach().index_select(0, save_env_ids).to("cpu")
+                    sample["timed_out"] = timed_out.detach().index_select(0, save_env_ids).to("cpu")
 
                 done_idx = (out_of_reach | timed_out).nonzero(as_tuple=False)
                 if self.a.is_teacher_rnn and len(done_idx) > 0:
@@ -189,87 +161,102 @@ class DistillWarmStart:
                             s[:, done_idx, ...] *= 0.0
                 if self.a.is_rnn and len(done_idx) > 0 and hasattr(self.a, "student_hidden_states"):
                     self.a._zero_rnn_states(self.a.student_hidden_states, done_idx)
+                if self.a.rank == 0 and (
+                    (step + 1) % progress_interval == 0
+                    or (step + 1) == self.a.warm_start_collect_steps
+                ):
+                    elapsed = time.time() - collect_start_t
+                    print(
+                        f"[WarmStart] Collect progress: {step + 1}/{self.a.warm_start_collect_steps} "
+                        f"steps ({100.0 * (step + 1) / max(1, self.a.warm_start_collect_steps):.1f}%), "
+                        f"elapsed={elapsed:.1f}s",
+                        flush=True,
+                    )
 
         if self.a.rank == 0:
             print(
                 f"[WarmStart] Collected {self.a.warm_start_collect_steps} rollout steps; "
-                f"cached {len(warm_samples)} BC snapshots.",
+                f"persisted {len(collected_samples)} dataset snapshots.",
                 flush=True,
             )
-        return obs, warm_samples
+        return obs, collected_samples
 
-    def _warm_start_pretrain_bc(self, warm_samples):
-        if self.a.warm_start_bc_updates <= 0:
-            return
-        if len(warm_samples) == 0:
-            if self.a.rank == 0:
-                print("[WarmStart] Skipping BC pretrain: no cached warm-start samples.", flush=True)
-            return
-
-        if self.a.rank == 0:
-            print(f"[WarmStart] Running initial BC pretrain for {self.a.warm_start_bc_updates} updates.", flush=True)
-
-        self.a.student_model.train()
-        losses = []
-        for _ in range(self.a.warm_start_bc_updates):
-            sample_idx = int(torch.randint(0, len(warm_samples), (1,), device=self.a.device).item())
-            sample = warm_samples[sample_idx]
-            obs_batch = {}
-            for key, value in sample["obs"].items():
-                tensor = value.to(self.a.device)
-                if tensor.dtype in {torch.float16, torch.bfloat16}:
-                    tensor = tensor.to(dtype=torch.float32)
-                obs_batch[key] = tensor
-            if self.a.student_obs_type not in obs_batch:
-                continue
-            try:
-                batch_dict = self._build_student_batch_from_obs(obs_batch, is_train=True)
-                student_res = self.a.student_model(batch_dict)
-                student_mus = student_res["mus"]
-                student_sigmas = student_res["sigmas"]
-                distr = torch.distributions.Normal(student_mus, student_sigmas, validate_args=False)
-                student_actions = torch.clamp(distr.sample(), -1.0, 1.0)
-                actions_student = {
-                    "mus": student_mus,
-                    "sigmas": student_sigmas,
-                    "actions": student_actions,
-                }
-            except Exception as err:
-                if self.a.rank == 0 and len(losses) == 0:
-                    print(
-                        "[WarmStart] BC pretrain batch build failed; "
-                        "consider enabling warm_start.bc_record_images if vision inputs are required. "
-                        f"Error: {err}",
-                        flush=True,
+    def _warm_start_fit_safety_models(self, collected_samples):
+        if len(collected_samples) > 0:
+            for step, sample in enumerate(collected_samples):
+                obs_dict = sample.get("obs", {})
+                if "ood_policy_embed" not in obs_dict:
+                    raise KeyError(
+                        f"[WarmStart] Collected dataset sample {step} is missing 'ood_policy_embed'."
                     )
-                break
+                current_obs = {"ood_policy_embed": obs_dict["ood_policy_embed"]}
+                next_obs = current_obs
+                if step + 1 < len(collected_samples):
+                    next_obs_dict = collected_samples[step + 1].get("obs", {})
+                    if "ood_policy_embed" in next_obs_dict:
+                        next_obs = {"ood_policy_embed": next_obs_dict["ood_policy_embed"]}
 
-            teacher_mus = sample["teacher_mus"].to(self.a.device)
-            teacher_sigmas = sample["teacher_sigmas"].to(self.a.device)
-            teacher_actions = sample["teacher_actions"].to(self.a.device)
-            bc_loss = self._compute_imitation_loss_from_teacher_targets(
-                actions_student, teacher_mus, teacher_sigmas, teacher_actions
-            )
+                if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
+                    key = self.a.ood_classifier.obs_key or self.a.ood_classifier.default_obs_key
+                    if not self.a.ood_classifier.initialized and key is not None and key in current_obs:
+                        self.a.ood_classifier.init_buffer(current_obs)
+                    ood_unsafe = self.a.ood_classifier.check_ood(current_obs, self.a.device)
+                    if ood_unsafe is not None:
+                        self._tb_add_scalar(
+                            "warmstart/ood/unsafe_fraction",
+                            float(ood_unsafe.float().mean().item()),
+                            step,
+                        )
+                    ood_threshold = getattr(self.a.ood_classifier, "threshold", None)
+                    if ood_threshold is not None:
+                        self._tb_add_scalar("warmstart/ood/threshold", float(ood_threshold), step)
+                    ood_buf_count = getattr(self.a.ood_classifier, "buf_count", None)
+                    if ood_buf_count is not None:
+                        self._tb_add_scalar("warmstart/ood/buffer_count", int(ood_buf_count), step)
 
-            self.a.optimizer.zero_grad()
-            bc_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.a.student_model.parameters(), 1.0)
-            self.a.optimizer.step()
-            losses.append(float(bc_loss.detach().item()))
+                if self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
+                    teacher_actions = sample["teacher_actions"]
+                    reward = sample.get("reward", torch.zeros_like(teacher_actions[:, 0]))
+                    out_of_reach = sample.get(
+                        "out_of_reach",
+                        torch.zeros((teacher_actions.shape[0],), dtype=torch.bool),
+                    )
+                    timed_out = sample.get(
+                        "timed_out",
+                        torch.zeros((teacher_actions.shape[0],), dtype=torch.bool),
+                    )
+                    done_mask = out_of_reach | timed_out
+                    fp_info = {
+                        "out_of_reach": out_of_reach,
+                        "timed_out": timed_out,
+                    }
+                    if getattr(self.a.failure_predictor, "supports_next_obs", False):
+                        self.a.failure_predictor.add_step(
+                            obs=current_obs,
+                            action=teacher_actions,
+                            next_obs=next_obs,
+                            reward=reward,
+                            done=done_mask,
+                            info=fp_info,
+                        )
+                    else:
+                        self.a.failure_predictor.add_step(
+                            obs=current_obs,
+                            action=teacher_actions,
+                            reward=reward,
+                            done=done_mask,
+                            info=fp_info,
+                        )
 
-        if self.a.rank == 0:
-            if len(losses) > 0:
-                print(f"[WarmStart] Initial BC done. mean_loss={sum(losses) / len(losses):.6f}", flush=True)
-            else:
-                print("[WarmStart] Initial BC finished with no successful updates.", flush=True)
-
-    def _warm_start_fit_safety_models(self):
         predictor_losses = []
-        if (
+        predictor_updates = 0
+        predictor_fit_status = 0
+        predictor_fit_enabled = (
             self.a.failure_predictor is not None
             and self.a.failure_predictor.enabled
             and self.a.warm_start_predictor_train_steps > 0
-        ):
+        )
+        if predictor_fit_enabled:
             for _ in range(self.a.warm_start_predictor_train_steps):
                 out = self.a.failure_predictor.train_step()
                 if out is None:
@@ -280,19 +267,32 @@ class DistillWarmStart:
                     loss_val = out
                 if loss_val is not None:
                     predictor_losses.append(float(loss_val))
+                    self._tb_add_scalar(
+                        "warmstart/predictor/loss",
+                        predictor_losses[-1],
+                        predictor_updates,
+                    )
+                    predictor_updates += 1
 
-        ood_refit_done = False
+        # Encoded refit status:
+        # 0 = fail/no-op, 1 = gaussian(_refit_stats), 2 = pca(_refit_pca), 3 = mlp(_train_classifier)
+        ood_refit_status = 0
         if (
             self.a.ood_classifier is not None
             and self.a.ood_classifier.enabled
             and self.a.ood_classifier.initialized
             and self.a.warm_start_ood_force_refit
         ):
+            fn_to_status = {
+                "_refit_stats": 1,
+                "_refit_pca": 2,
+                "_train_classifier": 3,
+            }
             for fn_name in ("_refit_stats", "_refit_pca", "_train_classifier"):
                 if hasattr(self.a.ood_classifier, fn_name):
                     try:
                         getattr(self.a.ood_classifier, fn_name)()
-                        ood_refit_done = True
+                        ood_refit_status = fn_to_status[fn_name]
                     except Exception as err:
                         if self.a.rank == 0:
                             print(f"[WarmStart] OOD forced refit failed for {fn_name}: {err}", flush=True)
@@ -307,22 +307,59 @@ class DistillWarmStart:
             elif self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
                 print("[WarmStart] Predictor pretrain skipped or not enough samples yet.", flush=True)
             if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
-                print(f"[WarmStart] OOD warm fit status: {'done' if ood_refit_done else 'no-op'}", flush=True)
+                status_name = {
+                    0: "fail/no-op",
+                    1: "gaussian",
+                    2: "pca",
+                    3: "mlp",
+                }.get(ood_refit_status, str(ood_refit_status))
+                print(
+                    f"[WarmStart] OOD warm fit status: {status_name} (code={ood_refit_status})",
+                    flush=True,
+                )
+        if predictor_fit_enabled and len(predictor_losses) > 0:
+            self._tb_add_scalar(
+                "warmstart/predictor/loss_mean",
+                sum(predictor_losses) / len(predictor_losses),
+                0,
+            )
+        self._tb_add_scalar("warmstart/ood/refit_done", ood_refit_status, 0)
+        if predictor_fit_enabled and predictor_updates > 0:
+            predictor_class_name = self.a.failure_predictor.__class__.__name__.lower()
+            if "critic" in predictor_class_name:
+                predictor_fit_status = 5
+            else:
+                predictor_fit_status = 4
+        # Unified warm-start fitting status code:
+        # 0 = fail/no-op
+        # 1 = gaussian OOD, 2 = pca OOD, 3 = mlp OOD
+        # 4 = predictor legacy, 5 = predictor critic
+        model_fit_status = predictor_fit_status if predictor_fit_status > 0 else ood_refit_status
+        self._tb_add_scalar("warmstart/model_fit/status_code", model_fit_status, 0)
 
-    def run(self, obs):
+    def run_offline_stage(self, obs):
         if not self.a.warm_start_enabled or self.a.warm_start_collect_steps <= 0:
             return obs
+        if not self.a.warm_start_save_collected_data:
+            raise ValueError(
+                "Warm-start pipeline requires explicit dataset saving. "
+                "Set warm_start.save_collected_data=true."
+            )
         if self.a.rank == 0:
-            print("[WarmStart] Phase 1/3: collect warm-start rollouts.", flush=True)
-        obs, warm_samples = self._warm_start_collect(obs)
+            print("[WarmStart] Phase 1/2: collect warm-start rollouts.", flush=True)
+        obs, collected_samples = self._warm_start_collect(obs)
+        self._save_collected_data(collected_samples)
         if self.a.rank == 0:
-            print("[WarmStart] Phase 2/3: initial BC pretrain.", flush=True)
-        self._warm_start_pretrain_bc(warm_samples)
-        if self.a.rank == 0:
-            print("[WarmStart] Phase 3/3: warm-fit safety models (predictor/OOD).", flush=True)
-        self._warm_start_fit_safety_models()
+            print("[WarmStart] Phase 2/2: warm-fit safety models (predictor/OOD).", flush=True)
+        self._warm_start_fit_safety_models(collected_samples)
         obs = self.a.env.reset()[0]
         self.a.init_tensors()
+        if self.a.rank == 0 and hasattr(self.a, "writer") and self.a.writer is not None:
+            self.a.writer.flush()
         if self.a.rank == 0:
             print("[WarmStart] Completed. Starting normal intervention pipeline.", flush=True)
         return obs
+
+    def run(self, obs):
+        """Backward-compatible alias."""
+        return self.run_offline_stage(obs)

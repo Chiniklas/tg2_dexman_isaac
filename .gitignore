@@ -28,3 +28,4 @@ reference/
 build/
 devel/
 .catkin_workspace
+teacher_eval

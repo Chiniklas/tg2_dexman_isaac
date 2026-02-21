@@ -76,15 +76,16 @@ from dextrah_lab.distillation_new.eval_utils import (
 # - failure_predictor.horizon_steps: failure-within-horizon labeling window
 # - failure_predictor.gamma / failure_predictor.polyak: used by critic mode
 #
-# Optional warm-start config (pre-intervention bootstrap, similar to reference):
+# Optional warm-start config (2-phase bootstrap):
 # - warm_start.enabled: bool
 # - warm_start.collect_steps: env steps collected before normal intervention loop
-# - warm_start.bc_record_steps: number of early warm-start steps to cache for BC pretrain
-# - warm_start.bc_record_envs: number of env slots to cache per recorded step
-# - warm_start.bc_record_images: whether to cache image keys for BC warm start (memory-heavy)
-# - warm_start.bc_updates: number of optimizer updates for initial BC pretrain
-# - warm_start.predictor_train_steps: extra offline train_step() calls for failure predictor
+# - warm_start.predictor_train_steps: offline train_step() calls for failure predictor
 # - warm_start.ood_force_refit: force one post-collection OOD refit pass
+# - warm_start.save_collected_data: whether to persist warm-start rollout snapshots to disk
+# - warm_start.save_path: output file for saved warm-start data (default: distillation_new/bc_dataset/*.pt)
+# - warm_start.save_steps: number of warm-start steps to persist (default: collect_steps)
+# - warm_start.save_envs: number of env slots to persist per saved step
+# - warm_start.save_images: whether saved warm-start snapshots include image keys
 
 
 def rescale_actions(low, high, action):
@@ -371,28 +372,50 @@ class SafeDagger:
         warm_cfg = self.config.get("warm_start", {}) or {}
         self.warm_start_enabled = bool(warm_cfg.get("enabled", False))
         self.warm_start_collect_steps = int(warm_cfg.get("collect_steps", 0))
-        self.warm_start_bc_record_steps = int(warm_cfg.get("bc_record_steps", 128))
-        self.warm_start_bc_record_envs = int(warm_cfg.get("bc_record_envs", min(self.num_envs, 8)))
-        self.warm_start_bc_record_images = bool(warm_cfg.get("bc_record_images", False))
-        self.warm_start_bc_updates = int(warm_cfg.get("bc_updates", 0))
         self.warm_start_predictor_train_steps = int(warm_cfg.get("predictor_train_steps", 0))
         self.warm_start_ood_force_refit = bool(warm_cfg.get("ood_force_refit", True))
+        self.warm_start_save_collected_data = bool(warm_cfg.get("save_collected_data", False))
+        self.warm_start_save_steps = int(
+            warm_cfg.get("save_steps", self.warm_start_collect_steps)
+        )
+        self.warm_start_save_envs = int(
+            warm_cfg.get("save_envs", min(self.num_envs, 8))
+        )
+        self.warm_start_save_images = bool(
+            warm_cfg.get("save_images", False)
+        )
+        save_path_cfg = warm_cfg.get("save_path", None)
+        self.warm_start_save_path = (
+            str(save_path_cfg) if isinstance(save_path_cfg, str) and len(save_path_cfg) > 0 else None
+        )
         if self.warm_start_collect_steps < 0:
             self.warm_start_collect_steps = 0
-        if self.warm_start_bc_record_steps < 0:
-            self.warm_start_bc_record_steps = 0
-        if self.warm_start_bc_record_envs <= 0:
-            self.warm_start_bc_record_envs = 1
-        self.warm_start_bc_record_envs = min(self.warm_start_bc_record_envs, self.num_envs)
+        if self.warm_start_save_steps < 0:
+            self.warm_start_save_steps = 0
+        self.warm_start_save_steps = min(self.warm_start_save_steps, self.warm_start_collect_steps)
+        if self.warm_start_save_envs <= 0:
+            self.warm_start_save_envs = 1
+        self.warm_start_save_envs = min(self.warm_start_save_envs, self.num_envs)
+        if self.warm_start_save_collected_data and self.warm_start_save_path is None and self.rank == 0:
+            warm_start_dir = os.path.join(
+                str(pathlib.Path(__file__).parent.resolve()),
+                "bc_dataset",
+            )
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.warm_start_save_path = os.path.join(
+                warm_start_dir, f"warm_start_collection_{timestamp}.pt"
+            )
         if self.rank == 0 and self.warm_start_enabled:
             print(
                 "Warm start enabled: "
                 f"collect_steps={self.warm_start_collect_steps}, "
-                f"bc_record_steps={self.warm_start_bc_record_steps}, "
-                f"bc_record_envs={self.warm_start_bc_record_envs}, "
-                f"bc_updates={self.warm_start_bc_updates}, "
                 f"predictor_train_steps={self.warm_start_predictor_train_steps}, "
-                f"ood_force_refit={self.warm_start_ood_force_refit}",
+                f"ood_force_refit={self.warm_start_ood_force_refit}, "
+                f"save_collected_data={self.warm_start_save_collected_data}, "
+                f"save_steps={self.warm_start_save_steps}, "
+                f"save_envs={self.warm_start_save_envs}, "
+                f"save_images={self.warm_start_save_images}, "
+                f"save_path={self.warm_start_save_path}",
                 flush=True,
             )
         self.distill_warm_start = DistillWarmStart(self)
@@ -495,25 +518,37 @@ class SafeDagger:
             ).to(self.device)
 
     def _run_warm_start(self, obs):
-        return self.distill_warm_start.run(obs)
+        return self.distill_warm_start.run_offline_stage(obs)
 
-    def distill(self):
+    def _finalize_loggers(self):
+        if self.rank == 0 and self.use_wandb:
+            wandb.finish()
+        if self.rank == 0 and hasattr(self, "writer") and self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+
+    def run_warm_start_stage(self, obs=None):
+        """Run offline warm-start bootstrap only (collect/BC/safety-fit)."""
         self.student_model.train()
         if self.multi_teacher:
             for model in self.teacher_models:
                 model.eval()
         else:
             self.teacher_model.eval()
-        # torch.set_float32_matmul_precision('high')
+        if obs is None:
+            obs = self.env.reset()[0]
+        return self._run_warm_start(obs)
 
-        obs = self.env.reset()[0]
-        obs = self._run_warm_start(obs)
+    def run_online_stage(self, obs=None):
+        """Run online SafeDAgger intervention training and metrics logging."""
         self.student_model.train()
         if self.multi_teacher:
             for model in self.teacher_models:
                 model.eval()
         else:
             self.teacher_model.eval()
+        if obs is None:
+            obs = self.env.reset()[0]
 
         log_counter = 0
         total_loss = 0.
@@ -588,13 +623,27 @@ class SafeDagger:
                 # obs['img_left'][:] = real_img_left #[:, torch.arange(3 - 1, -1, -1), :, :]
                 # obs['img_right'][:] = real_img_right #[:, torch.arange(3 - 1, -1, -1), :, :]
                 actions_student = self.get_actions(obs, "student")
-                obs["ood_policy_embed"] = obs[self.student_obs_type]
-                if actions_student.get("embeds") is not None:
-                    embeds = actions_student["embeds"].detach()
+                embeds = actions_student.get("embeds")
+                if self._requires_ood_policy_embed():
+                    if embeds is None or not torch.is_tensor(embeds):
+                        raise RuntimeError(
+                            "ood_policy_embed is required by enabled safety modules, "
+                            "but student policy did not return tensor embeds. "
+                            "Fail-fast mode: no fallback is allowed."
+                        )
+                    embeds = embeds.detach()
                     obs["ood_embed"] = embeds
                     obs["ood_policy_embed"] = torch.cat(
                         [obs[self.student_obs_type], embeds], dim=-1
                     )
+                else:
+                    obs["ood_policy_embed"] = obs[self.student_obs_type]
+                    if embeds is not None and torch.is_tensor(embeds):
+                        embeds = embeds.detach()
+                        obs["ood_embed"] = embeds
+                        obs["ood_policy_embed"] = torch.cat(
+                            [obs[self.student_obs_type], embeds], dim=-1
+                        )
                 if (
                     self.ood_classifier is not None
                     and self.ood_classifier.enabled
@@ -953,12 +1002,48 @@ class SafeDagger:
                     obs = self.env.reset()[0]
                     self.init_tensors()
 
-        if self.rank == 0 and self.use_wandb:
-            wandb.finish()
-        if self.rank == 0 and hasattr(self, "writer") and self.writer is not None:
-            self.writer.flush()
-            self.writer.close()
+        self._finalize_loggers()
         return log_counter
+
+    def run_pipeline(self, pipeline="full"):
+        """
+        Training pipeline selector:
+        - both: run warmstart stage then online intervention training.
+        - warmstart: run warmstart stage only.
+        - safedagger: run online intervention training only.
+        """
+        raw_mode = str(pipeline).lower()
+        mode_aliases = {
+            "both": "both",
+            "warmstart": "warmstart",
+            "safedagger": "safedagger",
+            # Backward-compatible aliases.
+            "full": "both",
+            "online": "safedagger",
+        }
+        mode = mode_aliases.get(raw_mode, None)
+        if mode is None:
+            raise ValueError(
+                f"Unsupported pipeline mode: {pipeline}. "
+                "Expected one of: warmstart, safedagger, both."
+            )
+        warm_obs = None
+        if mode in {"both", "warmstart"}:
+            if self.rank == 0:
+                print(f"[Pipeline] Running warmstart stage (mode={mode}).", flush=True)
+            warm_obs = self.run_warm_start_stage()
+        if mode == "warmstart":
+            self._finalize_loggers()
+            return 0
+        if self.rank == 0:
+            print(f"[Pipeline] Running online stage (mode={mode}).", flush=True)
+        if mode == "both":
+            return self.run_online_stage(obs=warm_obs)
+        return self.run_online_stage(obs=None)
+
+    def distill(self):
+        """Backward-compatible default entrypoint (equivalent to run_pipeline('both'))."""
+        return self.run_pipeline("both")
 
     # --- Logging and Visualization ---
     def log_information(
@@ -1225,6 +1310,18 @@ class SafeDagger:
                 self.unsafe_l2_threshold_end - self.unsafe_l2_threshold_start
             )
         return self.unsafe_l2_threshold
+
+    def _requires_ood_policy_embed(self):
+        """Return True if any enabled safety module reads from 'ood_policy_embed'."""
+        needs = False
+        if self.ood_classifier is not None and self.ood_classifier.enabled:
+            ood_key = self.ood_classifier.obs_key or self.ood_classifier.default_obs_key
+            needs = needs or (ood_key == "ood_policy_embed")
+        if self.failure_predictor is not None and self.failure_predictor.enabled:
+            fp_default = getattr(self.failure_predictor, "default_obs_key", None)
+            fp_key = getattr(self.failure_predictor, "obs_key", None) or fp_default
+            needs = needs or (fp_key == "ood_policy_embed")
+        return needs
 
     # --- Safety Model Builders ---
     def _build_failure_predictor(self, cfg):

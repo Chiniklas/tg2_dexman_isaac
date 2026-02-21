@@ -43,7 +43,7 @@ class FailurePredictor:
 
         # Buffer config
         self.buffer_size = int(cfg.get("buffer_size", 100_000))
-        self.batch_size = int(cfg.get("batch_size", 1024))
+        self.batch_size = int(cfg.get("batch_size", 128))
         self.min_samples = int(cfg.get("min_samples", 10_000))
         self.update_interval = int(cfg.get("update_interval", 1_000))
         self.train_steps = int(cfg.get("train_steps", 1))
@@ -348,5 +348,4 @@ class FailurePredictor:
         if self._buf_count < self.buffer_size:
             valid_mask[self._buf_count :] = False
         return torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
-
 

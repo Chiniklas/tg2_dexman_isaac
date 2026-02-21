@@ -24,6 +24,18 @@ parser.add_argument("--max_iterations", type=int, default=100000, help="Total di
 parser.add_argument("--teacher", type=str, default=None, help="Teacher checkpoint to use")
 parser.add_argument("--student", type=str, default=None, help="Student checkpoint to use")
 parser.add_argument("--play_policy", type=bool, default=False, help="Play a distilled policy.")
+parser.add_argument(
+    "--pipeline",
+    type=str,
+    default="safedagger",
+    choices=["warmstart", "safedagger", "both"],
+    help=(
+        "Training pipeline stage to run: "
+        "warmstart = offline bootstrap only, "
+        "safedagger = teacher-intervention training only, "
+        "both = warmstart + safedagger."
+    ),
+)
 parser.add_argument("--data_aug", action="store_true", default=False, help="Whether to use data augmentation for student")
 parser.add_argument(
     "--eval_every",
@@ -87,6 +99,20 @@ parser.add_argument(
     default=None,
     choices=["none", "l2", "ood", "failure_predictor"],
     help="Unsafe gating mode override.",
+)
+parser.add_argument(
+    "--ood_type",
+    type=str,
+    default=None,
+    choices=["gaussian", "pca", "mlp"],
+    help="OOD classifier type override (used when unsafe_mode=ood).",
+)
+parser.add_argument(
+    "--failure_predictor_type",
+    type=str,
+    default=None,
+    choices=["critic", "legacy"],
+    help="Failure predictor type override (used when unsafe_mode=failure_predictor).",
 )
 parser.add_argument(
     "--unsafe_l2_threshold_mode",
@@ -235,8 +261,9 @@ def main(env_cfg, agent_cfg: dict):
                 student_ckpt = os.path.join(parent_path, "pretrained_ckpts", student_ckpt)
 
         train_dir = "runs"
+        pipeline_tag = str(args_cli.pipeline).lower()
         experiment_name = (
-            "dextrah-tg2-inspirehand"
+            f"dextrah-tg2-inspirehand-{pipeline_tag}"
             + datetime.now().strftime("_%d-%H-%M-%S")
         )
         experiment_dir = os.path.join(train_dir, experiment_name)
@@ -293,7 +320,7 @@ def main(env_cfg, agent_cfg: dict):
             "lr": 1e-3,
             "dropout": 0.0,
             "buffer_size": 100_000,
-            "batch_size": 1024,
+            "batch_size": 128,
             "min_samples": 10_000,
             "update_interval": 1_000,
             "train_steps": 1,
@@ -301,6 +328,7 @@ def main(env_cfg, agent_cfg: dict):
             "failure_threshold": 0.5,
             "include_current_step": False,
             "pos_weight": None,
+            "pos_fraction": 0.1,
             "device": "cpu",
         },
         "ood": {
@@ -312,6 +340,11 @@ def main(env_cfg, agent_cfg: dict):
             "threshold_quantile": 0.80,
             "diag_eps": 1e-4,
         },
+        "warm_start": (
+            dict(distill_cfg.get("warm_start", {}))
+            if isinstance(distill_cfg.get("warm_start", None), dict)
+            else {}
+        ),
         "play_policy": args_cli.play_policy,
         "eval_every": args_cli.eval_every,
         "eval_num_episodes": args_cli.eval_num_episodes,
@@ -323,6 +356,10 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])
         if isinstance(distill_cfg.get("ood", None), dict):
             dagger_config["ood"].update(distill_cfg["ood"])
+        if args_cli.ood_type is not None:
+            dagger_config["ood"]["type"] = args_cli.ood_type
+        if args_cli.failure_predictor_type is not None:
+            dagger_config["failure_predictor"]["type"] = args_cli.failure_predictor_type
         if args_cli.imitation_target is not None:
             dagger_config["imitation_target"] = args_cli.imitation_target
         if args_cli.loss_type is not None:
@@ -378,12 +415,15 @@ def main(env_cfg, agent_cfg: dict):
         model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)
 
         dagger = SafeDagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir, eval_env=eval_env)
-        reached_iters = dagger.distill()
-        final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_safe_dagger.pth")
+        reached_iters = dagger.run_pipeline(args_cli.pipeline)
+        if args_cli.pipeline == "warmstart":
+            final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_after_warmstart.pth")
+        else:
+            final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_safe_dagger.pth")
         if getattr(dagger, "rank", 0) == 0:
             dagger.save(final_ckpt)
             print(
-                f"[INFO] Distillation finished automatically at iter {reached_iters} / {dagger.num_iters}.",
+                f"[INFO] Pipeline '{args_cli.pipeline}' finished at iter {reached_iters} / {dagger.num_iters}.",
                 flush=True,
             )
     finally:
