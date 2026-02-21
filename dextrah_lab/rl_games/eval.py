@@ -355,6 +355,27 @@ def _reason_percentages_with_defaults(reason_percentages: dict[str, float]) -> d
     }
 
 
+def _reason_counts_from_episode(
+    unsafe_reason_idx: torch.Tensor,
+    unsafe_mask: torch.Tensor,
+    scope_label: str,
+) -> dict[str, int]:
+    counts = {
+        name: int((unsafe_reason_idx == idx).sum().item())
+        for idx, name in enumerate(UNSAFE_REASON_NAMES)
+    }
+    total_unsafe = int(unsafe_mask.sum().item())
+    classified_total = int(sum(counts.values()))
+    unknown_count = max(0, total_unsafe - classified_total)
+    if unknown_count > 0:
+        raise RuntimeError(
+            f"{scope_label}: found {unknown_count} unclassified unsafe episodes "
+            f"(unsafe_total={total_unsafe}, classified_total={classified_total}). "
+            "Fail-fast mode is enabled; no fallback mapping is allowed."
+        )
+    return counts
+
+
 def _to_jsonable(value):
     if isinstance(value, dict):
         return {str(k): _to_jsonable(v) for k, v in value.items()}
@@ -555,9 +576,7 @@ def _run_eval_for_checkpoint(
         )
         success_rates: list[float] = []
         unsafe_rates: list[float] = []
-        unsafe_reason_pct_series = {
-            name: [] for name in UNSAFE_REASON_NAMES
-        }
+        total_reason_counts = {name: 0 for name in UNSAFE_REASON_NAMES}
         reason_to_idx = {name: idx for idx, name in enumerate(UNSAFE_REASON_NAMES)}
         total_unsafe_eps = 0
         for rollout_idx in range(total_rollouts):
@@ -624,17 +643,13 @@ def _run_eval_for_checkpoint(
             unsafe_rates.append(ever_unsafe_terminated.float().mean().item())
             unsafe_count = int(ever_unsafe_terminated.sum().item())
             total_unsafe_eps += unsafe_count
-            reason_counts = {
-                name: int((unsafe_reason_idx == idx).sum().item())
-                for idx, name in enumerate(UNSAFE_REASON_NAMES)
-            }
-            reason_pct = unsafe_reason_percentages_from_counts(
-                reason_counts,
-                unsafe_count,
-                UNSAFE_REASON_NAMES,
+            rollout_reason_counts = _reason_counts_from_episode(
+                unsafe_reason_idx=unsafe_reason_idx,
+                unsafe_mask=ever_unsafe_terminated,
+                scope_label=f"single-checkpoint rollout {rollout_idx + 1}",
             )
             for name in UNSAFE_REASON_NAMES:
-                unsafe_reason_pct_series[name].append(reason_pct.get(name, 0.0))
+                total_reason_counts[name] += rollout_reason_counts[name]
 
             now_t = time.time()
             rollout_done = rollout_idx + 1
@@ -660,10 +675,11 @@ def _run_eval_for_checkpoint(
 
         avg_success = float(np.mean(success_rates)) if len(success_rates) > 0 else 0.0
         unsafe_episode_rate = float(np.mean(unsafe_rates)) if len(unsafe_rates) > 0 else 0.0
-        eval_reason_pct = {
-            name: float(np.mean(unsafe_reason_pct_series[name])) if len(unsafe_reason_pct_series[name]) > 0 else 0.0
-            for name in UNSAFE_REASON_NAMES
-        }
+        eval_reason_pct = unsafe_reason_percentages_from_counts(
+            total_reason_counts,
+            total_unsafe_eps,
+            UNSAFE_REASON_NAMES,
+        )
         total_done = int(total_rollouts * num_envs)
         print(
             f"[INFO] Eval complete in {time.time() - eval_start_t:.1f}s: "
@@ -788,15 +804,19 @@ def _run_eval_for_teacher_pool(
 
         success_rates: list[float] = []
         unsafe_rates: list[float] = []
-        unsafe_reason_pct_series = {name: [] for name in UNSAFE_REASON_NAMES}
+        total_reason_counts = {name: 0 for name in UNSAFE_REASON_NAMES}
         per_object_lift_series = {
             object_name: [] for object_name in eval_object_names
         }
         per_object_unsafe_rate_series = {
             object_name: [] for object_name in eval_object_names
         }
-        per_object_unsafe_reason_pct_series = {
-            object_name: {name: [] for name in UNSAFE_REASON_NAMES}
+        per_object_reason_counts_total = {
+            object_name: {name: 0 for name in UNSAFE_REASON_NAMES}
+            for object_name in eval_object_names
+        }
+        per_object_unsafe_total = {
+            object_name: 0
             for object_name in eval_object_names
         }
         reason_to_idx = {name: idx for idx, name in enumerate(UNSAFE_REASON_NAMES)}
@@ -893,17 +913,13 @@ def _run_eval_for_teacher_pool(
             unsafe_rates.append(ever_unsafe_terminated.float().mean().item())
             unsafe_count = int(ever_unsafe_terminated.sum().item())
             total_unsafe_eps += unsafe_count
-            reason_counts = {
-                name: int((unsafe_reason_idx == idx).sum().item())
-                for idx, name in enumerate(UNSAFE_REASON_NAMES)
-            }
-            reason_pct = unsafe_reason_percentages_from_counts(
-                reason_counts,
-                unsafe_count,
-                UNSAFE_REASON_NAMES,
+            rollout_reason_counts = _reason_counts_from_episode(
+                unsafe_reason_idx=unsafe_reason_idx,
+                unsafe_mask=ever_unsafe_terminated,
+                scope_label=f"teacher-pool rollout {rollout_idx + 1}",
             )
             for name in UNSAFE_REASON_NAMES:
-                unsafe_reason_pct_series[name].append(reason_pct.get(name, 0.0))
+                total_reason_counts[name] += rollout_reason_counts[name]
 
             for obj_idx, object_name in enumerate(eval_object_names):
                 obj_mask = eval_object_idx == obj_idx
@@ -916,19 +932,16 @@ def _run_eval_for_teacher_pool(
                     ever_unsafe_terminated[obj_mask].float().mean().item()
                 )
                 obj_unsafe_count = int(ever_unsafe_terminated[obj_mask].sum().item())
-                obj_reason_counts = {
-                    name: int((unsafe_reason_idx[obj_mask] == idx).sum().item())
-                    for idx, name in enumerate(UNSAFE_REASON_NAMES)
-                }
-                obj_reason_pct = unsafe_reason_percentages_from_counts(
-                    obj_reason_counts,
-                    obj_unsafe_count,
-                    UNSAFE_REASON_NAMES,
+                per_object_unsafe_total[object_name] += obj_unsafe_count
+                obj_reason_counts = _reason_counts_from_episode(
+                    unsafe_reason_idx=unsafe_reason_idx[obj_mask],
+                    unsafe_mask=ever_unsafe_terminated[obj_mask],
+                    scope_label=(
+                        f"teacher-pool rollout {rollout_idx + 1} object {object_name}"
+                    ),
                 )
                 for reason_name in UNSAFE_REASON_NAMES:
-                    per_object_unsafe_reason_pct_series[object_name][reason_name].append(
-                        obj_reason_pct.get(reason_name, 0.0)
-                    )
+                    per_object_reason_counts_total[object_name][reason_name] += obj_reason_counts[reason_name]
 
             now_t = time.time()
             rollout_done = rollout_idx + 1
@@ -954,12 +967,18 @@ def _run_eval_for_teacher_pool(
 
         avg_success = float(np.mean(success_rates)) if len(success_rates) > 0 else 0.0
         unsafe_episode_rate = float(np.mean(unsafe_rates)) if len(unsafe_rates) > 0 else 0.0
-        eval_reason_pct = {
-            name: float(np.mean(unsafe_reason_pct_series[name])) if len(unsafe_reason_pct_series[name]) > 0 else 0.0
-            for name in UNSAFE_REASON_NAMES
-        }
+        eval_reason_pct = unsafe_reason_percentages_from_counts(
+            total_reason_counts,
+            total_unsafe_eps,
+            UNSAFE_REASON_NAMES,
+        )
         eval_per_object_metrics = {}
         for object_name in eval_object_names:
+            obj_reason_pct = unsafe_reason_percentages_from_counts(
+                per_object_reason_counts_total[object_name],
+                int(per_object_unsafe_total[object_name]),
+                UNSAFE_REASON_NAMES,
+            )
             eval_per_object_metrics[object_name] = {
                 "eval/lift_success": (
                     float(np.mean(per_object_lift_series[object_name]))
@@ -972,11 +991,7 @@ def _run_eval_for_teacher_pool(
                     else 0.0
                 ),
                 "eval/out_of_reach_reason_pct": {
-                    name: (
-                        float(np.mean(per_object_unsafe_reason_pct_series[object_name][name]))
-                        if len(per_object_unsafe_reason_pct_series[object_name][name]) > 0
-                        else 0.0
-                    )
+                    name: float(obj_reason_pct.get(name, 0.0))
                     for name in UNSAFE_REASON_NAMES
                 },
             }

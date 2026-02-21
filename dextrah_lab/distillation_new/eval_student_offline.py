@@ -245,6 +245,29 @@ def _format_reason_percentages(reason_percentages: dict[str, float]) -> str:
     return ", ".join([f"{name}={value:.1f}%" for name, value in ordered])
 
 
+def _reason_counts_checked(
+    reason_idx: torch.Tensor,
+    unsafe_mask: torch.Tensor,
+    warn_label: str | None = None,
+) -> tuple[dict[str, int], int]:
+    unsafe_mask = unsafe_mask.to(dtype=torch.bool)
+    counts = {
+        name: int(((reason_idx == idx) & unsafe_mask).sum().item())
+        for name, idx in UNSAFE_REASON_TO_IDX.items()
+    }
+    total_unsafe = int(unsafe_mask.sum().item())
+    classified_total = int(sum(counts.values()))
+    unknown_count = max(0, total_unsafe - classified_total)
+    if unknown_count > 0:
+        label = warn_label if warn_label is not None else "offline unsafe reason classification"
+        raise RuntimeError(
+            f"{label}: found {unknown_count} unclassified unsafe episodes "
+            f"(unsafe_total={total_unsafe}, classified_total={classified_total}). "
+            "Fail-fast mode is enabled; no fallback mapping is allowed."
+        )
+    return counts, total_unsafe
+
+
 def _save_metrics_npy(payload: dict, policy_run_dir: str) -> pathlib.Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args_cli.metrics_output_npy is not None:
@@ -441,9 +464,14 @@ class PolicyEvaluator:
 
                 total_done += self.num_envs
                 total_lift_success += int(ever_lifted.sum().item())
-                total_unsafe += int(ever_unsafe.sum().item())
-                for idx, reason_name in enumerate(UNSAFE_REASON_NAMES):
-                    reason_counts[reason_name] += int((unsafe_reason_idx == idx).sum().item())
+                ep_reason_counts, ep_unsafe_total = _reason_counts_checked(
+                    reason_idx=unsafe_reason_idx,
+                    unsafe_mask=ever_unsafe,
+                    warn_label=None,
+                )
+                total_unsafe += int(ep_unsafe_total)
+                for reason_name in UNSAFE_REASON_NAMES:
+                    reason_counts[reason_name] += int(ep_reason_counts[reason_name])
 
         lift_success_rate = float(total_lift_success) / float(max(total_done, 1))
         unsafe_episode_rate = float(total_unsafe) / float(max(total_done, 1))
