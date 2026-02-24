@@ -3,8 +3,10 @@ set -euo pipefail
 
 SCRIPT="/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py"
 MAX_ITERS="${MAX_ITERS:-100000}"
+MODE="${MODE:-both}" # dagger | safedagger | both
 
 COMMON_ARGS=(
+  --pipeline safedagger
   --task=dextrah_tg2_inspirehand
   --num_envs 32
   --headless
@@ -21,14 +23,37 @@ COMMON_ARGS=(
   env.enable_adr=False
 )
 
-echo "[1/2] Running vanilla DAgger (unsafe_mode=none) in headless mode..."
-python "$SCRIPT" \
-  "${COMMON_ARGS[@]}" \
-  --unsafe_mode none
+run_dagger() {
+  echo "Running vanilla DAgger (unsafe_mode=none) in headless mode..."
+  python "$SCRIPT" \
+    "${COMMON_ARGS[@]}" \
+    --unsafe_mode none \
+    "$@"
+}
 
-echo "[2/2] Running vanilla SafeDAgger (unsafe_mode=l2) in headless mode..."
-python "$SCRIPT" \
-  "${COMMON_ARGS[@]}" \
-  --unsafe_mode l2
+run_safedagger() {
+  echo "Running vanilla SafeDAgger (unsafe_mode=l2) in headless mode..."
+  python "$SCRIPT" \
+    "${COMMON_ARGS[@]}" \
+    --unsafe_mode l2 \
+    "$@"
+}
 
-echo "Both jobs completed successfully."
+case "$MODE" in
+  dagger)
+    run_dagger "$@"
+    ;;
+  safedagger)
+    run_safedagger "$@"
+    ;;
+  both)
+    run_dagger "$@"
+    run_safedagger "$@"
+    ;;
+  *)
+    echo "Invalid MODE='$MODE'. Expected: dagger | safedagger | both"
+    exit 1
+    ;;
+esac
+
+echo "Completed MODE=$MODE."

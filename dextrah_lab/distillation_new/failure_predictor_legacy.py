@@ -11,6 +11,7 @@ Labeling semantics:
 """
 
 from collections import deque
+import os
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -73,6 +74,7 @@ class FailurePredictor:
         self._optim = None
         self._num_envs = None
         self._pending_indices = None
+        self._has_pretrained_model = False
 
         if self.rank == 0 and self.enabled:
             print(
@@ -94,9 +96,9 @@ class FailurePredictor:
             self._num_envs = num_envs
             self._pending_indices = [deque() for _ in range(num_envs)]
         elif self._num_envs != num_envs:
-            raise ValueError(
-                f"FailurePredictor num_envs mismatch: expected {self._num_envs}, got {num_envs}."
-            )
+            # num_envs only affects pending relabel queues; allow resize across runs.
+            self._num_envs = num_envs
+            self._pending_indices = [deque() for _ in range(num_envs)]
 
         done_mask, failure_done_mask = self._compute_done_and_failure_masks(
             obs=obs, reward=reward, done=done, info=info, num_envs=num_envs
@@ -174,12 +176,108 @@ class FailurePredictor:
         """Return boolean mask for intervention based on predicted risk."""
         if not self.enabled:
             return None
-        if self._get_labeled_indices().numel() < self.min_samples:
+        if self._get_labeled_indices().numel() < self.min_samples and not self._has_pretrained_model:
             return None
         probs = self.predict_risk(obs, action)
         if probs is None:
             return None
         return probs > self.failure_threshold
+
+    def save_checkpoint(self, path: str) -> bool:
+        """Persist predictor weights (warm-start artifact)."""
+        if not self.enabled or not self._initialized:
+            return False
+        if path is None or len(str(path).strip()) == 0:
+            return False
+        ckpt_path = os.path.expanduser(str(path).strip())
+        ckpt_dir = os.path.dirname(ckpt_path)
+        if len(ckpt_dir) > 0:
+            os.makedirs(ckpt_dir, exist_ok=True)
+        payload = {
+            "predictor_type": "legacy",
+            "input_dim": int(self._input_dim),
+            "hidden_sizes": list(self.hidden_sizes),
+            "dropout": float(self.dropout),
+            "failure_threshold": float(self.failure_threshold),
+            "model": self._model.state_dict(),
+            "optimizer": self._optim.state_dict() if self._optim is not None else None,
+            "steps": int(self._steps),
+            "buffer_count": int(self._buf_count),
+            "buf_idx": int(self._buf_idx),
+            "token_counter": int(self._token_counter),
+            "num_envs": int(self._num_envs) if self._num_envs is not None else None,
+        }
+        if self._buf_count > 0:
+            n = int(self._buf_count)
+            payload["replay"] = {
+                "x": self._buffer_x[:n].clone(),
+                "y": self._buffer_y[:n].clone(),
+                "labeled": self._buffer_labeled[:n].clone(),
+                "token": self._buffer_token[:n].clone(),
+            }
+        torch.save(payload, ckpt_path)
+        if self.rank == 0:
+            print(f"[FailurePredictorLegacy] Saved warm-start checkpoint: {ckpt_path}", flush=True)
+        return True
+
+    def load_checkpoint(self, path: str) -> bool:
+        """Load predictor weights from a previous warm-start run."""
+        if not self.enabled:
+            return False
+        if path is None or len(str(path).strip()) == 0:
+            return False
+        ckpt_path = os.path.expanduser(str(path).strip())
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Failure predictor checkpoint not found: {ckpt_path}")
+        payload = torch.load(ckpt_path, map_location=self.device)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Invalid failure predictor checkpoint format: {ckpt_path}")
+        predictor_type = str(payload.get("predictor_type", "")).lower()
+        if predictor_type not in {"legacy", ""}:
+            raise ValueError(
+                f"Checkpoint predictor_type='{predictor_type}' is incompatible with legacy predictor."
+            )
+        input_dim = int(payload.get("input_dim", 0))
+        if input_dim <= 0:
+            raise ValueError(f"Checkpoint missing valid input_dim ({input_dim}): {ckpt_path}")
+        self._init_model_and_buffer(input_dim)
+        self._model.load_state_dict(payload["model"])
+        optim_state = payload.get("optimizer", None)
+        if optim_state is not None and self._optim is not None:
+            try:
+                self._optim.load_state_dict(optim_state)
+            except Exception:
+                # Optimizer state can be device/topology-specific; continue with fresh optimizer if needed.
+                pass
+        self._steps = int(payload.get("steps", self._steps))
+        self._buf_idx = int(payload.get("buf_idx", 0))
+        self._token_counter = int(payload.get("token_counter", 0))
+        replay = payload.get("replay", None)
+        if isinstance(replay, dict):
+            required = ("x", "y", "labeled", "token")
+            if not all(k in replay for k in required):
+                raise ValueError("Invalid legacy predictor replay payload: missing required tensors.")
+            n = int(replay["x"].shape[0])
+            if n > self.buffer_size:
+                raise ValueError(
+                    f"Checkpoint replay size ({n}) exceeds configured buffer_size ({self.buffer_size})."
+                )
+            self._buffer_x[:n] = replay["x"].to(dtype=torch.float32, device="cpu")
+            self._buffer_y[:n] = replay["y"].to(dtype=torch.float32, device="cpu")
+            self._buffer_labeled[:n] = replay["labeled"].to(dtype=torch.bool, device="cpu")
+            self._buffer_token[:n] = replay["token"].to(dtype=torch.long, device="cpu")
+            self._buf_count = n
+            if self._buf_idx < 0 or self._buf_idx >= self.buffer_size:
+                self._buf_idx = n % self.buffer_size
+        self._pending_indices = [deque() for _ in range(self._num_envs or 1)]
+        self._has_pretrained_model = True
+        if self.rank == 0:
+            print(
+                "[FailurePredictorLegacy] Loaded warm-start checkpoint: "
+                f"{ckpt_path} (replay_size={self._buf_count})",
+                flush=True,
+            )
+        return True
 
     # --------- Labeling helpers ---------
     def compute_failure_label(self, obs, reward, done, info) -> torch.Tensor:
@@ -348,4 +446,3 @@ class FailurePredictor:
         if self._buf_count < self.buffer_size:
             valid_mask[self._buf_count :] = False
         return torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
-

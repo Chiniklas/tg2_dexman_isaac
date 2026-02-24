@@ -115,6 +115,15 @@ parser.add_argument(
     help="Failure predictor type override (used when unsafe_mode=failure_predictor).",
 )
 parser.add_argument(
+    "--failure_predictor_warm_start_model_path",
+    type=str,
+    default=None,
+    help=(
+        "Optional checkpoint path for failure predictor warm-start model. "
+        "Warmstart/both save predictor here; safedagger mode loads predictor from here."
+    ),
+)
+parser.add_argument(
     "--unsafe_l2_threshold_mode",
     type=str,
     default=None,
@@ -138,6 +147,15 @@ parser.add_argument(
     type=int,
     default=None,
     help="Number of training iterations over which to anneal the L2 unsafe threshold.",
+)
+parser.add_argument(
+    "--switch_back_min_teacher_steps",
+    type=int,
+    default=None,
+    help=(
+        "Minimum teacher takeover steps after an unsafe trigger before switch-back checks. "
+        "Set 0 to disable hold."
+    ),
 )
 
 # append AppLauncher cli args
@@ -303,6 +321,7 @@ def main(env_cfg, agent_cfg: dict):
         "loss_type": distill_cfg.get("loss_type", None),
         "unsafe_mode": distill_cfg.get("unsafe_mode", "l2"),
         "unsafe_l2_threshold": distill_cfg.get("unsafe_l2_threshold", 0.5),
+        "switch_back_min_teacher_steps": distill_cfg.get("switch_back_min_teacher_steps", 10),
         "unsafe_l2_threshold_mode": distill_cfg.get("unsafe_l2_threshold_mode", "fixed"),
         "unsafe_l2_threshold_start": distill_cfg.get(
             "unsafe_l2_threshold_start", distill_cfg.get("unsafe_l2_threshold", 0.5)
@@ -330,6 +349,7 @@ def main(env_cfg, agent_cfg: dict):
             "pos_weight": None,
             "pos_fraction": 0.1,
             "device": "cpu",
+            "warm_start_model_path": None,
         },
         "ood": {
             "enabled": False,
@@ -360,6 +380,10 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["ood"]["type"] = args_cli.ood_type
         if args_cli.failure_predictor_type is not None:
             dagger_config["failure_predictor"]["type"] = args_cli.failure_predictor_type
+        if args_cli.failure_predictor_warm_start_model_path is not None:
+            dagger_config["failure_predictor"]["warm_start_model_path"] = (
+                args_cli.failure_predictor_warm_start_model_path
+            )
         if args_cli.imitation_target is not None:
             dagger_config["imitation_target"] = args_cli.imitation_target
         if args_cli.loss_type is not None:
@@ -384,6 +408,8 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["unsafe_l2_threshold_end"] = args_cli.unsafe_l2_threshold_end
         if args_cli.unsafe_l2_threshold_anneal_iters is not None:
             dagger_config["unsafe_l2_threshold_anneal_iters"] = args_cli.unsafe_l2_threshold_anneal_iters
+        if args_cli.switch_back_min_teacher_steps is not None:
+            dagger_config["switch_back_min_teacher_steps"] = int(args_cli.switch_back_min_teacher_steps)
         if args_cli.eval_lift_hold_s is not None:
             dagger_config["eval_lift_hold_s"] = args_cli.eval_lift_hold_s
 

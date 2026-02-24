@@ -75,6 +75,8 @@ from dextrah_lab.distillation_new.eval_utils import (
 # - failure_predictor.type: "critic" (default) | "legacy"
 # - failure_predictor.horizon_steps: failure-within-horizon labeling window
 # - failure_predictor.gamma / failure_predictor.polyak: used by critic mode
+# - failure_predictor.warm_start_model_path: optional checkpoint path used to
+#   save predictor after warmstart and load predictor for non-warmstart runs
 #
 # Optional warm-start config (2-phase bootstrap):
 # - warm_start.enabled: bool
@@ -82,10 +84,15 @@ from dextrah_lab.distillation_new.eval_utils import (
 # - warm_start.predictor_train_steps: offline train_step() calls for failure predictor
 # - warm_start.ood_force_refit: force one post-collection OOD refit pass
 # - warm_start.save_collected_data: whether to persist warm-start rollout snapshots to disk
-# - warm_start.save_path: output file for saved warm-start data (default: distillation_new/bc_dataset/*.pt)
+# - warm_start.save_path: output file for saved warm-start data
+#   (default: <run_dir>/bc_dataset/*.pt)
 # - warm_start.save_steps: number of warm-start steps to persist (default: collect_steps)
 # - warm_start.save_envs: number of env slots to persist per saved step
 # - warm_start.save_images: whether saved warm-start snapshots include image keys
+#
+# Optional intervention switching config:
+# - switch_back_min_teacher_steps: minimum consecutive teacher-control steps after
+#   an unsafe trigger before allowing switch-back checks (default: 10)
 
 
 def rescale_actions(low, high, action):
@@ -177,6 +184,9 @@ class SafeDagger:
         self.eval_num_episodes = int(self.config.get("eval_num_episodes", 5) or 0)
         self.eval_max_steps = self.config.get("eval_max_steps", None)
         self.eval_lift_hold_s = max(0.0, float(self.config.get("eval_lift_hold_s", 0.5) or 0.0))
+        base_dir = str(pathlib.Path(__file__).parent.resolve())
+        self.nn_dir = os.path.join(base_dir, nn_dir)
+        self.run_dir = os.path.dirname(self.nn_dir)
         if self.rank == 0:
             print(
                 "SafeDagger "
@@ -319,9 +329,7 @@ class SafeDagger:
         if self.rank == 0:
             self.writer = SummaryWriter(summaries_dir)
             self.use_wandb = False
-            parent_path = str(pathlib.Path(__file__).parent.resolve())
-            summaries_dir = os.path.join(parent_path, summaries_dir)
-            self.nn_dir = os.path.join(parent_path, nn_dir)
+            summaries_dir = os.path.join(base_dir, summaries_dir)
             self.debug_dir = os.path.join(os.path.dirname(self.nn_dir), "debug")
             os.makedirs(self.debug_dir, exist_ok=True)
             if self.use_wandb:
@@ -353,6 +361,11 @@ class SafeDagger:
         self.stereo = self.ov_env.cfg.simulate_stereo
         self.unsafe_mode = self.config.get("unsafe_mode", "l2")
         self.unsafe_l2_threshold = float(self.config.get("unsafe_l2_threshold", 0.5))
+        self.switch_back_min_teacher_steps = int(
+            self.config.get("switch_back_min_teacher_steps", 10)
+        )
+        if self.switch_back_min_teacher_steps < 0:
+            self.switch_back_min_teacher_steps = 0
         self.unsafe_l2_threshold_mode = str(
             self.config.get("unsafe_l2_threshold_mode", "fixed")
         ).lower()
@@ -388,12 +401,32 @@ class SafeDagger:
                     f"Unsafe L2 threshold fixed at {self.unsafe_l2_threshold}",
                     flush=True,
                 )
+        if self.rank == 0 and self.switch_back_min_teacher_steps > 0:
+            print(
+                "Teacher switch-back hold enabled: "
+                f"min_teacher_steps={self.switch_back_min_teacher_steps}",
+                flush=True,
+            )
         if self.rank == 0 and self.unsafe_mode == "failure_predictor":
             if self.failure_predictor is None or not self.failure_predictor.enabled:
                 print(
                     "Warning: unsafe_mode=failure_predictor but failure predictor is disabled.",
                     flush=True,
                 )
+        fp_cfg = self.config.get("failure_predictor", {}) or {}
+        fp_ws_model_path = fp_cfg.get("warm_start_model_path", None)
+        self.failure_predictor_warm_start_model_path = None
+        if isinstance(fp_ws_model_path, str) and len(str(fp_ws_model_path).strip()) > 0:
+            fp_path_resolved = str(fp_ws_model_path).strip()
+            if not os.path.isabs(fp_path_resolved):
+                fp_path_resolved = os.path.join(self.run_dir, fp_path_resolved)
+            self.failure_predictor_warm_start_model_path = fp_path_resolved
+        if self.rank == 0 and self.failure_predictor_warm_start_model_path is not None:
+            print(
+                "Failure predictor warm-start model path: "
+                f"{self.failure_predictor_warm_start_model_path}",
+                flush=True,
+            )
         warm_cfg = self.config.get("warm_start", {}) or {}
         self.warm_start_enabled = bool(warm_cfg.get("enabled", False))
         self.warm_start_collect_steps = int(warm_cfg.get("collect_steps", 0))
@@ -410,9 +443,12 @@ class SafeDagger:
             warm_cfg.get("save_images", False)
         )
         save_path_cfg = warm_cfg.get("save_path", None)
-        self.warm_start_save_path = (
-            str(save_path_cfg) if isinstance(save_path_cfg, str) and len(save_path_cfg) > 0 else None
-        )
+        self.warm_start_save_path = None
+        if isinstance(save_path_cfg, str) and len(save_path_cfg.strip()) > 0:
+            save_path_resolved = save_path_cfg.strip()
+            if self.rank == 0 and not os.path.isabs(save_path_resolved):
+                save_path_resolved = os.path.join(self.run_dir, save_path_resolved)
+            self.warm_start_save_path = save_path_resolved
         if self.warm_start_collect_steps < 0:
             self.warm_start_collect_steps = 0
         if self.warm_start_save_steps < 0:
@@ -423,7 +459,7 @@ class SafeDagger:
         self.warm_start_save_envs = min(self.warm_start_save_envs, self.num_envs)
         if self.warm_start_save_collected_data and self.warm_start_save_path is None and self.rank == 0:
             warm_start_dir = os.path.join(
-                str(pathlib.Path(__file__).parent.resolve()),
+                self.run_dir,
                 "bc_dataset",
             )
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -521,6 +557,9 @@ class SafeDagger:
 
         self.env_counter = torch.zeros(self.num_envs, dtype=torch.int).to(self.device)
         self.unsafe = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.teacher_takeover_steps_remaining = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
         if self.stereo:
             self.rgb_buffers_left = torch.zeros(
                 (self.num_envs, 3, self.ov_env.cfg.img_height, self.ov_env.cfg.img_width)
@@ -581,6 +620,7 @@ class SafeDagger:
         self.optimizer.zero_grad()
 
         num_iters = self.num_iters
+        pending_fp_step = None
         if self.rank == 0:
             if self.eval_every > 0 and self.eval_num_episodes > 0:
                 print(
@@ -677,6 +717,30 @@ class SafeDagger:
                     key = self.ood_classifier.obs_key or self.ood_classifier.default_obs_key
                     if key is not None and key in obs:
                         self.ood_classifier.init_buffer(obs)
+                # Critic-style failure predictor needs next_obs features.
+                # Feed one step later so next_obs has ood_policy_embed materialized.
+                if (
+                    self.failure_predictor is not None
+                    and self.failure_predictor.enabled
+                    and getattr(self.failure_predictor, "supports_next_obs", False)
+                    and pending_fp_step is not None
+                ):
+                    fp_loss = self.failure_predictor.add_step(
+                        obs=pending_fp_step["obs"],
+                        action=pending_fp_step["action"],
+                        next_obs=obs,
+                        reward=pending_fp_step["reward"],
+                        done=pending_fp_step["done"],
+                        info=pending_fp_step["info"],
+                    )
+                    pending_fp_step = None
+                    if self.rank == 0 and fp_loss is not None:
+                        if isinstance(fp_loss, dict):
+                            loss_total = fp_loss.get("loss_total", None)
+                            if loss_total is not None:
+                                self.writer.add_scalar("failure_predictor/loss", float(loss_total), self.frame)
+                        else:
+                            self.writer.add_scalar("failure_predictor/loss", float(fp_loss), self.frame)
 
                 aux_loss = list() if self.is_aux else [0.]
                 if actions_student["aux"] is not None:
@@ -764,12 +828,20 @@ class SafeDagger:
                 total_loss_step = imitation_loss + self.aux_coeff * aux_sum_tensor
                 total_loss += total_loss_step
                 current_l2_threshold = self._current_unsafe_l2_threshold(log_counter)
-                self.unsafe = self.check_unsafe(
+                unsafe_raw = self.check_unsafe(
                     l2_loss_per_env=l2_loss_per_env,
                     obs=obs,
                     l2_threshold=current_l2_threshold,
                     student_action=actions_student["actions"],
                 )
+                if self.switch_back_min_teacher_steps > 0:
+                    trigger_mask = unsafe_raw & (self.teacher_takeover_steps_remaining <= 0)
+                    if bool(trigger_mask.any().item()):
+                        self.teacher_takeover_steps_remaining[trigger_mask] = self.switch_back_min_teacher_steps
+                    teacher_hold_mask = self.teacher_takeover_steps_remaining > 0
+                    self.unsafe = unsafe_raw | teacher_hold_mask
+                else:
+                    self.unsafe = unsafe_raw
                 beta = float(self.unsafe.float().mean().item())
             # pos = torch.tensor([
             #     [self.ov_env.cfg.x_center+self.ov_env.cfg.x_width/2, self.ov_env.cfg.y_center+self.ov_env.cfg.y_width/2, 0.5],
@@ -827,6 +899,10 @@ class SafeDagger:
             obs, rew, out_of_reach, timed_out, info = self.env.step(
                 stepping_actions.detach()
             )
+            if self.switch_back_min_teacher_steps > 0:
+                active_hold = self.teacher_takeover_steps_remaining > 0
+                if bool(active_hold.any().item()):
+                    self.teacher_takeover_steps_remaining[active_hold] -= 1
             if self.failure_predictor is not None and self.failure_predictor.enabled:
                 done_mask = out_of_reach | timed_out
                 if isinstance(info, dict):
@@ -836,14 +912,25 @@ class SafeDagger:
                 fp_info.setdefault("out_of_reach", out_of_reach)
                 fp_info.setdefault("timed_out", timed_out)
                 if getattr(self.failure_predictor, "supports_next_obs", False):
-                    fp_loss = self.failure_predictor.add_step(
-                        obs=prev_obs,
-                        action=stepping_actions.detach(),
-                        next_obs=obs,
-                        reward=rew,
-                        done=done_mask,
-                        info=fp_info,
+                    fp_key = getattr(self.failure_predictor, "obs_key", None) or getattr(
+                        self.failure_predictor, "default_obs_key", None
                     )
+                    if fp_key is None or fp_key not in prev_obs:
+                        raise KeyError(
+                            f"Failure predictor expected obs key '{fp_key}' in prev_obs, "
+                            "but it was not found."
+                        )
+                    pending_fp_step = {
+                        "obs": {fp_key: prev_obs[fp_key].detach().clone()},
+                        "action": stepping_actions.detach(),
+                        "reward": rew,
+                        "done": done_mask,
+                        "info": {
+                            "out_of_reach": out_of_reach.detach().clone(),
+                            "timed_out": timed_out.detach().clone(),
+                        },
+                    }
+                    fp_loss = None
                 else:
                     fp_loss = self.failure_predictor.add_step(
                         obs=prev_obs,
@@ -965,6 +1052,8 @@ class SafeDagger:
             self.actions_teacher[done_indices] *= 0.
             if len(done_indices) > 0:
                 self.unsafe[done_indices] = False
+                if self.switch_back_min_teacher_steps > 0:
+                    self.teacher_takeover_steps_remaining[done_indices] = 0
 
             if not self.play_policy:
                 # if (
@@ -1068,14 +1157,64 @@ class SafeDagger:
             if self.rank == 0:
                 print(f"[Pipeline] Running warmstart stage (mode={mode}).", flush=True)
             warm_obs = self.run_warm_start_stage()
+            if mode == "both" and self.failure_predictor is not None and self.failure_predictor.enabled:
+                # Enforce explicit checkpoint boundary:
+                # warmstart must persist predictor, then both-mode online reloads that exact artifact.
+                if not self._save_failure_predictor_warm_start_model():
+                    raise ValueError(
+                        "Pipeline mode 'both' with enabled failure predictor requires "
+                        "'failure_predictor.warm_start_model_path' so warmstart can save "
+                        "and online stage can load the exact same checkpoint."
+                    )
+                self._load_failure_predictor_warm_start_model()
+            else:
+                self._save_failure_predictor_warm_start_model()
         if mode == "warmstart":
             self._finalize_loggers()
             return 0
+        if mode == "safedagger":
+            self._load_failure_predictor_warm_start_model()
         if self.rank == 0:
             print(f"[Pipeline] Running online stage (mode={mode}).", flush=True)
         if mode == "both":
             return self.run_online_stage(obs=warm_obs)
         return self.run_online_stage(obs=None)
+
+    def _save_failure_predictor_warm_start_model(self):
+        if self.failure_predictor is None or not self.failure_predictor.enabled:
+            return False
+        path = self.failure_predictor_warm_start_model_path
+        if path is None:
+            return False
+        if not hasattr(self.failure_predictor, "save_checkpoint"):
+            if self.rank == 0:
+                print(
+                    "[Pipeline] Failure predictor does not expose save_checkpoint(); skipping warm-start save.",
+                    flush=True,
+                )
+            return False
+        return bool(self.failure_predictor.save_checkpoint(path))
+
+    def _load_failure_predictor_warm_start_model(self):
+        if self.failure_predictor is None or not self.failure_predictor.enabled:
+            return False
+        path = self.failure_predictor_warm_start_model_path
+        if path is None:
+            if self.rank == 0:
+                print(
+                    "[Pipeline] No failure_predictor.warm_start_model_path set; "
+                    "starting predictor from scratch for safedagger mode.",
+                    flush=True,
+                )
+            return False
+        if not hasattr(self.failure_predictor, "load_checkpoint"):
+            if self.rank == 0:
+                print(
+                    "[Pipeline] Failure predictor does not expose load_checkpoint(); cannot load warm-start model.",
+                    flush=True,
+                )
+            return False
+        return bool(self.failure_predictor.load_checkpoint(path))
 
     def distill(self):
         """Backward-compatible default entrypoint (equivalent to run_pipeline('both'))."""
@@ -1291,6 +1430,13 @@ class SafeDagger:
                 print("\tunsafe_episode_rate: ", mean_unsafe_terminated)
                 for name in self.unsafe_reason_names:
                     print(f"\tunsafe_reason_pct/{name}: {unsafe_reason_pct[name]:.2f}")
+                fp_pos_stats = self._failure_predictor_positive_stats()
+                if fp_pos_stats is not None:
+                    pos_count, total_count, pos_pct = fp_pos_stats
+                    print(
+                        "\tfailure_predictor_pos_labeled: "
+                        f"{pos_count}/{total_count} ({pos_pct:.2f}%)"
+                    )
 
     def log_img(self, pred_images, gt_images):
         combined_images = torch.cat((pred_images, gt_images), dim=0)
@@ -1299,6 +1445,51 @@ class SafeDagger:
         if self.use_wandb:
             images = wandb.Image(image_grid, caption="Top: Network Pred, Bottom: GT")
             wandb.log({"predictions vs ground truth": images})
+
+    def _failure_predictor_positive_stats(self):
+        """Return (pos_count, total_count, pos_pct) for current predictor ring buffer."""
+        fp = self.failure_predictor
+        if fp is None or not fp.enabled:
+            return None
+
+        # Critic predictor: positives are fail-labeled transitions in replay.
+        if hasattr(fp, "_fail_buf") and hasattr(fp, "_buf_count") and fp._fail_buf is not None:
+            total_count = int(fp._buf_count)
+            if total_count <= 0:
+                return (0, 0, 0.0)
+            fail_buf = fp._fail_buf[:total_count]
+            if torch.is_tensor(fail_buf):
+                pos_count = int((fail_buf > 0.5).to(dtype=torch.int64).sum().item())
+            else:
+                pos_count = int(np.sum(np.asarray(fail_buf) > 0.5))
+            pos_pct = 100.0 * pos_count / max(1, total_count)
+            return (pos_count, total_count, pos_pct)
+
+        # Legacy predictor: positives among finalized/labeled entries.
+        if (
+            hasattr(fp, "_buffer_y")
+            and hasattr(fp, "_buffer_labeled")
+            and fp._buffer_y is not None
+            and fp._buffer_labeled is not None
+        ):
+            buf_count = int(getattr(fp, "_buf_count", 0))
+            if buf_count <= 0:
+                return (0, 0, 0.0)
+            y = fp._buffer_y[:buf_count]
+            labeled = fp._buffer_labeled[:buf_count]
+            if torch.is_tensor(y) and torch.is_tensor(labeled):
+                labeled = labeled.to(dtype=torch.bool)
+                total_count = int(labeled.sum().item())
+                pos_count = int(((y > 0.5) & labeled).sum().item())
+            else:
+                y_np = np.asarray(y)
+                lab_np = np.asarray(labeled).astype(bool)
+                total_count = int(np.sum(lab_np))
+                pos_count = int(np.sum((y_np > 0.5) & lab_np))
+            pos_pct = 100.0 * pos_count / max(1, total_count)
+            return (pos_count, total_count, pos_pct)
+
+        return None
 
     # --- Safety and Unsafe Detection ---
     def check_unsafe(
@@ -1322,9 +1513,23 @@ class SafeDagger:
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if self.unsafe_mode == "failure_predictor":
             if self.failure_predictor is not None and self.failure_predictor.enabled:
-                unsafe = self.failure_predictor.should_intervene(obs, student_action)
-                if unsafe is not None:
-                    return unsafe.to(device=self.device, dtype=torch.bool)
+                unsafe_pred = self.failure_predictor.should_intervene(obs, student_action)
+                if unsafe_pred is None:
+                    unsafe_pred = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+                else:
+                    unsafe_pred = unsafe_pred.to(device=self.device, dtype=torch.bool)
+
+                # Critic mode: gate interventions by either risk critic or teacher-student disagreement.
+                predictor_class_name = self.failure_predictor.__class__.__name__.lower()
+                is_critic_mode = "critic" in predictor_class_name
+                if is_critic_mode and l2_loss_per_env is not None:
+                    threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
+                    unsafe_l2 = l2_loss_per_env > threshold
+                    return unsafe_pred & unsafe_l2
+                return unsafe_pred
+            if l2_loss_per_env is not None:
+                threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
+                return l2_loss_per_env > threshold
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if l2_loss_per_env is not None:
             threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)

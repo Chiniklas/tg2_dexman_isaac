@@ -105,6 +105,7 @@ params:
     loss_type: null
     unsafe_mode: l2
     unsafe_l2_threshold: 3.0 # default 3.0
+    switch_back_min_teacher_steps: 0 # default 10
     unsafe_l2_threshold_mode: fixed # fixed | anneal
     # threshold annealing settings
     unsafe_l2_threshold_start: 3.0
@@ -123,11 +124,12 @@ params:
       update_interval: 250
       train_steps: 5
       horizon_steps: 15
-      failure_threshold: 0.6
+      failure_threshold: 0.4
       include_current_step: false
       pos_weight: 2.0
       pos_fraction: 0.1
       device: cuda
+      warm_start_model_path: null
     ood:
       enabled: false
       type: gaussian

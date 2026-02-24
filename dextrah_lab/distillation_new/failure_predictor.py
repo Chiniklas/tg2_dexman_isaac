@@ -52,6 +52,7 @@ info/done fields. It does not backtrace N steps (legacy behavior). The useful
 signal propagates backward through Bellman bootstrapping over replay updates.
 """
 
+import os
 from typing import Dict, Optional
 
 import torch
@@ -124,6 +125,7 @@ class FailurePredictorCritic:
         self.debug_print_interval = int(cfg.get("debug_print_interval", 0))
         self.last_train_stats: dict[str, float | int] = {}
         self._used_next_obs_fallback = 0
+        self._has_pretrained_model = False
 
         self._initialized = False
         self._steps = 0
@@ -327,12 +329,137 @@ class FailurePredictorCritic:
     def should_intervene(self, obs, action):
         if not self.enabled:
             return None
-        if self._buf_count < self.min_samples:
+        if self._buf_count < self.min_samples and not self._has_pretrained_model:
             return None
         risk = self.predict_risk(obs, action)
         if risk is None:
             return None
         return risk > self.failure_threshold
+
+    def save_checkpoint(self, path: str) -> bool:
+        """Persist predictor weights (warm-start artifact)."""
+        if not self.enabled or not self._initialized:
+            return False
+        if path is None or len(str(path).strip()) == 0:
+            return False
+        ckpt_path = os.path.expanduser(str(path).strip())
+        ckpt_dir = os.path.dirname(ckpt_path)
+        if len(ckpt_dir) > 0:
+            os.makedirs(ckpt_dir, exist_ok=True)
+        payload = {
+            "predictor_type": "critic",
+            "obs_dim": int(self._obs_dim),
+            "act_dim": int(self._act_dim),
+            "hidden_sizes": list(self.hidden_sizes),
+            "dropout": float(self.dropout),
+            "failure_threshold": float(self.failure_threshold),
+            "q1": self._q1.state_dict(),
+            "q2": self._q2.state_dict(),
+            "q1_targ": self._q1_targ.state_dict(),
+            "q2_targ": self._q2_targ.state_dict(),
+            "optimizer": self._optim.state_dict() if self._optim is not None else None,
+            "steps": int(self._steps),
+            "q_update_steps": int(self._q_update_steps),
+            "buffer_count": int(self._buf_count),
+            "used_next_obs_fallback": int(self._used_next_obs_fallback),
+            "buf_idx": int(self._buf_idx),
+            "token_counter": int(self._token_counter),
+            "num_envs": int(self._num_envs) if self._num_envs is not None else None,
+        }
+        # Persist the valid replay slice so online phase can start from warm-start data.
+        # This mirrors reference behavior where Q/replay is seeded before online updates.
+        if self._buf_count > 0:
+            n = int(self._buf_count)
+            payload["replay"] = {
+                "obs": self._obs_buf[:n].clone(),
+                "act": self._act_buf[:n].clone(),
+                "obs2": self._obs2_buf[:n].clone(),
+                "next_act": self._next_act_buf[:n].clone(),
+                "has_next_act": self._has_next_act[:n].clone(),
+                "fail": self._fail_buf[:n].clone(),
+                "done": self._done_buf[:n].clone(),
+                "token": self._token_buf[:n].clone(),
+            }
+        torch.save(payload, ckpt_path)
+        if self.rank == 0:
+            print(f"[FailurePredictorCritic] Saved warm-start checkpoint: {ckpt_path}", flush=True)
+        return True
+
+    def load_checkpoint(self, path: str) -> bool:
+        """Load predictor weights from a previous warm-start run."""
+        if not self.enabled:
+            return False
+        if path is None or len(str(path).strip()) == 0:
+            return False
+        ckpt_path = os.path.expanduser(str(path).strip())
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Failure predictor checkpoint not found: {ckpt_path}")
+        payload = torch.load(ckpt_path, map_location=self.device)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Invalid failure predictor checkpoint format: {ckpt_path}")
+        predictor_type = str(payload.get("predictor_type", "")).lower()
+        if predictor_type not in {"critic", ""}:
+            raise ValueError(
+                f"Checkpoint predictor_type='{predictor_type}' is incompatible with critic predictor."
+            )
+        obs_dim = int(payload.get("obs_dim", 0))
+        act_dim = int(payload.get("act_dim", 0))
+        if obs_dim <= 0 or act_dim <= 0:
+            raise ValueError(
+                f"Checkpoint missing valid dims (obs_dim={obs_dim}, act_dim={act_dim}): {ckpt_path}"
+            )
+        # Initialize networks/buffers with a placeholder env count; resized on first add_step.
+        self._ensure_initialized(obs_dim=obs_dim, act_dim=act_dim, num_envs=1)
+        self._q1.load_state_dict(payload["q1"])
+        self._q2.load_state_dict(payload["q2"])
+        self._q1_targ.load_state_dict(payload.get("q1_targ", payload["q1"]))
+        self._q2_targ.load_state_dict(payload.get("q2_targ", payload["q2"]))
+        optim_state = payload.get("optimizer", None)
+        if optim_state is not None and self._optim is not None:
+            try:
+                self._optim.load_state_dict(optim_state)
+            except Exception:
+                # Optimizer state can be device/topology-specific; continue with fresh optimizer if needed.
+                pass
+        self._steps = int(payload.get("steps", self._steps))
+        self._q_update_steps = int(payload.get("q_update_steps", self._q_update_steps))
+        self._used_next_obs_fallback = int(
+            payload.get("used_next_obs_fallback", self._used_next_obs_fallback)
+        )
+        self._buf_idx = int(payload.get("buf_idx", 0))
+        self._token_counter = int(payload.get("token_counter", 0))
+
+        replay = payload.get("replay", None)
+        if isinstance(replay, dict):
+            required = ("obs", "act", "obs2", "next_act", "has_next_act", "fail", "done", "token")
+            if not all(k in replay for k in required):
+                raise ValueError("Invalid predictor replay payload: missing required replay tensors.")
+            n = int(replay["obs"].shape[0])
+            if n > self.buffer_size:
+                raise ValueError(
+                    f"Checkpoint replay size ({n}) exceeds configured buffer_size ({self.buffer_size})."
+                )
+            self._obs_buf[:n] = replay["obs"].to(dtype=torch.float32, device="cpu")
+            self._act_buf[:n] = replay["act"].to(dtype=torch.float32, device="cpu")
+            self._obs2_buf[:n] = replay["obs2"].to(dtype=torch.float32, device="cpu")
+            self._next_act_buf[:n] = replay["next_act"].to(dtype=torch.float32, device="cpu")
+            self._has_next_act[:n] = replay["has_next_act"].to(dtype=torch.bool, device="cpu")
+            self._fail_buf[:n] = replay["fail"].to(dtype=torch.float32, device="cpu")
+            self._done_buf[:n] = replay["done"].to(dtype=torch.float32, device="cpu")
+            self._token_buf[:n] = replay["token"].to(dtype=torch.long, device="cpu")
+            self._buf_count = n
+            if self._buf_idx < 0 or self._buf_idx >= self.buffer_size:
+                self._buf_idx = n % self.buffer_size
+        # Open transitions are episode-runtime bookkeeping; start clean after reload.
+        self._open_refs = [None for _ in range(self._num_envs)]
+        self._has_pretrained_model = True
+        if self.rank == 0:
+            print(
+                "[FailurePredictorCritic] Loaded warm-start checkpoint: "
+                f"{ckpt_path} (replay_size={self._buf_count})",
+                flush=True,
+            )
+        return True
 
     def compute_failure_label(self, obs, reward, done, info):
         num_envs = self._num_envs_from_obs(obs)
@@ -344,9 +471,9 @@ class FailurePredictorCritic:
     def _ensure_initialized(self, obs_dim: int, act_dim: int, num_envs: int):
         if self._initialized:
             if self._num_envs != num_envs:
-                raise ValueError(
-                    f"FailurePredictorCritic num_envs mismatch: expected {self._num_envs}, got {num_envs}."
-                )
+                # num_envs only controls open-transition bookkeeping; allow resize across runs.
+                self._num_envs = int(num_envs)
+                self._open_refs = [None for _ in range(self._num_envs)]
             return
 
         self._obs_dim = int(obs_dim)

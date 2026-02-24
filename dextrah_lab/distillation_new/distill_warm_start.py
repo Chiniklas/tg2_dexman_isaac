@@ -72,6 +72,8 @@ class DistillWarmStart:
             return
         image_keys = {"img", "rgb", "img_left", "img_right"}
         samples_to_save = []
+        positive_count = 0
+        total_count = 0
         for sample in collected_samples:
             obs_src = sample.get("obs", {})
             obs_dst = {}
@@ -86,6 +88,11 @@ class DistillWarmStart:
             sample_dst = dict(sample)
             sample_dst["obs"] = obs_dst
             samples_to_save.append(sample_dst)
+            out_of_reach = sample.get("out_of_reach", None)
+            if torch.is_tensor(out_of_reach):
+                mask = out_of_reach.detach().to(dtype=torch.bool).reshape(-1)
+                positive_count += int(mask.sum().item())
+                total_count += int(mask.numel())
         payload = {
             "metadata": {
                 "student_obs_type": self.a.student_obs_type,
@@ -102,9 +109,11 @@ class DistillWarmStart:
         if len(save_dir) > 0:
             os.makedirs(save_dir, exist_ok=True)
         torch.save(payload, self.a.warm_start_save_path)
+        positive_pct = 100.0 * positive_count / max(1, total_count)
         print(
             f"[WarmStart] Saved collected rollout snapshots to {self.a.warm_start_save_path} "
-            f"(samples={len(samples_to_save)}).",
+            f"(samples={len(samples_to_save)}, "
+            f"positive_label_pct={positive_pct:.2f}% [{positive_count}/{total_count}]).",
             flush=True,
         )
 
