@@ -80,20 +80,6 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
-    "--imitation_target",
-    type=str,
-    default=None,
-    choices=["action_distribution", "sampled_action"],
-    help="Imitation target type (overrides imitation_loss_type when paired with --loss_type).",
-)
-parser.add_argument(
-    "--loss_type",
-    type=str,
-    default=None,
-    choices=["kl", "nll", "l2", "mse"],
-    help="Imitation loss type (used with --imitation_target).",
-)
-parser.add_argument(
     "--unsafe_mode",
     type=str,
     default=None,
@@ -122,31 +108,6 @@ parser.add_argument(
         "Optional checkpoint path for failure predictor warm-start model. "
         "Warmstart/both save predictor here; safedagger mode loads predictor from here."
     ),
-)
-parser.add_argument(
-    "--unsafe_l2_threshold_mode",
-    type=str,
-    default=None,
-    choices=["fixed", "anneal"],
-    help="L2 unsafe threshold mode: fixed or linear anneal.",
-)
-parser.add_argument(
-    "--unsafe_l2_threshold_start",
-    type=float,
-    default=None,
-    help="Starting L2 unsafe threshold when annealing is enabled.",
-)
-parser.add_argument(
-    "--unsafe_l2_threshold_end",
-    type=float,
-    default=None,
-    help="Ending L2 unsafe threshold when annealing is enabled.",
-)
-parser.add_argument(
-    "--unsafe_l2_threshold_anneal_iters",
-    type=int,
-    default=None,
-    help="Number of training iterations over which to anneal the L2 unsafe threshold.",
 )
 parser.add_argument(
     "--switch_back_min_teacher_steps",
@@ -317,21 +278,9 @@ def main(env_cfg, agent_cfg: dict):
             "obs_type": "expert_policy",
         },
         "imitation_loss_type": distill_cfg.get("imitation_loss_type", "l2"),
-        "imitation_target": distill_cfg.get("imitation_target", None),
-        "loss_type": distill_cfg.get("loss_type", None),
         "unsafe_mode": distill_cfg.get("unsafe_mode", "l2"),
         "unsafe_l2_threshold": distill_cfg.get("unsafe_l2_threshold", 0.5),
         "switch_back_min_teacher_steps": distill_cfg.get("switch_back_min_teacher_steps", 10),
-        "unsafe_l2_threshold_mode": distill_cfg.get("unsafe_l2_threshold_mode", "fixed"),
-        "unsafe_l2_threshold_start": distill_cfg.get(
-            "unsafe_l2_threshold_start", distill_cfg.get("unsafe_l2_threshold", 0.5)
-        ),
-        "unsafe_l2_threshold_end": distill_cfg.get(
-            "unsafe_l2_threshold_end", distill_cfg.get("unsafe_l2_threshold", 0.5)
-        ),
-        "unsafe_l2_threshold_anneal_iters": distill_cfg.get(
-            "unsafe_l2_threshold_anneal_iters", None
-        ),
         "failure_predictor": {
             "enabled": False,
             "obs_key": "ood_policy_embed",
@@ -343,8 +292,10 @@ def main(env_cfg, agent_cfg: dict):
             "min_samples": 10_000,
             "update_interval": 1_000,
             "train_steps": 1,
-            "horizon_steps": 1,
+            "horizon_steps": 10,
             "failure_threshold": 0.5,
+            "success_threshold": 0.5,
+            "success_key": "lift_success",
             "include_current_step": False,
             "pos_weight": None,
             "pos_fraction": 0.1,
@@ -384,10 +335,6 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["failure_predictor"]["warm_start_model_path"] = (
                 args_cli.failure_predictor_warm_start_model_path
             )
-        if args_cli.imitation_target is not None:
-            dagger_config["imitation_target"] = args_cli.imitation_target
-        if args_cli.loss_type is not None:
-            dagger_config["loss_type"] = args_cli.loss_type
         if args_cli.unsafe_mode is not None:
             dagger_config["unsafe_mode"] = args_cli.unsafe_mode
         mode = dagger_config["unsafe_mode"]
@@ -400,14 +347,6 @@ def main(env_cfg, agent_cfg: dict):
         elif mode in {"none", "l2"}:
             dagger_config["ood"]["enabled"] = False
             dagger_config["failure_predictor"]["enabled"] = False
-        if args_cli.unsafe_l2_threshold_mode is not None:
-            dagger_config["unsafe_l2_threshold_mode"] = args_cli.unsafe_l2_threshold_mode
-        if args_cli.unsafe_l2_threshold_start is not None:
-            dagger_config["unsafe_l2_threshold_start"] = args_cli.unsafe_l2_threshold_start
-        if args_cli.unsafe_l2_threshold_end is not None:
-            dagger_config["unsafe_l2_threshold_end"] = args_cli.unsafe_l2_threshold_end
-        if args_cli.unsafe_l2_threshold_anneal_iters is not None:
-            dagger_config["unsafe_l2_threshold_anneal_iters"] = args_cli.unsafe_l2_threshold_anneal_iters
         if args_cli.switch_back_min_teacher_steps is not None:
             dagger_config["switch_back_min_teacher_steps"] = int(args_cli.switch_back_min_teacher_steps)
         if args_cli.eval_lift_hold_s is not None:

@@ -9,7 +9,7 @@ in a failure event. The output is used online to decide whether to intervene
 The class in this file is the "new" predictor path:
     FailurePredictorCritic
 The old horizon-label predictor was moved to:
-    failure_predictor_legacy.py
+    failure_predictor_success_label.py
 
 Core idea
 ---------
@@ -47,13 +47,16 @@ previous transition is closed by writing its a_next.
 
 Failure labeling semantics
 --------------------------
-This predictor treats failure as terminal event supervision inferred from
-info/done fields. It does not backtrace N steps (legacy behavior). The useful
-signal propagates backward through Bellman bootstrapping over replay updates.
+This predictor uses terminal failure supervision inferred from info/done fields,
+plus configurable horizon back-labeling: when a failure terminal occurs, the
+most recent `horizon_steps` transitions on that environment are marked as
+risky (fail=1). Bellman bootstrapping then propagates this danger-zone signal
+further backward through replay updates.
 """
 
 import os
 from typing import Dict, Optional
+from collections import deque
 
 import torch
 import torch.nn as nn
@@ -103,6 +106,9 @@ class FailurePredictorCritic:
         # Reference alignment: use fixed target-network averaging factor.
         self.polyak = 0.995
         self.failure_threshold = float(cfg.get("failure_threshold", 0.5))
+        self.horizon_steps = int(cfg.get("horizon_steps", 10))
+        if self.horizon_steps <= 0:
+            self.horizon_steps = 1
         self.pos_weight = cfg.get("pos_weight", None)
         self.pos_fraction = cfg.get("pos_fraction", 0.1)
         if self.pos_fraction is None:
@@ -152,6 +158,7 @@ class FailurePredictorCritic:
         self._done_buf = None
         self._token_buf = None
         self._open_refs = None
+        self._recent_refs = None
 
         if self.rank == 0 and self.enabled:
             print(
@@ -159,7 +166,7 @@ class FailurePredictorCritic:
                 f"buffer_size={self.buffer_size}, min_samples={self.min_samples}, "
                 f"update_interval={self.update_interval}, train_steps={self.train_steps}, "
                 f"gamma={self.gamma}, polyak={self.polyak}, failure_threshold={self.failure_threshold}, "
-                f"pos_fraction={self.pos_fraction}",
+                f"horizon_steps={self.horizon_steps}, pos_fraction={self.pos_fraction}",
                 flush=True,
             )
 
@@ -213,8 +220,12 @@ class FailurePredictorCritic:
             curr_ref = self._store_transition(
                 obs_cpu[env_id], act_cpu[env_id], next_cpu[env_id], fail_now, done_now
             )
+            self._recent_refs[env_id].append(curr_ref)
+            if bool(failure_done_mask[env_id].item()):
+                self._mark_recent_failure_labels(env_id)
             if done_now > 0.5:
                 self._set_next_action(curr_ref, torch.zeros_like(act_cpu[env_id]))
+                self._recent_refs[env_id].clear()
             else:
                 self._open_refs[env_id] = curr_ref
 
@@ -353,6 +364,7 @@ class FailurePredictorCritic:
             "hidden_sizes": list(self.hidden_sizes),
             "dropout": float(self.dropout),
             "failure_threshold": float(self.failure_threshold),
+            "horizon_steps": int(self.horizon_steps),
             "q1": self._q1.state_dict(),
             "q2": self._q2.state_dict(),
             "q1_targ": self._q1_targ.state_dict(),
@@ -452,6 +464,7 @@ class FailurePredictorCritic:
                 self._buf_idx = n % self.buffer_size
         # Open transitions are episode-runtime bookkeeping; start clean after reload.
         self._open_refs = [None for _ in range(self._num_envs)]
+        self._recent_refs = [deque(maxlen=self.horizon_steps) for _ in range(self._num_envs)]
         self._has_pretrained_model = True
         if self.rank == 0:
             print(
@@ -474,6 +487,7 @@ class FailurePredictorCritic:
                 # num_envs only controls open-transition bookkeeping; allow resize across runs.
                 self._num_envs = int(num_envs)
                 self._open_refs = [None for _ in range(self._num_envs)]
+                self._recent_refs = [deque(maxlen=self.horizon_steps) for _ in range(self._num_envs)]
             return
 
         self._obs_dim = int(obs_dim)
@@ -498,6 +512,7 @@ class FailurePredictorCritic:
         self._done_buf = torch.zeros((self.buffer_size,), dtype=torch.float32, device="cpu")
         self._token_buf = torch.full((self.buffer_size,), -1, dtype=torch.long, device="cpu")
         self._open_refs = [None for _ in range(self._num_envs)]
+        self._recent_refs = [deque(maxlen=self.horizon_steps) for _ in range(self._num_envs)]
         self._initialized = True
 
     def _polyak_update(self):
@@ -535,6 +550,20 @@ class FailurePredictorCritic:
             return
         self._next_act_buf[idx] = torch.as_tensor(next_action, dtype=torch.float32, device="cpu")
         self._has_next_act[idx] = True
+
+    def _set_fail_label(self, ref, fail_value: float):
+        idx, token = ref
+        if idx < 0 or idx >= self.buffer_size:
+            return
+        if int(self._token_buf[idx].item()) != int(token):
+            return
+        self._fail_buf[idx] = float(fail_value)
+
+    def _mark_recent_failure_labels(self, env_id: int):
+        if self._recent_refs is None:
+            return
+        for ref in self._recent_refs[env_id]:
+            self._set_fail_label(ref, 1.0)
 
     def _sample_batch_indices(self, batch_size: int):
         if self._buf_count <= 0:

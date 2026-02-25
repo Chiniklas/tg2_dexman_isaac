@@ -12,8 +12,6 @@ COMMON_ARGS=(
   --headless
   --enable_cameras
   --teacher multi_object_distillation
-  --imitation_target action_distribution
-  --loss_type l2
   --eval_every 2500
   --eval_num_episodes 3
   --max_iterations "${MAX_ITERS}"

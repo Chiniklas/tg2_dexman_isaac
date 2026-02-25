@@ -101,33 +101,27 @@ params:
 
   distillation:
     imitation_loss_type: l2
-    imitation_target: null
-    loss_type: null
     unsafe_mode: l2
     unsafe_l2_threshold: 3.0 # default 3.0
     switch_back_min_teacher_steps: 0 # default 10
-    unsafe_l2_threshold_mode: fixed # fixed | anneal
-    # threshold annealing settings
-    unsafe_l2_threshold_start: 3.0
-    unsafe_l2_threshold_end: 2.0
-    unsafe_l2_threshold_anneal_iters: 100000
     
     failure_predictor:
       enabled: false
-      obs_key: ood_policy_embed
+      obs_key: policy
       hidden_sizes: [256, 128]
       lr: 0.001
+      gamma: 0.9
       dropout: 0.0
-      buffer_size: 100000
-      batch_size: 128
-      min_samples: 10000 # default 10000
-      update_interval: 250
-      train_steps: 5
-      horizon_steps: 15
-      failure_threshold: 0.4
+      buffer_size: 100000 # default 100000
+      batch_size: 128 # default 128
+      min_samples: 1 # default 10000
+      update_interval: 500 # default 250
+      train_steps: 10  # default 5
+      horizon_steps: 8
+      failure_threshold: 0.25
       include_current_step: false
-      pos_weight: 2.0
-      pos_fraction: 0.1
+      pos_weight: null # 2.0 for failure label
+      pos_fraction: null # 0.1 for failure label
       device: cuda
       warm_start_model_path: null
     ood:
@@ -150,41 +144,17 @@ params:
       device: cpu
     warm_start:
       enabled: true
-      collect_steps: 500
-      predictor_train_steps: 200
+      collect_steps: 600
+      predictor_train_steps: 1000 # default 200
       ood_force_refit: true
       save_collected_data: true
-      save_steps: 500
+      save_steps: 600
       save_envs: 32
       save_images: false
+      predictor_overfit_test: true
+      predictor_overfit_max_samples: 8192
+      predictor_overfit_chunk_size: 1024
 
-    # central_value_config:
-    #   minibatch_size: 32768
-    #   mini_epochs: 4
-    #   learning_rate: 1e-4
-    #   kl_threshold: 0.016
-    #   clip_value: True
-    #   normalize_input: True
-    #   truncate_grads: True
-
-    #   network:
-    #     name: actor_critic
-    #     central_value: True
-    #     mlp:
-    #       units: [512]
-    #       activation: relu
-    #       d2rl: False
-    #       initializer:
-    #         name: default
-    #       regularizer:
-    #         name: None
-    #     rnn:
-    #       name: lstm
-    #       units: 1024
-    #       layers: 1
-    #       before_mlp: True
-    #       layer_norm: True
-    #       zero_rnn_on_done: False
 
     player:
       deterministic: True

@@ -27,26 +27,12 @@ class DistillWarmStart:
         self.a.writer.add_scalar(tag, float(value), int(step))
 
     def _prepare_ood_policy_embed(self, obs, step):
-        """Populate obs['ood_policy_embed'] = concat(policy, embeds) with strict checks."""
-        if self.a.student_obs_type not in obs:
+        """Populate obs['ood_policy_embed'] using student proprio only."""
+        if "policy" not in obs:
             raise KeyError(
-                f"[WarmStart] Missing student obs key '{self.a.student_obs_type}' at step {step}."
+                f"[WarmStart] Missing student obs key 'policy' at step {step}."
             )
-        student_out = self.a.get_actions(obs, "student")
-        embeds = student_out.get("embeds", None)
-        if embeds is None:
-            raise RuntimeError(
-                "[WarmStart] Failed to build ood_policy_embed: student policy returned no embeds "
-                f"at step {step}. Fail-fast mode: no fallback is allowed."
-            )
-        if not torch.is_tensor(embeds):
-            raise TypeError(
-                "[WarmStart] Failed to build ood_policy_embed: 'embeds' is not a tensor "
-                f"(type={type(embeds)}), step={step}."
-            )
-        embeds = embeds.detach()
-        obs["ood_embed"] = embeds
-        obs["ood_policy_embed"] = torch.cat([obs[self.a.student_obs_type], embeds], dim=-1)
+        obs["ood_policy_embed"] = obs["policy"]
 
     def _snapshot_warm_obs(self, obs, env_indices, include_images=False):
         obs_snapshot = {}
@@ -74,6 +60,11 @@ class DistillWarmStart:
         samples_to_save = []
         positive_count = 0
         total_count = 0
+        fp = getattr(self.a, "failure_predictor", None)
+        is_legacy_success_predictor = (
+            fp is not None and getattr(fp, "enabled", False) and hasattr(fp, "success_key")
+        )
+        positive_label_key = "lift_success" if is_legacy_success_predictor else "out_of_reach"
         for sample in collected_samples:
             obs_src = sample.get("obs", {})
             obs_dst = {}
@@ -88,20 +79,21 @@ class DistillWarmStart:
             sample_dst = dict(sample)
             sample_dst["obs"] = obs_dst
             samples_to_save.append(sample_dst)
-            out_of_reach = sample.get("out_of_reach", None)
-            if torch.is_tensor(out_of_reach):
-                mask = out_of_reach.detach().to(dtype=torch.bool).reshape(-1)
+            positive_label = sample.get(positive_label_key, None)
+            if torch.is_tensor(positive_label):
+                mask = positive_label.detach().to(dtype=torch.bool).reshape(-1)
                 positive_count += int(mask.sum().item())
                 total_count += int(mask.numel())
         payload = {
             "metadata": {
                 "student_obs_type": self.a.student_obs_type,
-                "safety_obs_key": "ood_policy_embed",
+                "safety_obs_key": "policy",
                 "collect_steps": int(self.a.warm_start_collect_steps),
                 "saved_steps": int(self.a.warm_start_save_steps),
                 "saved_envs": int(self.a.warm_start_save_envs),
                 "save_images": bool(self.a.warm_start_save_images),
                 "num_saved_samples": int(len(samples_to_save)),
+                "positive_label_key": positive_label_key,
             },
             "samples": samples_to_save,
         }
@@ -113,6 +105,7 @@ class DistillWarmStart:
         print(
             f"[WarmStart] Saved collected rollout snapshots to {self.a.warm_start_save_path} "
             f"(samples={len(samples_to_save)}, "
+            f"positive_label_key={positive_label_key}, "
             f"positive_label_pct={positive_pct:.2f}% [{positive_count}/{total_count}]).",
             flush=True,
         )
@@ -154,11 +147,16 @@ class DistillWarmStart:
                     )
 
                 obs, rew, out_of_reach, timed_out, _ = self.a.env.step(teacher_actions)
+                lift_success = self.a._compute_lift_success_mask(
+                    out_of_reach=out_of_reach,
+                    timed_out=timed_out,
+                )
                 if step < save_steps and len(collected_samples) > 0:
                     sample = collected_samples[-1]
                     sample["reward"] = rew.detach().index_select(0, save_env_ids).to("cpu")
                     sample["out_of_reach"] = out_of_reach.detach().index_select(0, save_env_ids).to("cpu")
                     sample["timed_out"] = timed_out.detach().index_select(0, save_env_ids).to("cpu")
+                    sample["lift_success"] = lift_success.detach().index_select(0, save_env_ids).to("cpu")
 
                 done_idx = (out_of_reach | timed_out).nonzero(as_tuple=False)
                 if self.a.is_teacher_rnn and len(done_idx) > 0:
@@ -190,20 +188,111 @@ class DistillWarmStart:
             )
         return obs, collected_samples
 
+    def _run_predictor_overfit_test(self):
+        if not getattr(self.a, "warm_start_predictor_overfit_test", False):
+            return None
+        fp = getattr(self.a, "failure_predictor", None)
+        if fp is None or not getattr(fp, "enabled", False):
+            if self.a.rank == 0:
+                print("[WarmStart] Predictor overfit test skipped: predictor disabled.", flush=True)
+            return None
+        if not getattr(fp, "_initialized", False):
+            if self.a.rank == 0:
+                print("[WarmStart] Predictor overfit test skipped: predictor not initialized.", flush=True)
+            return None
+
+        buf_count = int(getattr(fp, "_buf_count", 0))
+        if buf_count <= 0:
+            if self.a.rank == 0:
+                print("[WarmStart] Predictor overfit test skipped: empty replay buffer.", flush=True)
+            return None
+
+        max_samples = int(getattr(self.a, "warm_start_predictor_overfit_max_samples", 8192))
+        chunk_size = int(getattr(self.a, "warm_start_predictor_overfit_chunk_size", 1024))
+        sample_count = min(buf_count, max_samples)
+        if sample_count < buf_count:
+            idx = torch.randperm(buf_count, device="cpu")[:sample_count]
+        else:
+            idx = torch.arange(buf_count, dtype=torch.long, device="cpu")
+
+        obs = fp._obs_buf[idx]
+        act = fp._act_buf[idx]
+        labels = fp._fail_buf[idx].to(dtype=torch.float32).reshape(-1)
+
+        pred_chunks = []
+        with torch.no_grad():
+            for start in range(0, sample_count, chunk_size):
+                end = min(sample_count, start + chunk_size)
+                pred = fp.predict_risk(obs[start:end], act[start:end])
+                if pred is None:
+                    raise RuntimeError(
+                        "[WarmStart] Predictor overfit test failed: predict_risk returned None."
+                    )
+                pred_chunks.append(pred.detach().to(device="cpu", dtype=torch.float32).reshape(-1))
+        preds = torch.cat(pred_chunks, dim=0)
+
+        label_pos = labels > 0.5
+        label_neg = ~label_pos
+        mse = float(((preds - labels) ** 2).mean().item())
+        mae = float((preds - labels).abs().mean().item())
+        acc = float(((preds > 0.5) == label_pos).to(dtype=torch.float32).mean().item())
+        pos_frac = float(label_pos.to(dtype=torch.float32).mean().item())
+        pred_pos_mean = float(preds[label_pos].mean().item()) if bool(label_pos.any().item()) else None
+        pred_neg_mean = float(preds[label_neg].mean().item()) if bool(label_neg.any().item()) else None
+
+        metrics = {
+            "sample_count": int(sample_count),
+            "buffer_count": int(buf_count),
+            "mse": mse,
+            "mae": mae,
+            "acc_at_0_5": acc,
+            "label_pos_frac": pos_frac,
+        }
+        if pred_pos_mean is not None:
+            metrics["pred_pos_mean"] = pred_pos_mean
+        if pred_neg_mean is not None:
+            metrics["pred_neg_mean"] = pred_neg_mean
+
+        label_name = "success" if hasattr(fp, "success_key") else "failure"
+        if self.a.rank == 0:
+            msg = (
+                "[WarmStart] Predictor overfit test "
+                f"(label={label_name}, n={sample_count}/{buf_count}): "
+                f"mse={mse:.6f}, mae={mae:.6f}, acc@0.5={acc:.4f}, pos_frac={pos_frac:.4f}"
+            )
+            if pred_pos_mean is not None:
+                msg += f", pred_pos_mean={pred_pos_mean:.4f}"
+            if pred_neg_mean is not None:
+                msg += f", pred_neg_mean={pred_neg_mean:.4f}"
+            print(msg, flush=True)
+
+        self._tb_add_scalar("warmstart/predictor_overfit/mse", mse, 0)
+        self._tb_add_scalar("warmstart/predictor_overfit/mae", mae, 0)
+        self._tb_add_scalar("warmstart/predictor_overfit/acc_at_0_5", acc, 0)
+        self._tb_add_scalar("warmstart/predictor_overfit/label_pos_frac", pos_frac, 0)
+        self._tb_add_scalar("warmstart/predictor_overfit/sample_count", sample_count, 0)
+        self._tb_add_scalar("warmstart/predictor_overfit/buffer_count", buf_count, 0)
+        if pred_pos_mean is not None:
+            self._tb_add_scalar("warmstart/predictor_overfit/pred_pos_mean", pred_pos_mean, 0)
+        if pred_neg_mean is not None:
+            self._tb_add_scalar("warmstart/predictor_overfit/pred_neg_mean", pred_neg_mean, 0)
+        return metrics
+
     def _warm_start_fit_safety_models(self, collected_samples):
         if len(collected_samples) > 0:
             for step, sample in enumerate(collected_samples):
                 obs_dict = sample.get("obs", {})
-                if "ood_policy_embed" not in obs_dict:
+                if "policy" not in obs_dict:
                     raise KeyError(
-                        f"[WarmStart] Collected dataset sample {step} is missing 'ood_policy_embed'."
+                        f"[WarmStart] Collected dataset sample {step} is missing 'policy'."
                     )
-                current_obs = {"ood_policy_embed": obs_dict["ood_policy_embed"]}
+                # Hardcode warm-start safety fitting to use only student proprio obs.
+                current_obs = {"policy": obs_dict["policy"]}
                 next_obs = current_obs
                 if step + 1 < len(collected_samples):
                     next_obs_dict = collected_samples[step + 1].get("obs", {})
-                    if "ood_policy_embed" in next_obs_dict:
-                        next_obs = {"ood_policy_embed": next_obs_dict["ood_policy_embed"]}
+                    if "policy" in next_obs_dict:
+                        next_obs = {"policy": next_obs_dict["policy"]}
 
                 if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
                     key = self.a.ood_classifier.obs_key or self.a.ood_classifier.default_obs_key
@@ -239,6 +328,8 @@ class DistillWarmStart:
                         "out_of_reach": out_of_reach,
                         "timed_out": timed_out,
                     }
+                    if "lift_success" in sample:
+                        fp_info["lift_success"] = sample["lift_success"]
                     if getattr(self.a.failure_predictor, "supports_next_obs", False):
                         self.a.failure_predictor.add_step(
                             obs=current_obs,
@@ -282,6 +373,7 @@ class DistillWarmStart:
                         predictor_updates,
                     )
                     predictor_updates += 1
+        predictor_overfit_metrics = self._run_predictor_overfit_test()
 
         # Encoded refit status:
         # 0 = fail/no-op, 1 = gaussian(_refit_stats), 2 = pca(_refit_pca), 3 = mlp(_train_classifier)
@@ -315,6 +407,12 @@ class DistillWarmStart:
                 )
             elif self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
                 print("[WarmStart] Predictor pretrain skipped or not enough samples yet.", flush=True)
+            if predictor_overfit_metrics is not None:
+                print(
+                    "[WarmStart] Predictor overfit metrics: "
+                    f"{predictor_overfit_metrics}",
+                    flush=True,
+                )
             if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
                 status_name = {
                     0: "fail/no-op",
@@ -354,6 +452,13 @@ class DistillWarmStart:
                 "Warm-start pipeline requires explicit dataset saving. "
                 "Set warm_start.save_collected_data=true."
             )
+        # Hardcode warm-start safety models to consume only policy obs.
+        if self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
+            self.a.failure_predictor.obs_key = "policy"
+            self.a.failure_predictor.default_obs_key = "policy"
+        if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
+            self.a.ood_classifier.obs_key = "policy"
+            self.a.ood_classifier.set_default_obs_key("policy")
         if self.a.rank == 0:
             print("[WarmStart] Phase 1/2: collect warm-start rollouts.", flush=True)
         obs, collected_samples = self._warm_start_collect(obs)

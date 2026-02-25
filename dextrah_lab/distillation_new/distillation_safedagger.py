@@ -34,12 +34,10 @@ from typing import Dict
 
 from ood_classifier import OODGaussianBuffer, OODPCABuffer, OODMLPBuffer
 from failure_predictor import FailurePredictorCritic
-from failure_predictor_legacy import FailurePredictor
+from failure_predictor_success_label import FailurePredictor
 from dextrah_lab.distillation_new.loss_utils import (
     l2,
     weighted_l2,
-    gaussian_kl,
-    gaussian_nll,
 )
 from dextrah_lab.distillation_new.distill_warm_start import DistillWarmStart
 from dextrah_lab.distillation_new.eval_utils import (
@@ -48,16 +46,8 @@ from dextrah_lab.distillation_new.eval_utils import (
     unsafe_reason_percentages_from_counts,
 )
 
-# Imitation loss options (imitation_loss_type):
-# - "kl": KL(N_teacher || N_student) over action distributions.
-# - "nll": -log pi_student(a_teacher_sample) using teacher sampled actions.
-# - "mse": MSE between teacher sampled actions and student sampled actions.
-# - "l2": legacy weighted L2 on mus (by 1/sigma^2) + L2 on sigmas.
-#
-# Optional debug-friendly config:
-# - imitation_target: "action_distribution" | "sampled_action"
-# - loss_type: "kl" | "nll" | "l2" | "mse"
-# If both are provided, they override imitation_loss_type.
+# Imitation loss:
+# - "l2": weighted L2 on mus (by 1/sigma^2) + L2 on sigmas.
 #
 # Optional OOD config (simple diagonal Gaussian density model on a buffer):
 # - ood.enabled: bool
@@ -237,9 +227,12 @@ class SafeDagger:
             self.teacher_model = self.teacher_models[0]
         else:
             self.teacher_model = self.teacher_network.build(self.teacher_model_config).to(self.device)
-        self.imitation_loss_type = self._resolve_imitation_loss_type()
-        if self.imitation_loss_type not in {"kl", "nll", "l2", "mse"}:
-            raise ValueError(f"Unsupported imitation_loss_type: {self.imitation_loss_type}")
+        configured_loss = str(self.config.get("imitation_loss_type", "l2")).lower()
+        if configured_loss != "l2":
+            raise ValueError(
+                f"Unsupported imitation_loss_type: {configured_loss}. Only 'l2' is supported."
+            )
+        self.imitation_loss_type = "l2"
         if self.rank == 0:
             print(f"Using imitation loss: {self.imitation_loss_type}")
         self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-4, eps=1e-8) # default lr = 1e-4
@@ -366,41 +359,11 @@ class SafeDagger:
         )
         if self.switch_back_min_teacher_steps < 0:
             self.switch_back_min_teacher_steps = 0
-        self.unsafe_l2_threshold_mode = str(
-            self.config.get("unsafe_l2_threshold_mode", "fixed")
-        ).lower()
-        self.unsafe_l2_threshold_start = float(
-            self.config.get("unsafe_l2_threshold_start", self.unsafe_l2_threshold)
-        )
-        self.unsafe_l2_threshold_end = float(
-            self.config.get("unsafe_l2_threshold_end", self.unsafe_l2_threshold)
-        )
-        anneal_iters_cfg = self.config.get(
-            "unsafe_l2_threshold_anneal_iters", self.num_iters
-        )
-        self.unsafe_l2_threshold_anneal_iters = (
-            int(anneal_iters_cfg) if anneal_iters_cfg is not None else self.num_iters
-        )
-        if self.unsafe_l2_threshold_anneal_iters <= 0:
-            self.unsafe_l2_threshold_anneal_iters = self.num_iters
-        if self.unsafe_l2_threshold_mode not in {"fixed", "anneal", "linear"}:
-            raise ValueError(
-                f"Unsupported unsafe_l2_threshold_mode: {self.unsafe_l2_threshold_mode}"
-            )
         if self.rank == 0 and self.unsafe_mode == "l2":
-            if self.unsafe_l2_threshold_mode in {"anneal", "linear"}:
-                print(
-                    "Unsafe L2 threshold annealing enabled: "
-                    f"start={self.unsafe_l2_threshold_start}, "
-                    f"end={self.unsafe_l2_threshold_end}, "
-                    f"anneal_iters={self.unsafe_l2_threshold_anneal_iters}",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"Unsafe L2 threshold fixed at {self.unsafe_l2_threshold}",
-                    flush=True,
-                )
+            print(
+                f"Unsafe L2 threshold fixed at {self.unsafe_l2_threshold}",
+                flush=True,
+            )
         if self.rank == 0 and self.switch_back_min_teacher_steps > 0:
             print(
                 "Teacher switch-back hold enabled: "
@@ -415,12 +378,19 @@ class SafeDagger:
                 )
         fp_cfg = self.config.get("failure_predictor", {}) or {}
         fp_ws_model_path = fp_cfg.get("warm_start_model_path", None)
-        self.failure_predictor_warm_start_model_path = None
-        if isinstance(fp_ws_model_path, str) and len(str(fp_ws_model_path).strip()) > 0:
-            fp_path_resolved = str(fp_ws_model_path).strip()
-            if not os.path.isabs(fp_path_resolved):
-                fp_path_resolved = os.path.join(self.run_dir, fp_path_resolved)
-            self.failure_predictor_warm_start_model_path = fp_path_resolved
+        fp_kind = str(fp_cfg.get("type", "critic")).strip().lower()
+        if fp_kind not in {"critic", "legacy"}:
+            fp_kind = "critic"
+        self.failure_predictor_warm_start_model_path = os.path.join(
+            self.nn_dir,
+            f"fp_warmstart_{fp_kind}.pt",
+        )
+        if self.rank == 0 and isinstance(fp_ws_model_path, str) and len(str(fp_ws_model_path).strip()) > 0:
+            print(
+                "Ignoring failure_predictor.warm_start_model_path and using run nn-dir path "
+                "for predictor warm-start checkpoint.",
+                flush=True,
+            )
         if self.rank == 0 and self.failure_predictor_warm_start_model_path is not None:
             print(
                 "Failure predictor warm-start model path: "
@@ -431,6 +401,15 @@ class SafeDagger:
         self.warm_start_enabled = bool(warm_cfg.get("enabled", False))
         self.warm_start_collect_steps = int(warm_cfg.get("collect_steps", 0))
         self.warm_start_predictor_train_steps = int(warm_cfg.get("predictor_train_steps", 0))
+        self.warm_start_predictor_overfit_test = bool(
+            warm_cfg.get("predictor_overfit_test", False)
+        )
+        self.warm_start_predictor_overfit_max_samples = int(
+            warm_cfg.get("predictor_overfit_max_samples", 8192)
+        )
+        self.warm_start_predictor_overfit_chunk_size = int(
+            warm_cfg.get("predictor_overfit_chunk_size", 1024)
+        )
         self.warm_start_ood_force_refit = bool(warm_cfg.get("ood_force_refit", True))
         self.warm_start_save_collected_data = bool(warm_cfg.get("save_collected_data", False))
         self.warm_start_save_steps = int(
@@ -451,6 +430,10 @@ class SafeDagger:
             self.warm_start_save_path = save_path_resolved
         if self.warm_start_collect_steps < 0:
             self.warm_start_collect_steps = 0
+        if self.warm_start_predictor_overfit_max_samples <= 0:
+            self.warm_start_predictor_overfit_max_samples = 1
+        if self.warm_start_predictor_overfit_chunk_size <= 0:
+            self.warm_start_predictor_overfit_chunk_size = 1
         if self.warm_start_save_steps < 0:
             self.warm_start_save_steps = 0
         self.warm_start_save_steps = min(self.warm_start_save_steps, self.warm_start_collect_steps)
@@ -471,6 +454,9 @@ class SafeDagger:
                 "Warm start enabled: "
                 f"collect_steps={self.warm_start_collect_steps}, "
                 f"predictor_train_steps={self.warm_start_predictor_train_steps}, "
+                f"predictor_overfit_test={self.warm_start_predictor_overfit_test}, "
+                f"predictor_overfit_max_samples={self.warm_start_predictor_overfit_max_samples}, "
+                f"predictor_overfit_chunk_size={self.warm_start_predictor_overfit_chunk_size}, "
                 f"ood_force_refit={self.warm_start_ood_force_refit}, "
                 f"save_collected_data={self.warm_start_save_collected_data}, "
                 f"save_steps={self.warm_start_save_steps}, "
@@ -560,6 +546,9 @@ class SafeDagger:
         self.teacher_takeover_steps_remaining = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
         )
+        self._predictor_lift_hold_counts = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
         if self.stereo:
             self.rgb_buffers_left = torch.zeros(
                 (self.num_envs, 3, self.ov_env.cfg.img_height, self.ov_env.cfg.img_width)
@@ -599,6 +588,8 @@ class SafeDagger:
                 model.eval()
         else:
             self.teacher_model.eval()
+        if hasattr(self, "_predictor_lift_hold_counts") and self._predictor_lift_hold_counts is not None:
+            self._predictor_lift_hold_counts.zero_()
         if obs is None:
             obs = self.env.reset()[0]
         return self._run_warm_start(obs)
@@ -611,6 +602,12 @@ class SafeDagger:
                 model.eval()
         else:
             self.teacher_model.eval()
+        # Hardcode online failure-predictor features to student proprio only.
+        if self.failure_predictor is not None and self.failure_predictor.enabled:
+            self.failure_predictor.obs_key = "policy"
+            self.failure_predictor.default_obs_key = "policy"
+        if hasattr(self, "_predictor_lift_hold_counts") and self._predictor_lift_hold_counts is not None:
+            self._predictor_lift_hold_counts.zero_()
         if obs is None:
             obs = self.env.reset()[0]
 
@@ -791,43 +788,17 @@ class SafeDagger:
                     actions_student["mus"], actions_teacher["mus"], weights
                 )
                 l2_loss_mean = l2_loss_per_env.mean()
-                mu_loss = None
-                sigma_loss = None
-                if self.imitation_loss_type == "kl":
-                    kl_per_env, kl_mu_per_env, kl_sigma_per_env = gaussian_kl(
-                        actions_student["mus"],
-                        actions_student["sigmas"],
-                        actions_teacher["mus"],
-                        actions_teacher["sigmas"],
-                    )
-                    imitation_loss = self.reduce_loss(kl_per_env)
-                    mu_loss = self.reduce_loss(kl_mu_per_env)
-                    sigma_loss = self.reduce_loss(kl_sigma_per_env)
-                elif self.imitation_loss_type == "nll":
-                    nll_per_env = gaussian_nll(
-                        actions_student["mus"],
-                        actions_student["sigmas"],
-                        actions_teacher["actions"],
-                    )
-                    imitation_loss = self.reduce_loss(nll_per_env)
-                elif self.imitation_loss_type == "mse":
-                    mse_per_env = torch.mean(
-                        (actions_student["actions"] - actions_teacher["actions"]) ** 2, dim=-1
-                    )
-                    imitation_loss = self.reduce_loss(mse_per_env)
-                    mu_loss = imitation_loss
-                else:
-                    mu_loss = self.loss(
-                        actions_student["mus"], actions_teacher["mus"],
-                        fn="weighted_l2", weights=weights
-                    )
-                    sigma_loss = self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
-                    imitation_loss = mu_loss + sigma_loss
+                mu_loss = self.loss(
+                    actions_student["mus"], actions_teacher["mus"],
+                    fn="weighted_l2", weights=weights
+                )
+                sigma_loss = self.loss(actions_student["sigmas"], actions_teacher["sigmas"])
+                imitation_loss = mu_loss + sigma_loss
                 aux_sum = sum(aux_loss) if aux_loss else 0.0
                 aux_sum_tensor = aux_sum if torch.is_tensor(aux_sum) else torch.tensor(aux_sum, device=self.device)
                 total_loss_step = imitation_loss + self.aux_coeff * aux_sum_tensor
                 total_loss += total_loss_step
-                current_l2_threshold = self._current_unsafe_l2_threshold(log_counter)
+                current_l2_threshold = self._current_unsafe_l2_threshold()
                 unsafe_raw = self.check_unsafe(
                     l2_loss_per_env=l2_loss_per_env,
                     obs=obs,
@@ -905,12 +876,17 @@ class SafeDagger:
                     self.teacher_takeover_steps_remaining[active_hold] -= 1
             if self.failure_predictor is not None and self.failure_predictor.enabled:
                 done_mask = out_of_reach | timed_out
+                lift_success = self._compute_lift_success_mask(
+                    out_of_reach=out_of_reach,
+                    timed_out=timed_out,
+                )
                 if isinstance(info, dict):
                     fp_info = dict(info)
                 else:
                     fp_info = {}
                 fp_info.setdefault("out_of_reach", out_of_reach)
                 fp_info.setdefault("timed_out", timed_out)
+                fp_info["lift_success"] = lift_success
                 if getattr(self.failure_predictor, "supports_next_obs", False):
                     fp_key = getattr(self.failure_predictor, "obs_key", None) or getattr(
                         self.failure_predictor, "default_obs_key", None
@@ -928,6 +904,7 @@ class SafeDagger:
                         "info": {
                             "out_of_reach": out_of_reach.detach().clone(),
                             "timed_out": timed_out.detach().clone(),
+                            "lift_success": lift_success.detach().clone(),
                         },
                     }
                     fp_loss = None
@@ -1160,12 +1137,7 @@ class SafeDagger:
             if mode == "both" and self.failure_predictor is not None and self.failure_predictor.enabled:
                 # Enforce explicit checkpoint boundary:
                 # warmstart must persist predictor, then both-mode online reloads that exact artifact.
-                if not self._save_failure_predictor_warm_start_model():
-                    raise ValueError(
-                        "Pipeline mode 'both' with enabled failure predictor requires "
-                        "'failure_predictor.warm_start_model_path' so warmstart can save "
-                        "and online stage can load the exact same checkpoint."
-                    )
+                self._save_failure_predictor_warm_start_model()
                 self._load_failure_predictor_warm_start_model()
             else:
                 self._save_failure_predictor_warm_start_model()
@@ -1519,14 +1491,26 @@ class SafeDagger:
                 else:
                     unsafe_pred = unsafe_pred.to(device=self.device, dtype=torch.bool)
 
-                # Critic mode: gate interventions by either risk critic or teacher-student disagreement.
-                predictor_class_name = self.failure_predictor.__class__.__name__.lower()
-                is_critic_mode = "critic" in predictor_class_name
-                if is_critic_mode and l2_loss_per_env is not None:
+                # Legacy predictor: use predictor AND action-disagreement gate.
+                if isinstance(self.failure_predictor, FailurePredictor):
+                    if l2_loss_per_env is None:
+                        return unsafe_pred
+                    threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
+                    unsafe_l2 = l2_loss_per_env > threshold
+                    # return unsafe_pred & unsafe_l2
+                    return unsafe_l2
+                # Critic predictor: use predictor AND action-disagreement gate.
+                if isinstance(self.failure_predictor, FailurePredictorCritic):
+                    if l2_loss_per_env is None:
+                        return unsafe_pred
                     threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
                     unsafe_l2 = l2_loss_per_env > threshold
                     return unsafe_pred & unsafe_l2
-                return unsafe_pred
+                raise ValueError(
+                    "Unsupported failure predictor class: "
+                    f"{self.failure_predictor.__class__.__name__}. "
+                    "Expected FailurePredictor (legacy) or FailurePredictorCritic."
+                )
             if l2_loss_per_env is not None:
                 threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
                 return l2_loss_per_env > threshold
@@ -1543,13 +1527,7 @@ class SafeDagger:
                 return torch.as_tensor(info["in_unsafe_region"], device=self.device, dtype=torch.bool)
         return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-    def _current_unsafe_l2_threshold(self, log_counter):
-        if self.unsafe_l2_threshold_mode in {"anneal", "linear"}:
-            denom = max(1, self.unsafe_l2_threshold_anneal_iters)
-            progress = min(max(float(log_counter), 0.0), float(denom)) / float(denom)
-            return self.unsafe_l2_threshold_start + progress * (
-                self.unsafe_l2_threshold_end - self.unsafe_l2_threshold_start
-            )
+    def _current_unsafe_l2_threshold(self):
         return self.unsafe_l2_threshold
 
     def _requires_ood_policy_embed(self):
@@ -1563,6 +1541,73 @@ class SafeDagger:
             fp_key = getattr(self.failure_predictor, "obs_key", None) or fp_default
             needs = needs or (fp_key == "ood_policy_embed")
         return needs
+
+    def _compute_lift_success_mask(self, out_of_reach=None, timed_out=None, ov_env=None):
+        """Compute per-env hold-gated lift success aligned with eval semantics."""
+        env_ref = self.ov_env if ov_env is None else ov_env
+        if env_ref is None or not hasattr(env_ref, "object_pos"):
+            return torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+
+        num_envs = int(getattr(env_ref, "num_envs", self.num_envs))
+        if (
+            not hasattr(self, "_predictor_lift_hold_counts")
+            or self._predictor_lift_hold_counts is None
+            or int(self._predictor_lift_hold_counts.shape[0]) != num_envs
+        ):
+            self._predictor_lift_hold_counts = torch.zeros(
+                num_envs, dtype=torch.long, device=self.device
+            )
+
+        done_mask = torch.zeros((num_envs,), dtype=torch.bool, device=self.device)
+        for v in (out_of_reach, timed_out):
+            if v is None:
+                continue
+            t = torch.as_tensor(v, device=self.device).reshape(-1).to(dtype=torch.bool)
+            if t.numel() == 1:
+                t = t.repeat(num_envs)
+            if t.numel() != num_envs:
+                raise ValueError(
+                    f"lift-success done mask size mismatch: expected {num_envs}, got {t.numel()}."
+                )
+            done_mask = done_mask | t
+
+        table_center_z = env_ref.cfg.table_cfg.init_state.pos[2]
+        table_top_z = table_center_z + 0.5 * env_ref.cfg.table_size_z
+        lift_height_thresh = table_top_z + getattr(env_ref.cfg, "object_height_thresh", 0.0)
+        lift_success_step = env_ref.object_pos[:, 2].to(device=self.device) > lift_height_thresh
+
+        if hasattr(env_ref, "good_grasp_mask") and env_ref.good_grasp_mask is not None:
+            contact_mask = env_ref.good_grasp_mask.to(device=self.device, dtype=torch.bool)
+        elif hasattr(env_ref, "object_contact_counts") and env_ref.object_contact_counts is not None:
+            contact_mask = env_ref.object_contact_counts.to(device=self.device) > 0.0
+        else:
+            contact_mask = torch.ones_like(lift_success_step, dtype=torch.bool)
+        lift_success_step = lift_success_step & contact_mask
+
+        sim_dt = getattr(env_ref.cfg, "sim_dt", None)
+        if sim_dt is None and hasattr(env_ref.cfg, "sim"):
+            sim_dt = getattr(env_ref.cfg.sim, "dt", None)
+        decimation = getattr(env_ref.cfg, "decimation", 1)
+        step_dt = float(sim_dt * decimation) if sim_dt is not None else 0.0
+        hold_steps = 1
+        if self.eval_lift_hold_s > 0.0 and step_dt > 0.0:
+            hold_steps = max(1, int(math.ceil(self.eval_lift_hold_s / step_dt)))
+
+        active_envs = ~done_mask
+        self._predictor_lift_hold_counts = torch.where(
+            active_envs & lift_success_step,
+            self._predictor_lift_hold_counts + 1,
+            torch.where(active_envs, torch.zeros_like(self._predictor_lift_hold_counts), self._predictor_lift_hold_counts),
+        )
+        lift_success_hold = self._predictor_lift_hold_counts >= hold_steps
+
+        # Prevent leakage across auto-reset episode boundaries.
+        self._predictor_lift_hold_counts = torch.where(
+            done_mask,
+            torch.zeros_like(self._predictor_lift_hold_counts),
+            self._predictor_lift_hold_counts,
+        )
+        return lift_success_hold
 
     # --- Safety Model Builders ---
     def _build_failure_predictor(self, cfg):
@@ -1691,23 +1736,6 @@ class SafeDagger:
         aux = None
         embeds = None
         if policy_type == "student":
-            # real_world_idx = 1
-            # real_world_names = ["obs.pth", "obs2.pth"]
-            # gt_pos = [[-0.7, 0.08, 0.295], [-0.65, 0.25, 0.3]]
-            # real_obs = torch.load(real_world_names[real_world_idx])
-            # gt_pos = torch.tensor(gt_pos[real_world_idx]).reshape(1, 3).to(self.device)
-            # arm_positions = [
-            #     -0.7875749180783324, -0.4724239581655329, 0.6733201341853008,
-            #     1.211750626464511, -1.7481902752912126, 0.9306101177413156, 0.6660046636382199
-            # ]
-            # hand_positions = [
-            #     -0.018107680695800783, 0.22323929877421064, 0.7489833809370932, 0.9548251041408286,
-            #     -0.013491997381184897, 0.34635377487752284, 0.8157332627176921, 0.8537238869226075,
-            #     -0.0008876314066569011, 0.4619233840242513, 0.8937560633628338, 0.8243432873622641,
-            #     1.175845324398397, 0.3547862732407634, 0.3690771388879395, 0.286438654928182
-            # ]
-            # robot_q = torch.tensor(arm_positions + hand_positions).to(self.device)
-            # obs[self.student_obs_type][:, :len(robot_q)] = robot_q
             batch_dict = {
                 "is_train": True,
                 # "obs": real_obs["proprio"].to(self.device).repeat(2,1),
@@ -2043,34 +2071,6 @@ class SafeDagger:
             [loss.unsqueeze(1)], rnn_masks
         )
         return losses[0]
-
-    def _resolve_imitation_loss_type(self):
-        target = self.config.get("imitation_target", None)
-        loss_type = self.config.get("loss_type", None)
-        if target is None and loss_type is None:
-            return self.config.get("imitation_loss_type", "kl")
-        if target is None or loss_type is None:
-            raise ValueError(
-                "Both imitation_target and loss_type must be set together "
-                "(e.g., --imitation_target action_distribution --loss_type l2)."
-            )
-        target = str(target).lower()
-        loss_type = str(loss_type).lower()
-        if target not in {"action_distribution", "sampled_action"}:
-            raise ValueError(f"Unsupported imitation_target: {target}")
-        if loss_type not in {"kl", "nll", "l2", "mse"}:
-            raise ValueError(f"Unsupported loss_type: {loss_type}")
-        if target == "action_distribution" and loss_type not in {"kl", "nll", "l2"}:
-            raise ValueError(
-                "loss_type 'mse' requires imitation_target 'sampled_action'."
-            )
-        if target == "sampled_action" and loss_type not in {"mse"}:
-            raise ValueError(
-                "sampled_action only supports loss_type 'mse' in this implementation."
-            )
-        if self.rank == 0:
-            print(f"Using imitation_target={target}, loss_type={loss_type}")
-        return loss_type
 
     # --- Config and Checkpoint I/O ---
     def set_weights(self, ckpt, policy_type, model_override=None):
