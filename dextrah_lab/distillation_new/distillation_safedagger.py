@@ -43,7 +43,6 @@ from dextrah_lab.distillation_new.distill_warm_start import DistillWarmStart
 from dextrah_lab.distillation_new.eval_utils import (
     UNSAFE_REASON_NAMES,
     classify_out_of_reach_reasons,
-    unsafe_reason_percentages_from_counts,
 )
 
 # Imitation loss:
@@ -1058,7 +1057,7 @@ class SafeDagger:
                     eval_lift,
                     eval_reward,
                     eval_unsafe,
-                    eval_unsafe_reason_pct,
+                    eval_unsafe_reason_prop,
                     eval_per_object_metrics,
                 ) = self.evaluate_student(self.eval_num_episodes)
                 if self.rank == 0 and eval_lift is not None:
@@ -1067,8 +1066,8 @@ class SafeDagger:
                     self.writer.add_scalar("eval/avg/unsafe_episode_rate", eval_unsafe, self.frame)
                     for name in self.unsafe_reason_names:
                         self.writer.add_scalar(
-                            f"eval/avg/unsafe_reason_pct/{name}",
-                            eval_unsafe_reason_pct.get(name, 0.0),
+                            f"eval/avg/unsafe_reason_prop/{name}",
+                            eval_unsafe_reason_prop.get(name, 0.0),
                             self.frame,
                         )
                     for object_name, object_metrics in eval_per_object_metrics.items():
@@ -1083,11 +1082,11 @@ class SafeDagger:
                             object_metrics.get("unsafe_episode_rate", 0.0),
                             self.frame,
                         )
-                        reason_pct = object_metrics.get("unsafe_reason_pct", {})
+                        reason_prop = object_metrics.get("unsafe_reason_prop", {})
                         for reason_name in self.unsafe_reason_names:
                             self.writer.add_scalar(
-                                f"eval/{object_tag_name}/unsafe_reason_pct/{reason_name}",
-                                float(reason_pct.get(reason_name, 0.0)),
+                                f"eval/{object_tag_name}/unsafe_reason_prop/{reason_name}",
+                                float(reason_prop.get(reason_name, 0.0)),
                                 self.frame,
                             )
                     self.writer.flush()
@@ -1095,7 +1094,7 @@ class SafeDagger:
                         f"Eval lift_success: {eval_lift:.3f} | avg_reward: {eval_reward:.3f} | "
                         f"unsafe_episode_rate: {eval_unsafe:.3f} | "
                         + " | ".join(
-                            [f"unsafe_reason_pct/{name}: {eval_unsafe_reason_pct.get(name, 0.0):.1f}%"
+                            [f"unsafe_reason_prop/{name}: {eval_unsafe_reason_prop.get(name, 0.0):.3f}"
                              for name in self.unsafe_reason_names]
                         ),
                         flush=True,
@@ -1220,19 +1219,12 @@ class SafeDagger:
             mean_lengths = self.game_lengths.get_mean()
             mean_unsafe_terminated = self.game_unsafe_terminated.get_mean()
             unsafe_episode_rate = float(np.asarray(mean_unsafe_terminated).reshape(-1)[0])
-            unsafe_reason_rates = {
+            unsafe_reason_prop = {
                 name: float(np.asarray(self.game_unsafe_reason[name].get_mean()).reshape(-1)[0])
                 for name in self.unsafe_reason_names
             }
-            if unsafe_episode_rate > 0.0:
-                unsafe_reason_pct = {
-                    name: 100.0 * rate / unsafe_episode_rate
-                    for name, rate in unsafe_reason_rates.items()
-                }
-            else:
-                unsafe_reason_pct = {name: 0.0 for name in self.unsafe_reason_names}
             unsafe_episode_rate_by_object = {}
-            unsafe_reason_pct_by_object = {}
+            unsafe_reason_prop_by_object = {}
             for object_name in self.metric_object_names:
                 object_unsafe_meter = self.game_unsafe_terminated_by_object[object_name]
                 if object_unsafe_meter.current_size > 0:
@@ -1247,15 +1239,10 @@ class SafeDagger:
                         object_reason_rates[reason_name] = float(np.asarray(reason_meter.get_mean()).reshape(-1)[0])
                     else:
                         object_reason_rates[reason_name] = 0.0
-                if object_unsafe_rate > 0.0:
-                    unsafe_reason_pct_by_object[object_name] = {
-                        reason_name: 100.0 * object_reason_rates[reason_name] / object_unsafe_rate
-                        for reason_name in self.unsafe_reason_names
-                    }
-                else:
-                    unsafe_reason_pct_by_object[object_name] = {
-                        reason_name: 0.0 for reason_name in self.unsafe_reason_names
-                    }
+                unsafe_reason_prop_by_object[object_name] = {
+                    reason_name: object_reason_rates[reason_name]
+                    for reason_name in self.unsafe_reason_names
+                }
             self.mean_rewards = mean_rewards[0]
             for i in range(self.value_size):
                 rewards_name = "rewards" if i == 0 else "rewards{0}".format(i)
@@ -1288,8 +1275,8 @@ class SafeDagger:
                 )
                 for name in self.unsafe_reason_names:
                     self.writer.add_scalar(
-                        f"train/avg/unsafe_reason_pct/{name}",
-                        unsafe_reason_pct[name],
+                        f"train/avg/unsafe_reason_prop/{name}",
+                        unsafe_reason_prop[name],
                         self.frame,
                     )
                 for object_name in self.metric_object_names:
@@ -1301,8 +1288,8 @@ class SafeDagger:
                     )
                     for reason_name in self.unsafe_reason_names:
                         self.writer.add_scalar(
-                            f"train/{object_tag_name}/unsafe_reason_pct/{reason_name}",
-                            unsafe_reason_pct_by_object[object_name][reason_name],
+                            f"train/{object_tag_name}/unsafe_reason_prop/{reason_name}",
+                            unsafe_reason_prop_by_object[object_name][reason_name],
                             self.frame,
                         )
                 self.writer.add_scalar(
@@ -1332,7 +1319,7 @@ class SafeDagger:
                         "beta": beta,
                         "train/avg/unsafe_episode_rate": unsafe_episode_rate,
                         **{
-                            f"train/avg/unsafe_reason_pct/{name}": unsafe_reason_pct[name]
+                            f"train/avg/unsafe_reason_prop/{name}": unsafe_reason_prop[name]
                             for name in self.unsafe_reason_names
                         },
                         **{
@@ -1341,8 +1328,8 @@ class SafeDagger:
                             for object_name in self.metric_object_names
                         },
                         **{
-                            f"train/{self.metric_object_tag_names[object_name]}/unsafe_reason_pct/{reason_name}":
-                            unsafe_reason_pct_by_object[object_name][reason_name]
+                            f"train/{self.metric_object_tag_names[object_name]}/unsafe_reason_prop/{reason_name}":
+                            unsafe_reason_prop_by_object[object_name][reason_name]
                             for object_name in self.metric_object_names
                             for reason_name in self.unsafe_reason_names
                         },
@@ -1401,7 +1388,7 @@ class SafeDagger:
                 print("\tin_success_region: ", perf)
                 print("\tunsafe_episode_rate: ", mean_unsafe_terminated)
                 for name in self.unsafe_reason_names:
-                    print(f"\tunsafe_reason_pct/{name}: {unsafe_reason_pct[name]:.2f}")
+                    print(f"\tunsafe_reason_prop/{name}: {unsafe_reason_prop[name]:.4f}")
                 fp_pos_stats = self._failure_predictor_positive_stats()
                 if fp_pos_stats is not None:
                     pos_count, total_count, pos_pct = fp_pos_stats
@@ -1874,6 +1861,10 @@ class SafeDagger:
             elif eval_object_idx.numel() > num_envs:
                 eval_object_idx = eval_object_idx[:num_envs]
         eval_object_idx = torch.clamp(eval_object_idx, min=0, max=len(eval_object_names) - 1)
+        eval_object_env_counts = {
+            object_name: int((eval_object_idx == idx).sum().item())
+            for idx, object_name in enumerate(eval_object_names)
+        }
         sim_dt = getattr(eval_ov_env.cfg, "sim_dt", None)
         if sim_dt is None and hasattr(eval_ov_env.cfg, "sim"):
             sim_dt = getattr(eval_ov_env.cfg.sim, "dt", None)
@@ -1905,7 +1896,6 @@ class SafeDagger:
         reward_means = []
         unsafe_rates = []
         total_reason_counts = {name: 0 for name in self.unsafe_reason_names}
-        total_unsafe_eps = 0
         per_object_lift_series = {
             object_name: [] for object_name in eval_object_names
         }
@@ -1914,10 +1904,6 @@ class SafeDagger:
         }
         per_object_reason_counts_total = {
             object_name: {name: 0 for name in self.unsafe_reason_names}
-            for object_name in eval_object_names
-        }
-        per_object_unsafe_total = {
-            object_name: 0
             for object_name in eval_object_names
         }
         with torch.no_grad():
@@ -1985,14 +1971,13 @@ class SafeDagger:
                 success_rates.append(ever_lifted.float().mean().item())
                 reward_means.append(reward_sum.mean().item())
                 unsafe_rates.append(ever_unsafe_terminated.float().mean().item())
-                reason_counts, unsafe_count = _reason_counts_checked(
+                reason_counts, _ = _reason_counts_checked(
                     reason_idx=unsafe_reason_idx,
                     unsafe_mask=ever_unsafe_terminated,
                     reason_names=self.unsafe_reason_names,
                     reason_to_idx=self.unsafe_reason_to_idx,
                     warn_label=None,
                 )
-                total_unsafe_eps += unsafe_count
                 for name in self.unsafe_reason_names:
                     total_reason_counts[name] += int(reason_counts[name])
                 for obj_idx, object_name in enumerate(eval_object_names):
@@ -2005,32 +1990,32 @@ class SafeDagger:
                     per_object_unsafe_rate_series[object_name].append(
                         ever_unsafe_terminated[obj_mask].float().mean().item()
                     )
-                    obj_reason_counts, obj_unsafe_count = _reason_counts_checked(
+                    obj_reason_counts, _ = _reason_counts_checked(
                         reason_idx=unsafe_reason_idx[obj_mask],
                         unsafe_mask=ever_unsafe_terminated[obj_mask],
                         reason_names=self.unsafe_reason_names,
                         reason_to_idx=self.unsafe_reason_to_idx,
                         warn_label=None,
                     )
-                    per_object_unsafe_total[object_name] += int(obj_unsafe_count)
                     for reason_name in self.unsafe_reason_names:
                         per_object_reason_counts_total[object_name][reason_name] += int(
                             obj_reason_counts[reason_name]
                         )
         if was_training:
             self.student_model.train()
-        eval_reason_pct = unsafe_reason_percentages_from_counts(
-            total_reason_counts,
-            total_unsafe_eps,
-            self.unsafe_reason_names,
-        )
+        total_eval_episodes = max(1, int(num_episodes * num_envs))
+        eval_reason_prop = {
+            name: float(total_reason_counts.get(name, 0)) / float(total_eval_episodes)
+            for name in self.unsafe_reason_names
+        }
         eval_per_object_metrics = {}
         for object_name in eval_object_names:
-            obj_reason_pct = unsafe_reason_percentages_from_counts(
-                per_object_reason_counts_total[object_name],
-                int(per_object_unsafe_total[object_name]),
-                self.unsafe_reason_names,
-            )
+            total_obj_episodes = max(1, int(num_episodes * eval_object_env_counts.get(object_name, 0)))
+            obj_reason_prop = {
+                name: float(per_object_reason_counts_total[object_name].get(name, 0))
+                / float(total_obj_episodes)
+                for name in self.unsafe_reason_names
+            }
             eval_per_object_metrics[object_name] = {
                 "lift_success": (
                     float(np.mean(per_object_lift_series[object_name]))
@@ -2042,8 +2027,8 @@ class SafeDagger:
                     if len(per_object_unsafe_rate_series[object_name]) > 0
                     else 0.0
                 ),
-                "unsafe_reason_pct": {
-                    name: float(obj_reason_pct.get(name, 0.0))
+                "unsafe_reason_prop": {
+                    name: float(obj_reason_prop.get(name, 0.0))
                     for name in self.unsafe_reason_names
                 },
             }
@@ -2051,7 +2036,7 @@ class SafeDagger:
             float(np.mean(success_rates)),
             float(np.mean(reward_means)),
             float(np.mean(unsafe_rates)),
-            eval_reason_pct,
+            eval_reason_prop,
             eval_per_object_metrics,
         )
 

@@ -1,12 +1,12 @@
-"""Evaluate a checkpoint of an RL-Games agent and report lift success/unsafe rate.
+"""Evaluate teacher policy checkpoints and report lift success/unsafe rate.
 
 Example usage:
-    python dextrah_lab/rl_games/eval.py \
+    python dextrah_lab/rl_games/eval_teacher.py \
         --task Dextrah-TG2-InspireHand-Direct-v0 \
         --eval_episodes 10 \
         --checkpoint /path/to/checkpoint.pth
 
-    python dextrah_lab/rl_games/eval.py \
+    python dextrah_lab/rl_games/eval_teacher.py \
         --task Dextrah-TG2-InspireHand-Direct-v0 \
         --eval_episodes 10 \
         --teacher_policy_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/multi_object_distillation \
@@ -20,10 +20,10 @@ import json
 from isaaclab.app import AppLauncher
 
 # CLI
-parser = argparse.ArgumentParser(description="Evaluate a checkpoint of an RL-Games agent.")
-parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
+parser = argparse.ArgumentParser(description="Evaluate teacher policies (single checkpoint or teacher folder).")
+parser.add_argument("--num_envs", type=int, default=32, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
+parser.add_argument("--checkpoint", type=str, default=None, help="Path to single teacher model checkpoint.")
 parser.add_argument(
     "--teacher_policy_dir",
     type=str,
@@ -65,6 +65,17 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--file_name_head",
+    type=str,
+    default=None,
+    help=(
+        "Optional output JSON filename prefix override. "
+        "Example: --file_name_head student_eval_metrics "
+        "produces <prefix>_<timestamp>.json. "
+        "If unset, defaults remain teacher_eval_metrics / eval_metrics."
+    ),
+)
+parser.add_argument(
     "--tb_logdir",
     type=str,
     default=None,
@@ -85,7 +96,6 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import math
 import numpy as np
-import os
 import pathlib
 import shutil
 import time
@@ -103,7 +113,7 @@ except Exception:
 from isaaclab.utils.assets import retrieve_file_path
 
 import isaaclab_tasks  # noqa: F401
-from isaaclab_tasks.utils import get_checkpoint_path, load_cfg_from_registry, parse_env_cfg
+from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
 import dextrah_lab.tasks.dextrah_kuka_allegro.gym_setup
@@ -256,15 +266,11 @@ def _resolve_checkpoint_path(agent_cfg: dict, explicit_checkpoint: str | None = 
     if explicit_checkpoint is not None:
         return retrieve_file_path(explicit_checkpoint)
 
-    if args_cli.checkpoint is not None:
-        return retrieve_file_path(args_cli.checkpoint)
-
-    log_root_path = os.path.join("logs", "rl_games", agent_cfg["params"]["config"]["name"])
-    log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    run_dir = agent_cfg["params"]["config"].get("full_experiment_name", ".*")
-    checkpoint_file = f"{agent_cfg['params']['config']['name']}.pth"
-    return get_checkpoint_path(log_root_path, run_dir, checkpoint_file, other_dirs=["nn"])
+    if args_cli.checkpoint is None:
+        raise ValueError(
+            "Single teacher checkpoint mode requires --checkpoint."
+        )
+    return retrieve_file_path(args_cli.checkpoint)
 
 
 def _resolve_eval_max_steps(eval_env) -> int:
@@ -394,6 +400,11 @@ def _to_jsonable(value):
 
 def _save_metrics_json(metrics_payload: dict, teacher_mode: bool) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    custom_head = None
+    if isinstance(args_cli.file_name_head, str):
+        candidate = args_cli.file_name_head.strip()
+        if len(candidate) > 0:
+            custom_head = candidate
     if args_cli.metrics_output_npy is not None:
         raw_output_path = pathlib.Path(args_cli.metrics_output_npy).expanduser()
         if not raw_output_path.is_absolute():
@@ -402,13 +413,17 @@ def _save_metrics_json(metrics_payload: dict, teacher_mode: bool) -> None:
             else:
                 raw_output_path = _default_logs_root() / raw_output_path
         raw_output_path = raw_output_path.resolve()
-        output_path = raw_output_path.with_name(f"{raw_output_path.stem}_{timestamp}.json")
+        stem = custom_head if custom_head is not None else raw_output_path.stem
+        output_path = raw_output_path.with_name(f"{stem}_{timestamp}.json")
     else:
-        default_name = (
-            f"teacher_eval_metrics_{timestamp}.json"
-            if teacher_mode
-            else f"eval_metrics_{timestamp}.json"
-        )
+        if custom_head is not None:
+            default_name = f"{custom_head}_{timestamp}.json"
+        else:
+            default_name = (
+                f"teacher_eval_metrics_{timestamp}.json"
+                if teacher_mode
+                else f"eval_metrics_{timestamp}.json"
+            )
         if _TB_LOGDIR_HOLDER["path"] is not None:
             output_path = pathlib.Path(_TB_LOGDIR_HOLDER["path"]) / default_name
         else:
@@ -1020,6 +1035,16 @@ def main():
         raise ValueError("--eval_episodes must be > 0 for evaluation.")
     if (args_cli.teacher_policy_dir is None) != (args_cli.teacher_object_dir is None):
         raise ValueError("Provide both --teacher_policy_dir and --teacher_object_dir together.")
+    if args_cli.teacher_policy_dir is not None and args_cli.checkpoint is not None:
+        raise ValueError(
+            "Choose one teacher eval mode: either --checkpoint (single) "
+            "or --teacher_policy_dir/--teacher_object_dir (batch)."
+        )
+    if args_cli.teacher_policy_dir is None and args_cli.checkpoint is None:
+        raise ValueError(
+            "Teacher eval requires either --checkpoint (single mode) "
+            "or --teacher_policy_dir and --teacher_object_dir (batch mode)."
+        )
     _register_rlgames_env()
     tb_writer = None
 

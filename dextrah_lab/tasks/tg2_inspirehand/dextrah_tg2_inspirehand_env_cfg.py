@@ -122,7 +122,8 @@ class DextrahTG2InspirehandEnvCfg(DirectRLEnvCfg):
                         "multi_objects",
                         "_single_object",
                         "playback",
-                        "distill_multi_objects"
+                        "distill_multi_objects",
+                        "unseen_objects"
                         ]
 
     # Toggle for using cuda graph
