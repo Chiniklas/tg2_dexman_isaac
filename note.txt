@@ -356,10 +356,11 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   --enable_cameras \
   --task dextrah_tg2_inspirehand \
   --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-safedagger_24-05-44-09/nn/dextrah_student_safe_dagger.pth.pth \
-  --objects_dir unseen_objects \
+  --objects_dir distill_multi_objects \
   --num_envs 32 \
-  --num_episodes 5 \
+  --num_episodes 3 \
   --file_name_head student_eval_metrics \
   --metrics_output_json /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/eval_results/student_eval_metrics.json \
+  env.enable_adr=False \
   env.distillation=True \
   env.simulate_stereo=True

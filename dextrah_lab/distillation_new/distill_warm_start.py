@@ -34,19 +34,18 @@ class DistillWarmStart:
             )
         obs["ood_policy_embed"] = obs["policy"]
 
-    def _snapshot_warm_obs(self, obs, env_indices, include_images=False):
+    def _snapshot_warm_obs(self, obs, env_indices):
         obs_snapshot = {}
-        capture_keys = [self.a.student_obs_type, "ood_policy_embed"]
-        if include_images:
-            for key in ("img", "rgb", "img_left", "img_right"):
-                if key in obs:
-                    capture_keys.append(key)
+        capture_keys = [
+            "predictor_transition",
+            self.a.student_obs_type,
+            self.a.teacher_obs_type,
+            # "ood_policy_embed",
+        ]
         for key in capture_keys:
             if key not in obs:
-                continue
+                raise KeyError(f"[WarmStart] Required obs key '{key}' is missing.")
             tensor = obs[key].detach().index_select(0, env_indices).to("cpu")
-            if key in {"img", "rgb", "img_left", "img_right"}:
-                tensor = tensor.to(dtype=torch.float16)
             obs_snapshot[key] = tensor
         return obs_snapshot
 
@@ -54,9 +53,7 @@ class DistillWarmStart:
         if self.a.rank != 0:
             return
         if self.a.warm_start_save_path is None:
-            print("[WarmStart] save_collected_data is enabled but no save_path was resolved.", flush=True)
-            return
-        image_keys = {"img", "rgb", "img_left", "img_right"}
+            raise ValueError("[WarmStart] save_collected_data is enabled but no save_path was resolved.")
         samples_to_save = []
         positive_count = 0
         total_count = 0
@@ -66,32 +63,21 @@ class DistillWarmStart:
         )
         positive_label_key = "lift_success" if is_legacy_success_predictor else "out_of_reach"
         for sample in collected_samples:
-            obs_src = sample.get("obs", {})
-            obs_dst = {}
-            if "ood_policy_embed" in obs_src:
-                obs_dst["ood_policy_embed"] = obs_src["ood_policy_embed"]
-            if self.a.student_obs_type in obs_src:
-                obs_dst[self.a.student_obs_type] = obs_src[self.a.student_obs_type]
-            if self.a.warm_start_save_images:
-                for key in image_keys:
-                    if key in obs_src:
-                        obs_dst[key] = obs_src[key]
-            sample_dst = dict(sample)
-            sample_dst["obs"] = obs_dst
-            samples_to_save.append(sample_dst)
-            positive_label = sample.get(positive_label_key, None)
-            if torch.is_tensor(positive_label):
-                mask = positive_label.detach().to(dtype=torch.bool).reshape(-1)
-                positive_count += int(mask.sum().item())
-                total_count += int(mask.numel())
+            if positive_label_key not in sample:
+                raise KeyError(
+                    f"[WarmStart] Collected sample is missing required label key '{positive_label_key}'."
+                )
+            samples_to_save.append(sample)
+            positive_label = sample[positive_label_key]
+            mask = positive_label.detach().to(dtype=torch.bool).reshape(-1)
+            positive_count += int(mask.sum().item())
+            total_count += int(mask.numel())
         payload = {
             "metadata": {
                 "student_obs_type": self.a.student_obs_type,
-                "safety_obs_key": "policy",
+                "teacher_obs_type": self.a.teacher_obs_type,
+                "safety_obs_key": "predictor_transition",
                 "collect_steps": int(self.a.warm_start_collect_steps),
-                "saved_steps": int(self.a.warm_start_save_steps),
-                "saved_envs": int(self.a.warm_start_save_envs),
-                "save_images": bool(self.a.warm_start_save_images),
                 "num_saved_samples": int(len(samples_to_save)),
                 "positive_label_key": positive_label_key,
             },
@@ -112,10 +98,7 @@ class DistillWarmStart:
 
     def _warm_start_collect(self, obs):
         collected_samples = []
-        save_steps = min(self.a.warm_start_collect_steps, self.a.warm_start_save_steps)
-        save_env_ids = torch.arange(
-            self.a.warm_start_save_envs, dtype=torch.long, device=self.a.device
-        )
+        all_env_ids = torch.arange(self.a.num_envs, dtype=torch.long, device=self.a.device)
         if self.a.rank == 0:
             print(
                 f"[WarmStart] Collecting bootstrap data for {self.a.warm_start_collect_steps} steps.",
@@ -129,34 +112,27 @@ class DistillWarmStart:
                 self._prepare_ood_policy_embed(obs, step)
                 teacher_out = self.a.get_actions(obs, "teacher")
                 teacher_actions = teacher_out["actions"].detach()
-
-                if step < save_steps:
-                    obs_snapshot = self._snapshot_warm_obs(
-                        obs,
-                        save_env_ids,
-                        include_images=self.a.warm_start_save_images,
-                    )
-                    collected_samples.append(
-                        {
-                            "step": int(step),
-                            "obs": obs_snapshot,
-                            "teacher_mus": teacher_out["mus"].detach().index_select(0, save_env_ids).to("cpu"),
-                            "teacher_sigmas": teacher_out["sigmas"].detach().index_select(0, save_env_ids).to("cpu"),
-                            "teacher_actions": teacher_out["actions"].detach().index_select(0, save_env_ids).to("cpu"),
-                        }
-                    )
+                obs_snapshot = self._snapshot_warm_obs(obs, all_env_ids)
+                collected_samples.append(
+                    {
+                        "step": int(step),
+                        "obs": obs_snapshot,
+                        "teacher_mus": teacher_out["mus"].detach().to("cpu"),
+                        "teacher_sigmas": teacher_out["sigmas"].detach().to("cpu"),
+                        "teacher_actions": teacher_actions.to("cpu"),
+                    }
+                )
 
                 obs, rew, out_of_reach, timed_out, _ = self.a.env.step(teacher_actions)
                 lift_success = self.a._compute_lift_success_mask(
                     out_of_reach=out_of_reach,
                     timed_out=timed_out,
                 )
-                if step < save_steps and len(collected_samples) > 0:
-                    sample = collected_samples[-1]
-                    sample["reward"] = rew.detach().index_select(0, save_env_ids).to("cpu")
-                    sample["out_of_reach"] = out_of_reach.detach().index_select(0, save_env_ids).to("cpu")
-                    sample["timed_out"] = timed_out.detach().index_select(0, save_env_ids).to("cpu")
-                    sample["lift_success"] = lift_success.detach().index_select(0, save_env_ids).to("cpu")
+                sample = collected_samples[-1]
+                sample["reward"] = rew.detach().to("cpu")
+                sample["out_of_reach"] = out_of_reach.detach().to("cpu")
+                sample["timed_out"] = timed_out.detach().to("cpu")
+                sample["lift_success"] = lift_success.detach().to("cpu")
 
                 done_idx = (out_of_reach | timed_out).nonzero(as_tuple=False)
                 if self.a.is_teacher_rnn and len(done_idx) > 0:
@@ -183,7 +159,7 @@ class DistillWarmStart:
         if self.a.rank == 0:
             print(
                 f"[WarmStart] Collected {self.a.warm_start_collect_steps} rollout steps; "
-                f"persisted {len(collected_samples)} dataset snapshots.",
+                f"prepared {len(collected_samples)} full snapshots.",
                 flush=True,
             )
         return obs, collected_samples
@@ -280,19 +256,23 @@ class DistillWarmStart:
 
     def _warm_start_fit_safety_models(self, collected_samples):
         if len(collected_samples) > 0:
+            safety_obs_key = "predictor_transition"
             for step, sample in enumerate(collected_samples):
-                obs_dict = sample.get("obs", {})
-                if "policy" not in obs_dict:
+                obs_dict = sample["obs"]
+                if safety_obs_key not in obs_dict:
                     raise KeyError(
-                        f"[WarmStart] Collected dataset sample {step} is missing 'policy'."
+                        f"[WarmStart] Collected dataset sample {step} is missing '{safety_obs_key}'."
                     )
-                # Hardcode warm-start safety fitting to use only student proprio obs.
-                current_obs = {"policy": obs_dict["policy"]}
+                # Fit safety models on full warm-start transitions (all envs/steps).
+                current_obs = {
+                    safety_obs_key: obs_dict[safety_obs_key],
+                }
                 next_obs = current_obs
                 if step + 1 < len(collected_samples):
-                    next_obs_dict = collected_samples[step + 1].get("obs", {})
-                    if "policy" in next_obs_dict:
-                        next_obs = {"policy": next_obs_dict["policy"]}
+                    next_obs_dict = collected_samples[step + 1]["obs"]
+                    next_obs = {
+                        safety_obs_key: next_obs_dict[safety_obs_key],
+                    }
 
                 if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
                     key = self.a.ood_classifier.obs_key or self.a.ood_classifier.default_obs_key
@@ -314,22 +294,15 @@ class DistillWarmStart:
 
                 if self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
                     teacher_actions = sample["teacher_actions"]
-                    reward = sample.get("reward", torch.zeros_like(teacher_actions[:, 0]))
-                    out_of_reach = sample.get(
-                        "out_of_reach",
-                        torch.zeros((teacher_actions.shape[0],), dtype=torch.bool),
-                    )
-                    timed_out = sample.get(
-                        "timed_out",
-                        torch.zeros((teacher_actions.shape[0],), dtype=torch.bool),
-                    )
+                    reward = sample["reward"]
+                    out_of_reach = sample["out_of_reach"]
+                    timed_out = sample["timed_out"]
                     done_mask = out_of_reach | timed_out
                     fp_info = {
                         "out_of_reach": out_of_reach,
                         "timed_out": timed_out,
+                        "lift_success": sample["lift_success"],
                     }
-                    if "lift_success" in sample:
-                        fp_info["lift_success"] = sample["lift_success"]
                     if getattr(self.a.failure_predictor, "supports_next_obs", False):
                         self.a.failure_predictor.add_step(
                             obs=current_obs,
@@ -452,10 +425,10 @@ class DistillWarmStart:
                 "Warm-start pipeline requires explicit dataset saving. "
                 "Set warm_start.save_collected_data=true."
             )
-        # Hardcode warm-start safety models to consume only policy obs.
+        # Hardcode warm-start safety models to consume predictor transition obs.
         if self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
-            self.a.failure_predictor.obs_key = "policy"
-            self.a.failure_predictor.default_obs_key = "policy"
+            self.a.failure_predictor.obs_key = "predictor_transition"
+            self.a.failure_predictor.default_obs_key = "predictor_transition"
         if self.a.ood_classifier is not None and self.a.ood_classifier.enabled:
             self.a.ood_classifier.obs_key = "policy"
             self.a.ood_classifier.set_default_obs_key("policy")

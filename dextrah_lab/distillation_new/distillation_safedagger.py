@@ -3,6 +3,7 @@ from torch.cuda.amp import autocast, GradScaler
 import torchvision.utils as vutils
 import yaml
 import os
+import copy
 import glob
 import numpy as np
 import matplotlib.pyplot as plt
@@ -32,7 +33,6 @@ import wandb
 
 from typing import Dict
 
-from ood_classifier import OODGaussianBuffer, OODPCABuffer, OODMLPBuffer
 from failure_predictor import FailurePredictorCritic
 from failure_predictor_success_label import FailurePredictor
 from dextrah_lab.distillation_new.loss_utils import (
@@ -48,15 +48,6 @@ from dextrah_lab.distillation_new.eval_utils import (
 # Imitation loss:
 # - "l2": weighted L2 on mus (by 1/sigma^2) + L2 on sigmas.
 #
-# Optional OOD config (simple diagonal Gaussian density model on a buffer):
-# - ood.enabled: bool
-# - ood.obs_key: observation key to use for OOD features (default: student obs_type)
-# - ood.buffer_size: max number of feature vectors to store
-# - ood.min_samples: warm-start threshold; below this, always mark unsafe
-# - ood.update_interval: steps between refitting mean/var and threshold
-# - ood.threshold_quantile: quantile for OOD threshold on buffer scores
-# - ood.diag_eps: variance floor for stability
-#
 # Optional failure predictor config (state-action risk model):
 # - failure_predictor.enabled: bool
 # - failure_predictor.obs_key: observation key used by predictor (default: student obs_type)
@@ -64,6 +55,8 @@ from dextrah_lab.distillation_new.eval_utils import (
 # - failure_predictor.type: "critic" (default) | "legacy"
 # - failure_predictor.horizon_steps: failure-within-horizon labeling window
 # - failure_predictor.gamma / failure_predictor.polyak: used by critic mode
+# - failure_predictor.unsafe_enable_after_steps: online env-step warmup before
+#   predictor output is allowed to drive unsafe decisions
 # - failure_predictor.warm_start_model_path: optional checkpoint path used to
 #   save predictor after warmstart and load predictor for non-warmstart runs
 #
@@ -71,13 +64,11 @@ from dextrah_lab.distillation_new.eval_utils import (
 # - warm_start.enabled: bool
 # - warm_start.collect_steps: env steps collected before normal intervention loop
 # - warm_start.predictor_train_steps: offline train_step() calls for failure predictor
-# - warm_start.ood_force_refit: force one post-collection OOD refit pass
 # - warm_start.save_collected_data: whether to persist warm-start rollout snapshots to disk
 # - warm_start.save_path: output file for saved warm-start data
 #   (default: <run_dir>/bc_dataset/*.pt)
-# - warm_start.save_steps: number of warm-start steps to persist (default: collect_steps)
-# - warm_start.save_envs: number of env slots to persist per saved step
-# - warm_start.save_images: whether saved warm-start snapshots include image keys
+#   NOTE: implementation is intentionally simplified/fail-fast:
+#   always saves full warm-start steps across all env slots, with images disabled.
 #
 # Optional intervention switching config:
 # - switch_back_min_teacher_steps: minimum consecutive teacher-control steps after
@@ -173,6 +164,8 @@ class SafeDagger:
         self.eval_num_episodes = int(self.config.get("eval_num_episodes", 5) or 0)
         self.eval_max_steps = self.config.get("eval_max_steps", None)
         self.eval_lift_hold_s = max(0.0, float(self.config.get("eval_lift_hold_s", 0.5) or 0.0))
+        # Stores the latest eval point that is also logged to TensorBoard.
+        self.last_eval_snapshot = None
         base_dir = str(pathlib.Path(__file__).parent.resolve())
         self.nn_dir = os.path.join(base_dir, nn_dir)
         self.run_dir = os.path.dirname(self.nn_dir)
@@ -245,7 +238,7 @@ class SafeDagger:
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
-        self.ood_classifier = self._build_ood_classifier(self.config.get("ood", {}))
+        self.ood_classifier = None
         self.failure_predictor = self._build_failure_predictor(
             self.config.get("failure_predictor", {})
         )
@@ -376,6 +369,22 @@ class SafeDagger:
                     flush=True,
                 )
         fp_cfg = self.config.get("failure_predictor", {}) or {}
+        self.failure_predictor_unsafe_enable_after_steps = int(
+            fp_cfg.get("unsafe_enable_after_steps", 0)
+        )
+        if self.failure_predictor_unsafe_enable_after_steps < 0:
+            raise ValueError(
+                "failure_predictor.unsafe_enable_after_steps must be >= 0, "
+                f"got {self.failure_predictor_unsafe_enable_after_steps}."
+            )
+        self.failure_predictor_online_train_step_calls = int(
+            fp_cfg.get("online_train_step_calls", 1)
+        )
+        if self.failure_predictor_online_train_step_calls <= 0:
+            raise ValueError(
+                "failure_predictor.online_train_step_calls must be >= 1, "
+                f"got {self.failure_predictor_online_train_step_calls}."
+            )
         fp_ws_model_path = fp_cfg.get("warm_start_model_path", None)
         fp_kind = str(fp_cfg.get("type", "critic")).strip().lower()
         if fp_kind not in {"critic", "legacy"}:
@@ -409,17 +418,9 @@ class SafeDagger:
         self.warm_start_predictor_overfit_chunk_size = int(
             warm_cfg.get("predictor_overfit_chunk_size", 1024)
         )
-        self.warm_start_ood_force_refit = bool(warm_cfg.get("ood_force_refit", True))
         self.warm_start_save_collected_data = bool(warm_cfg.get("save_collected_data", False))
-        self.warm_start_save_steps = int(
-            warm_cfg.get("save_steps", self.warm_start_collect_steps)
-        )
-        self.warm_start_save_envs = int(
-            warm_cfg.get("save_envs", min(self.num_envs, 8))
-        )
-        self.warm_start_save_images = bool(
-            warm_cfg.get("save_images", False)
-        )
+        # Keep warm-start collection simple: always use full steps/envs and never save images.
+        self.warm_start_save_images = False
         save_path_cfg = warm_cfg.get("save_path", None)
         self.warm_start_save_path = None
         if isinstance(save_path_cfg, str) and len(save_path_cfg.strip()) > 0:
@@ -429,16 +430,25 @@ class SafeDagger:
             self.warm_start_save_path = save_path_resolved
         if self.warm_start_collect_steps < 0:
             self.warm_start_collect_steps = 0
+        if self.warm_start_enabled and self.failure_predictor is not None and self.failure_predictor.enabled:
+            fp_buffer_size = int(getattr(self.failure_predictor, "buffer_size", 0))
+            if fp_buffer_size > 0:
+                target_collect_steps = int(math.ceil(fp_buffer_size / max(1, self.num_envs)))
+                if self.warm_start_collect_steps < target_collect_steps:
+                    if self.rank == 0:
+                        print(
+                            "[WarmStart] Increasing collect_steps to match failure predictor replay capacity: "
+                            f"{self.warm_start_collect_steps} -> {target_collect_steps} "
+                            f"(buffer_size={fp_buffer_size}, num_envs={self.num_envs}).",
+                            flush=True,
+                        )
+                    self.warm_start_collect_steps = target_collect_steps
         if self.warm_start_predictor_overfit_max_samples <= 0:
             self.warm_start_predictor_overfit_max_samples = 1
         if self.warm_start_predictor_overfit_chunk_size <= 0:
             self.warm_start_predictor_overfit_chunk_size = 1
-        if self.warm_start_save_steps < 0:
-            self.warm_start_save_steps = 0
-        self.warm_start_save_steps = min(self.warm_start_save_steps, self.warm_start_collect_steps)
-        if self.warm_start_save_envs <= 0:
-            self.warm_start_save_envs = 1
-        self.warm_start_save_envs = min(self.warm_start_save_envs, self.num_envs)
+        self.warm_start_save_steps = self.warm_start_collect_steps
+        self.warm_start_save_envs = self.num_envs
         if self.warm_start_save_collected_data and self.warm_start_save_path is None and self.rank == 0:
             warm_start_dir = os.path.join(
                 self.run_dir,
@@ -456,12 +466,20 @@ class SafeDagger:
                 f"predictor_overfit_test={self.warm_start_predictor_overfit_test}, "
                 f"predictor_overfit_max_samples={self.warm_start_predictor_overfit_max_samples}, "
                 f"predictor_overfit_chunk_size={self.warm_start_predictor_overfit_chunk_size}, "
-                f"ood_force_refit={self.warm_start_ood_force_refit}, "
                 f"save_collected_data={self.warm_start_save_collected_data}, "
                 f"save_steps={self.warm_start_save_steps}, "
                 f"save_envs={self.warm_start_save_envs}, "
                 f"save_images={self.warm_start_save_images}, "
                 f"save_path={self.warm_start_save_path}",
+                flush=True,
+            )
+        if self.rank == 0 and self.failure_predictor is not None and self.failure_predictor.enabled:
+            print(
+                "Failure predictor online update schedule: "
+                f"update_interval={self.failure_predictor.update_interval}, "
+                "minibatch_updates_per_call=1, "
+                f"online_train_step_calls={self.failure_predictor_online_train_step_calls}, "
+                f"unsafe_enable_after_steps={self.failure_predictor_unsafe_enable_after_steps}",
                 flush=True,
             )
         self.distill_warm_start = DistillWarmStart(self)
@@ -572,6 +590,76 @@ class SafeDagger:
     def _run_warm_start(self, obs):
         return self.distill_warm_start.run_offline_stage(obs)
 
+    def _predictor_unsafe_active(self) -> bool:
+        if self.failure_predictor is None or not self.failure_predictor.enabled:
+            return False
+        warmup_steps = int(self.failure_predictor_unsafe_enable_after_steps)
+        if warmup_steps <= 0:
+            return True
+        return int(getattr(self, "_online_step_counter", 0)) >= warmup_steps
+
+    def _apply_online_predictor_update_multiplier(self, fp_loss):
+        """Run extra predictor train_step() calls after an interval-triggered update."""
+        if fp_loss is None:
+            return None
+        repeats = int(self.failure_predictor_online_train_step_calls)
+        if repeats <= 1:
+            return fp_loss
+        if self.failure_predictor is None or not self.failure_predictor.enabled:
+            return fp_loss
+
+        loss_vals = []
+        last_dict = fp_loss if isinstance(fp_loss, dict) else None
+
+        def _to_loss(v):
+            if v is None:
+                return None
+            if isinstance(v, dict):
+                return v.get("loss_total", None)
+            return v
+
+        first_loss = _to_loss(fp_loss)
+        if first_loss is not None:
+            loss_vals.append(float(first_loss))
+
+        for _ in range(repeats - 1):
+            out = self.failure_predictor.train_step()
+            loss_val = _to_loss(out)
+            if loss_val is not None:
+                loss_vals.append(float(loss_val))
+            if isinstance(out, dict):
+                last_dict = out
+
+        if len(loss_vals) == 0:
+            return fp_loss
+        loss_mean = float(sum(loss_vals) / len(loss_vals))
+        if last_dict is not None:
+            merged = dict(last_dict)
+            merged["loss_total"] = loss_mean
+            merged["online_train_step_calls"] = int(repeats)
+            merged["online_train_step_effective"] = int(len(loss_vals))
+            return merged
+        return loss_mean
+
+    def _log_predictor_output_stats(self, obs, student_action):
+        """Log predictor raw output stats (min/mean/p50) to TensorBoard."""
+        if self.rank != 0 or not hasattr(self, "writer") or self.writer is None:
+            return
+        if self.failure_predictor is None or not self.failure_predictor.enabled:
+            return
+        pred = self.failure_predictor.predict_risk(obs, student_action)
+        if pred is None:
+            return
+        pred = torch.as_tensor(pred, device=self.device, dtype=torch.float32).reshape(-1)
+        if pred.numel() != self.num_envs:
+            raise ValueError(
+                f"failure predictor output size mismatch: expected {self.num_envs}, got {pred.numel()}."
+            )
+        p50 = torch.quantile(pred, 0.5)
+        self.writer.add_scalar("failure_predictor/output_min", float(pred.min().item()), self.frame)
+        self.writer.add_scalar("failure_predictor/output_mean", float(pred.mean().item()), self.frame)
+        self.writer.add_scalar("failure_predictor/output_p50", float(p50.item()), self.frame)
+
     def _finalize_loggers(self):
         if self.rank == 0 and self.use_wandb:
             wandb.finish()
@@ -601,10 +689,11 @@ class SafeDagger:
                 model.eval()
         else:
             self.teacher_model.eval()
-        # Hardcode online failure-predictor features to student proprio only.
+        # Hardcode online failure-predictor features to predictor transition obs.
         if self.failure_predictor is not None and self.failure_predictor.enabled:
-            self.failure_predictor.obs_key = "policy"
-            self.failure_predictor.default_obs_key = "policy"
+            self.failure_predictor.obs_key = "predictor_transition"
+            self.failure_predictor.default_obs_key = "predictor_transition"
+        self._online_step_counter = 0
         if hasattr(self, "_predictor_lift_hold_counts") and self._predictor_lift_hold_counts is not None:
             self._predictor_lift_hold_counts.zero_()
         if obs is None:
@@ -684,37 +773,8 @@ class SafeDagger:
                 # obs['img_left'][:] = real_img_left #[:, torch.arange(3 - 1, -1, -1), :, :]
                 # obs['img_right'][:] = real_img_right #[:, torch.arange(3 - 1, -1, -1), :, :]
                 actions_student = self.get_actions(obs, "student")
-                embeds = actions_student.get("embeds")
-                if self._requires_ood_policy_embed():
-                    if embeds is None or not torch.is_tensor(embeds):
-                        raise RuntimeError(
-                            "ood_policy_embed is required by enabled safety modules, "
-                            "but student policy did not return tensor embeds. "
-                            "Fail-fast mode: no fallback is allowed."
-                        )
-                    embeds = embeds.detach()
-                    obs["ood_embed"] = embeds
-                    obs["ood_policy_embed"] = torch.cat(
-                        [obs[self.student_obs_type], embeds], dim=-1
-                    )
-                else:
-                    obs["ood_policy_embed"] = obs[self.student_obs_type]
-                    if embeds is not None and torch.is_tensor(embeds):
-                        embeds = embeds.detach()
-                        obs["ood_embed"] = embeds
-                        obs["ood_policy_embed"] = torch.cat(
-                            [obs[self.student_obs_type], embeds], dim=-1
-                        )
-                if (
-                    self.ood_classifier is not None
-                    and self.ood_classifier.enabled
-                    and not self.ood_classifier.initialized
-                ):
-                    key = self.ood_classifier.obs_key or self.ood_classifier.default_obs_key
-                    if key is not None and key in obs:
-                        self.ood_classifier.init_buffer(obs)
                 # Critic-style failure predictor needs next_obs features.
-                # Feed one step later so next_obs has ood_policy_embed materialized.
+                # Feed one step later so next_obs is available for SARSA-style targets.
                 if (
                     self.failure_predictor is not None
                     and self.failure_predictor.enabled
@@ -729,6 +789,7 @@ class SafeDagger:
                         done=pending_fp_step["done"],
                         info=pending_fp_step["info"],
                     )
+                    fp_loss = self._apply_online_predictor_update_multiplier(fp_loss)
                     pending_fp_step = None
                     if self.rank == 0 and fp_loss is not None:
                         if isinstance(fp_loss, dict):
@@ -798,6 +859,8 @@ class SafeDagger:
                 total_loss_step = imitation_loss + self.aux_coeff * aux_sum_tensor
                 total_loss += total_loss_step
                 current_l2_threshold = self._current_unsafe_l2_threshold()
+                if self.failure_predictor is not None and self.failure_predictor.enabled:
+                    self._log_predictor_output_stats(obs, actions_student["actions"])
                 unsafe_raw = self.check_unsafe(
                     l2_loss_per_env=l2_loss_per_env,
                     obs=obs,
@@ -837,6 +900,7 @@ class SafeDagger:
 
             log_counter += 1
             self.env_counter += 1
+            self._online_step_counter += 1
 
             if self.is_rnn:
                 if log_counter % self.seq_length == 0:
@@ -915,6 +979,7 @@ class SafeDagger:
                         done=done_mask,
                         info=fp_info,
                     )
+                    fp_loss = self._apply_online_predictor_update_multiplier(fp_loss)
                 if self.rank == 0 and fp_loss is not None:
                     if isinstance(fp_loss, dict):
                         loss_total = fp_loss.get("loss_total", None)
@@ -1089,6 +1154,24 @@ class SafeDagger:
                                 float(reason_prop.get(reason_name, 0.0)),
                                 self.frame,
                             )
+                    self.last_eval_snapshot = {
+                        "timestamp": datetime.now().isoformat(),
+                        "iteration": int(log_counter),
+                        "frame": int(self.frame),
+                        "eval_num_episodes": int(self.eval_num_episodes),
+                        "eval_max_steps": int(self.eval_max_steps) if self.eval_max_steps is not None else None,
+                        "eval_lift_hold_s": float(self.eval_lift_hold_s),
+                        "metrics": {
+                            "eval/lift_success": float(eval_lift),
+                            "eval/avg_reward": float(eval_reward),
+                            "eval/unsafe_episode_rate": float(eval_unsafe),
+                            "eval/unsafe_reason_prop": {
+                                str(name): float(eval_unsafe_reason_prop.get(name, 0.0))
+                                for name in self.unsafe_reason_names
+                            },
+                        },
+                        "per_object_metrics": copy.deepcopy(eval_per_object_metrics),
+                    }
                     self.writer.flush()
                     print(
                         f"Eval lift_success: {eval_lift:.3f} | avg_reward: {eval_reward:.3f} | "
@@ -1461,73 +1544,60 @@ class SafeDagger:
         l2_threshold=None,
         student_action=None,
     ):
-        """Unsafe logic controlled by unsafe_mode: none | l2 | ood | failure_predictor."""
+        """Unsafe logic controlled by unsafe_mode: none | l2 | failure_predictor."""
+        def _compute_unsafe_l2():
+            if l2_loss_per_env is None:
+                raise ValueError(
+                    "check_unsafe requires l2_loss_per_env for unsafe_mode "
+                    f"'{self.unsafe_mode}'."
+                )
+            l2_vals = torch.as_tensor(l2_loss_per_env, device=self.device, dtype=torch.float32).reshape(-1)
+            if l2_vals.numel() != self.num_envs:
+                raise ValueError(
+                    "l2_loss_per_env size mismatch: "
+                    f"expected {self.num_envs}, got {l2_vals.numel()}."
+                )
+            threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
+            return l2_vals > threshold
+
         if self.unsafe_mode == "none":
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        if self.unsafe_mode == "ood":
-            if self.ood_classifier is not None and self.ood_classifier.enabled:
-                unsafe = self.ood_classifier.check_ood(obs, self.device)
-                if unsafe is not None:
-                    return unsafe
-            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if self.unsafe_mode == "l2":
+            return _compute_unsafe_l2()
         if self.unsafe_mode == "failure_predictor":
-            if self.failure_predictor is not None and self.failure_predictor.enabled:
-                unsafe_pred = self.failure_predictor.should_intervene(obs, student_action)
-                if unsafe_pred is None:
-                    unsafe_pred = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-                else:
-                    unsafe_pred = unsafe_pred.to(device=self.device, dtype=torch.bool)
-
-                # Legacy predictor: use predictor AND action-disagreement gate.
-                if isinstance(self.failure_predictor, FailurePredictor):
-                    if l2_loss_per_env is None:
-                        return unsafe_pred
-                    threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
-                    unsafe_l2 = l2_loss_per_env > threshold
-                    # return unsafe_pred & unsafe_l2
-                    return unsafe_l2
-                # Critic predictor: use predictor AND action-disagreement gate.
-                if isinstance(self.failure_predictor, FailurePredictorCritic):
-                    if l2_loss_per_env is None:
-                        return unsafe_pred
-                    threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
-                    unsafe_l2 = l2_loss_per_env > threshold
-                    return unsafe_pred & unsafe_l2
+            if self.failure_predictor is None or not self.failure_predictor.enabled:
+                raise ValueError("unsafe_mode='failure_predictor' requires an enabled failure predictor.")
+            if not isinstance(self.failure_predictor, (FailurePredictor, FailurePredictorCritic)):
                 raise ValueError(
                     "Unsupported failure predictor class: "
                     f"{self.failure_predictor.__class__.__name__}. "
                     "Expected FailurePredictor (legacy) or FailurePredictorCritic."
                 )
-            if l2_loss_per_env is not None:
-                threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
-                return l2_loss_per_env > threshold
-            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        if l2_loss_per_env is not None:
-            threshold = self.unsafe_l2_threshold if l2_threshold is None else float(l2_threshold)
-            return l2_loss_per_env > threshold
-        if isinstance(info, dict):
-            if "unsafe" in info:
-                return torch.as_tensor(info["unsafe"], device=self.device, dtype=torch.bool)
-            if "unsafe_flag" in info:
-                return torch.as_tensor(info["unsafe_flag"], device=self.device, dtype=torch.bool)
-            if "in_unsafe_region" in info:
-                return torch.as_tensor(info["in_unsafe_region"], device=self.device, dtype=torch.bool)
-        return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+            unsafe_l2 = _compute_unsafe_l2()
+            if not self._predictor_unsafe_active():
+                return unsafe_l2
+
+            unsafe_pred = self.failure_predictor.should_intervene(obs, student_action)
+            if unsafe_pred is None:
+                raise RuntimeError(
+                    "Failure predictor returned None in unsafe_mode='failure_predictor' "
+                    "after warmup activation."
+                )
+            unsafe_pred = torch.as_tensor(unsafe_pred, device=self.device, dtype=torch.bool).reshape(-1)
+            if unsafe_pred.numel() != self.num_envs:
+                raise ValueError(
+                    f"Failure predictor unsafe mask size mismatch: expected {self.num_envs}, got {unsafe_pred.numel()}."
+                )
+            return unsafe_pred | unsafe_l2
+            # return unsafe_pred & unsafe_l2
+
+        raise ValueError(
+            f"Unsupported unsafe_mode '{self.unsafe_mode}'. Expected one of: none, l2, failure_predictor."
+        )
 
     def _current_unsafe_l2_threshold(self):
         return self.unsafe_l2_threshold
-
-    def _requires_ood_policy_embed(self):
-        """Return True if any enabled safety module reads from 'ood_policy_embed'."""
-        needs = False
-        if self.ood_classifier is not None and self.ood_classifier.enabled:
-            ood_key = self.ood_classifier.obs_key or self.ood_classifier.default_obs_key
-            needs = needs or (ood_key == "ood_policy_embed")
-        if self.failure_predictor is not None and self.failure_predictor.enabled:
-            fp_default = getattr(self.failure_predictor, "default_obs_key", None)
-            fp_key = getattr(self.failure_predictor, "obs_key", None) or fp_default
-            needs = needs or (fp_key == "ood_policy_embed")
-        return needs
 
     def _compute_lift_success_mask(self, out_of_reach=None, timed_out=None, ov_env=None):
         """Compute per-env hold-gated lift success aligned with eval semantics."""
@@ -1610,22 +1680,9 @@ class SafeDagger:
         return fp_class(
             fp_cfg,
             device=device,
-            default_obs_key=self.student_obs_type,
+            default_obs_key="predictor_transition",
             rank=self.rank,
         )
-
-    def _build_ood_classifier(self, cfg):
-        ood_cfg = cfg or {}
-        ood_type = str(ood_cfg.get("type", "gaussian")).lower()
-        if ood_type == "gaussian":
-            klass = OODGaussianBuffer
-        elif ood_type == "pca":
-            klass = OODPCABuffer
-        elif ood_type == "mlp":
-            klass = OODMLPBuffer
-        else:
-            raise ValueError(f"Unsupported ood.type: {ood_type}")
-        return klass(ood_cfg, default_obs_key=self.student_obs_type, rank=self.rank)
 
     # --- Teacher Policy and Action Selection ---
     def _build_teacher_pool(self, ckpt_root):

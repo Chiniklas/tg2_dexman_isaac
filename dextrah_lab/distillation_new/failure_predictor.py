@@ -73,7 +73,6 @@ class _FailureQFunction(nn.Module):
                 layers.append(nn.Dropout(dropout))
             in_dim = h
         layers.append(nn.Linear(in_dim, 1))
-        layers.append(nn.Sigmoid())
         self.net = nn.Sequential(*layers)
 
     def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
@@ -106,6 +105,9 @@ class FailurePredictorCritic:
         # Reference alignment: use fixed target-network averaging factor.
         self.polyak = 0.995
         self.failure_threshold = float(cfg.get("failure_threshold", 0.5))
+        self.output_temperature = float(cfg.get("output_temperature", 2.0))
+        if self.output_temperature <= 0.0:
+            raise ValueError(f"output_temperature must be > 0, got {self.output_temperature}.")
         self.horizon_steps = int(cfg.get("horizon_steps", 10))
         if self.horizon_steps <= 0:
             self.horizon_steps = 1
@@ -123,9 +125,14 @@ class FailurePredictorCritic:
         self.batch_size = int(cfg.get("batch_size", 128))
         self.min_samples = int(cfg.get("min_samples", 10_000))
         self.update_interval = int(cfg.get("update_interval", 1_000))
-        self.train_steps = int(cfg.get("train_steps", 1))
-        if self.train_steps <= 0:
-            self.train_steps = 1
+        if "train_steps" in cfg:
+            raise ValueError(
+                "failure_predictor.train_steps is removed. "
+                "Use warm_start.predictor_train_steps (offline total calls) and "
+                "failure_predictor.online_train_step_calls (online calls per interval)."
+            )
+        # One train_step() call always performs one minibatch update.
+        self.train_steps = 1
 
         self.return_debug_dict = bool(cfg.get("return_debug_dict", False))
         self.debug_print_interval = int(cfg.get("debug_print_interval", 0))
@@ -164,9 +171,10 @@ class FailurePredictorCritic:
             print(
                 "FailurePredictorCritic enabled: "
                 f"buffer_size={self.buffer_size}, min_samples={self.min_samples}, "
-                f"update_interval={self.update_interval}, train_steps={self.train_steps}, "
+                f"update_interval={self.update_interval}, minibatch_updates_per_call=1, "
                 f"gamma={self.gamma}, polyak={self.polyak}, failure_threshold={self.failure_threshold}, "
-                f"horizon_steps={self.horizon_steps}, pos_fraction={self.pos_fraction}",
+                f"horizon_steps={self.horizon_steps}, pos_fraction={self.pos_fraction}, "
+                f"output_temperature={self.output_temperature}",
                 flush=True,
             )
 
@@ -270,13 +278,16 @@ class FailurePredictorCritic:
 
             d_eff = torch.maximum(done, (~has_next_act).to(dtype=torch.float32))
             with torch.no_grad():
-                q1_t = self._q1_targ(obs2, next_act)
-                q2_t = self._q2_targ(obs2, next_act)
-                backup = fail + self.gamma * (1.0 - d_eff) * torch.minimum(q1_t, q2_t)
+                q1_t_logits = self._q1_targ(obs2, next_act)
+                q2_t_logits = self._q2_targ(obs2, next_act)
+                next_fail = torch.sigmoid(torch.minimum(q1_t_logits, q2_t_logits) / self.output_temperature)
+                backup = fail + self.gamma * (1.0 - d_eff) * next_fail
                 backup = torch.clamp(backup, 0.0, 1.0)
 
-            q1 = self._q1(obs, act)
-            q2 = self._q2(obs, act)
+            q1_logits = self._q1(obs, act)
+            q2_logits = self._q2(obs, act)
+            q1 = torch.sigmoid(q1_logits / self.output_temperature)
+            q2 = torch.sigmoid(q2_logits / self.output_temperature)
             if self.pos_weight is not None:
                 w = torch.ones_like(backup)
                 w[backup > 0.5] = float(self.pos_weight)
@@ -300,7 +311,9 @@ class FailurePredictorCritic:
             q2_losses.append(float(loss_q2.detach().item()))
             boot_frac.append(float((1.0 - d_eff).mean().item()))
             target_means.append(float(backup.mean().item()))
-            pred_means.append(float(torch.minimum(q1, q2).mean().item()))
+            pred_means.append(
+                float(torch.sigmoid(torch.minimum(q1_logits, q2_logits) / self.output_temperature).mean().item())
+            )
 
         if len(losses) == 0:
             return None
@@ -333,9 +346,10 @@ class FailurePredictorCritic:
             act = act.unsqueeze(0)
         act = act.reshape(feats.shape[0], self._act_dim)
         with torch.no_grad():
-            q1 = self._q1(feats, act)
-            q2 = self._q2(feats, act)
-            return torch.minimum(q1, q2)
+            q1_logits = self._q1(feats, act)
+            q2_logits = self._q2(feats, act)
+            logits = torch.minimum(q1_logits, q2_logits)
+            return torch.sigmoid(logits / self.output_temperature)
 
     def should_intervene(self, obs, action):
         if not self.enabled:
@@ -364,6 +378,7 @@ class FailurePredictorCritic:
             "hidden_sizes": list(self.hidden_sizes),
             "dropout": float(self.dropout),
             "failure_threshold": float(self.failure_threshold),
+            "output_temperature": float(self.output_temperature),
             "horizon_steps": int(self.horizon_steps),
             "q1": self._q1.state_dict(),
             "q2": self._q2.state_dict(),
@@ -440,6 +455,9 @@ class FailurePredictorCritic:
         )
         self._buf_idx = int(payload.get("buf_idx", 0))
         self._token_counter = int(payload.get("token_counter", 0))
+        self.output_temperature = float(payload.get("output_temperature", self.output_temperature))
+        if self.output_temperature <= 0.0:
+            raise ValueError(f"Checkpoint has invalid output_temperature={self.output_temperature}.")
 
         replay = payload.get("replay", None)
         if isinstance(replay, dict):

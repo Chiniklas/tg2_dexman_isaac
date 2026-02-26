@@ -766,6 +766,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         policy_obs = self.compute_policy_observations()
         critic_obs = self.compute_critic_observations()
+        predictor_transition_obs = self.compute_predictor_transition_observations()
 
         if self.use_camera and not self.simulate_stereo:
             depth_map = self._tiled_camera_left.data.output["depth"].clone()
@@ -785,6 +786,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
             observations = {
                 "policy": student_policy_obs,
                 # "policy": teacher_policy_obs,
+                "predictor_transition": predictor_transition_obs,
                 "img": depth_map.permute((0, 3, 1, 2)),
                 "rgb": self._tiled_camera_left.data.output["rgb"].clone().permute((0, 3, 1, 2)) / 255.,
                 "expert_policy": teacher_policy_obs,
@@ -882,6 +884,7 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
             observations = {
                 "policy": student_policy_obs,
+                "predictor_transition": predictor_transition_obs,
                 "depth_left": left_depth.permute((0, 3, 1, 2)),
                 "depth_right": right_depth.permute((0, 3, 1, 2)),
                 "mask_left": left_mask.permute((0, 3, 1, 2)),
@@ -895,7 +898,11 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 "obj_uv_right": obj_uv_right[:, :2],
             }
         else:
-            observations = {"policy": policy_obs, "critic": critic_obs}
+            observations = {
+                "policy": policy_obs,
+                "predictor_transition": predictor_transition_obs,
+                "critic": critic_obs,
+            }
 
         return observations
 
@@ -1806,6 +1813,23 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
                 self.object_goal, # 76:79
                 # last action
                 self.actions, # 79:90
+            ),
+            dim=-1,
+        )
+
+        return obs
+
+    def compute_predictor_transition_observations(self):
+        obs = torch.cat(
+            (
+                # noisy proprio
+                self.robot_dof_pos_noisy,
+                self.robot_dof_vel_noisy,
+                self.hand_pos_noisy,
+                self.hand_vel_noisy,
+                # noisy object position and rotation
+                self.object_pos_noisy,
+                self.object_rot_noisy,
             ),
             dim=-1,
         )

@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import json
 import sys
 
 from isaaclab.app import AppLauncher
@@ -40,13 +41,13 @@ parser.add_argument("--data_aug", action="store_true", default=False, help="Whet
 parser.add_argument(
     "--eval_every",
     type=int,
-    default=0,
+    default=2500,
     help="Run student-only eval every N iterations (0 disables).",
 )
 parser.add_argument(
     "--eval_num_episodes",
     type=int,
-    default=5,
+    default=3,
     help="Number of episodes per evaluation run.",
 )
 parser.add_argument(
@@ -164,6 +165,56 @@ import dextrah_lab.tasks.tg2_inspirehand.gym_setup
 from dextrah_lab.distillation_new.a2c_stereo_transformer import (
     A2CBuilder as A2CStereoTransformerBuilder,
 )
+
+
+def _to_jsonable(value):
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _reason_prop_to_pct(reason_prop: dict, unsafe_rate: float, reason_names: list[str]) -> dict[str, float]:
+    if unsafe_rate <= 0.0:
+        return {name: 0.0 for name in reason_names}
+    return {
+        name: (100.0 * float(reason_prop.get(name, 0.0)) / float(unsafe_rate))
+        for name in reason_names
+    }
+
+
+def _save_final_eval_json(
+    output_path: pathlib.Path,
+    *,
+    task: str,
+    pipeline: str,
+    final_checkpoint: str,
+    final_eval_episodes: int,
+    eval_max_steps,
+    eval_lift_hold_s: float,
+    metrics: dict,
+) -> None:
+    payload = {
+        "mode": "runtime_final_eval",
+        "task": task,
+        "pipeline": pipeline,
+        "final_checkpoint": final_checkpoint,
+        "final_eval_episodes": int(final_eval_episodes),
+        "eval_max_steps": int(eval_max_steps) if eval_max_steps is not None else None,
+        "eval_lift_hold_s": float(eval_lift_hold_s),
+        "timestamp": datetime.now().isoformat(),
+        "metrics": metrics,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(payload), f, indent=2, sort_keys=True)
+    print(f"[INFO] Saved final runtime eval JSON to: {output_path}", flush=True)
 
 
 @hydra_task_config(args_cli.task, "rl_games_cfg_entry_point")
@@ -291,10 +342,12 @@ def main(env_cfg, agent_cfg: dict):
             "batch_size": 128,
             "min_samples": 10_000,
             "update_interval": 1_000,
-            "train_steps": 1,
+            "online_train_step_calls": 1,
+            "unsafe_enable_after_steps": 0,
             "horizon_steps": 10,
             "failure_threshold": 0.5,
             "success_threshold": 0.5,
+            "output_temperature": 2.0,
             "success_key": "lift_success",
             "include_current_step": False,
             "pos_weight": None,
@@ -379,7 +432,13 @@ def main(env_cfg, agent_cfg: dict):
 
         model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)
 
-        dagger = SafeDagger(env, dagger_config, summaries_dir=summaries_dir, nn_dir=nn_dir, eval_env=eval_env)
+        dagger = SafeDagger(
+            env,
+            dagger_config,
+            summaries_dir=summaries_dir,
+            nn_dir=nn_dir,
+            eval_env=eval_env,
+        )
         reached_iters = dagger.run_pipeline(args_cli.pipeline)
         if args_cli.pipeline == "warmstart":
             final_ckpt = os.path.join(dagger.nn_dir, "dextrah_student_after_warmstart.pth")
@@ -391,6 +450,48 @@ def main(env_cfg, agent_cfg: dict):
                 f"[INFO] Pipeline '{args_cli.pipeline}' finished at iter {reached_iters} / {dagger.num_iters}.",
                 flush=True,
             )
+            last_eval_snapshot = getattr(dagger, "last_eval_snapshot", None)
+            if isinstance(last_eval_snapshot, dict):
+                print(
+                    "[INFO] Exporting final eval JSON from last TensorBoard eval point (no extra eval run).",
+                    flush=True,
+                )
+                metrics = dict(last_eval_snapshot.get("metrics", {}))
+                reason_prop = dict(metrics.get("eval/unsafe_reason_prop", {}))
+                reason_names = [str(name) for name in reason_prop.keys()]
+                unsafe_rate = float(metrics.get("eval/unsafe_episode_rate", 0.0))
+                metrics["eval/out_of_reach_reason_pct"] = _reason_prop_to_pct(
+                    reason_prop, unsafe_rate, reason_names
+                )
+                per_object_metrics_raw = dict(last_eval_snapshot.get("per_object_metrics", {}))
+                per_object_metrics_with_pct = {}
+                for object_name, object_metrics in per_object_metrics_raw.items():
+                    obj_metrics = dict(object_metrics)
+                    obj_unsafe_rate = float(obj_metrics.get("unsafe_episode_rate", 0.0))
+                    obj_reason_prop = dict(obj_metrics.get("unsafe_reason_prop", {}))
+                    obj_reason_pct = _reason_prop_to_pct(obj_reason_prop, obj_unsafe_rate, reason_names)
+                    obj_metrics["unsafe_reason_pct"] = obj_reason_pct
+                    per_object_metrics_with_pct[str(object_name)] = obj_metrics
+                metrics["per_object_metrics"] = per_object_metrics_with_pct
+
+                final_eval_json_path = pathlib.Path(final_ckpt).with_name(
+                    f"{pathlib.Path(final_ckpt).stem}_final_eval.json"
+                )
+                _save_final_eval_json(
+                    final_eval_json_path,
+                    task=str(args_cli.task),
+                    pipeline=str(args_cli.pipeline),
+                    final_checkpoint=str(final_ckpt),
+                    final_eval_episodes=int(last_eval_snapshot.get("eval_num_episodes", 0)),
+                    eval_max_steps=last_eval_snapshot.get("eval_max_steps", None),
+                    eval_lift_hold_s=float(last_eval_snapshot.get("eval_lift_hold_s", 0.0)),
+                    metrics=metrics,
+                )
+            else:
+                print(
+                    "[INFO] No eval point was logged to TensorBoard; skipping final eval JSON export.",
+                    flush=True,
+                )
     finally:
         if eval_env is not None:
             eval_env.close()

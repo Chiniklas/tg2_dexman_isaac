@@ -593,12 +593,6 @@ def main(env_cfg, agent_cfg: dict):
         ):
             env_cfg.valid_objects_dir.append(args_cli.objects_dir)
 
-    # Keep offline student eval deterministic and comparable by disabling image augmentation.
-    if hasattr(env_cfg, "img_aug_type"):
-        env_cfg.img_aug_type = None
-    if hasattr(env_cfg, "aug_depth"):
-        env_cfg.aug_depth = False
-
     try:
         print(
             f"[INFO] Eval start: task={args_cli.task}, objects_dir={args_cli.objects_dir}, "
