@@ -29,3 +29,5 @@ build/
 devel/
 .catkin_workspace
 teacher_eval
+offline_replay_logs
+student_replay_logs
