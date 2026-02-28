@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Core build + ROS tooling + GUI/OpenGL libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-rosdep python3-catkin-tools build-essential cmake git \
+    python3-rosdep python3-catkin-tools python3-h5py build-essential cmake git \
     ros-noetic-moveit \
     ros-noetic-ros-control ros-noetic-ros-controllers \
     ros-noetic-robot-state-publisher ros-noetic-joint-state-publisher-gui \

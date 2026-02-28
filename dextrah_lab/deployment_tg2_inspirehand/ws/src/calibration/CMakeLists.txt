@@ -16,7 +16,6 @@ catkin_package()
 catkin_install_python(PROGRAMS
   april_tag_detector.py
   camera_calibration.py
-  tg2_inspirehand_random_targets.py
   tests/test_april_tag_detection.py
   tests/test_execute_targets.py
   tests/test_stereo_camera_node.py
