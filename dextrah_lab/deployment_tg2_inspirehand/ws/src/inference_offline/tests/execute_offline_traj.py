@@ -34,7 +34,8 @@ python3 /tiangong_infra_ws/ws/src/inference_offline/tests/execute_offline_traj.p
   --dataset-key obs \
   --obs-joint-start 0 \
   --rate 30 \
-  --pause-at-replay-step 120
+  --pause-at-replay-step 120 \
+  --hand-open-offset-ratio 0.08
 
 """
 
@@ -148,6 +149,53 @@ def _hand_ratio_to_bridge_pos(ratio: np.ndarray) -> np.ndarray:
     hi = JOINT_UPPER_LIMITS[7:]
     ratio = np.clip(ratio, 0.0, 1.0)
     return lo + ratio * (hi - lo)
+
+
+def _bridge_hand_pos_to_ratio(pos: np.ndarray) -> np.ndarray:
+    """Decode command JointState hand positions back to bridge angleRatio in [0, 1]."""
+    lo = JOINT_LOWER_LIMITS[7:]
+    hi = JOINT_UPPER_LIMITS[7:]
+    span = np.maximum(1e-6, hi - lo)
+    ratio = (pos - lo) / span
+    return np.clip(ratio, 0.0, 1.0)
+
+
+def _apply_hand_open_offsets_to_replay_path(
+    replay_path: list[np.ndarray],
+    offset_pre: float,
+    offset_post: float,
+    switch_step_1based: int,
+    transition_steps: int,
+) -> tuple[list[np.ndarray], int]:
+    """Apply hand ratio offsets on replay waypoints, optionally switching at a replay step."""
+    if transition_steps < 1:
+        raise ValueError("--hand-offset-transition-steps must be >= 1.")
+    if not replay_path:
+        return [], 0
+
+    eps = 1e-12
+    if abs(offset_pre) <= eps and abs(offset_post) <= eps:
+        return [q.copy() for q in replay_path], 0
+
+    out: list[np.ndarray] = []
+    clipped_count = 0
+    for i, q in enumerate(replay_path, start=1):
+        offset = offset_pre
+        if switch_step_1based > 0 and i >= switch_step_1based and abs(offset_post - offset_pre) > eps:
+            if i >= (switch_step_1based + transition_steps):
+                offset = offset_post
+            else:
+                alpha = float(i - switch_step_1based + 1) / float(transition_steps)
+                alpha = min(max(alpha, 0.0), 1.0)
+                offset = (1.0 - alpha) * offset_pre + alpha * offset_post
+        q_new = q.copy()
+        ratio = _bridge_hand_pos_to_ratio(q_new[7:])
+        ratio_offset = ratio + offset
+        ratio_clipped = np.clip(ratio_offset, 0.0, 1.0)
+        clipped_count += int(np.count_nonzero(np.abs(ratio_offset - ratio_clipped) > 1e-9))
+        q_new[7:] = _hand_ratio_to_bridge_pos(ratio_clipped)
+        out.append(q_new)
+    return out, clipped_count
 
 
 def _extract_obs_joint_targets(
@@ -362,6 +410,30 @@ def parse_args() -> argparse.Namespace:
         help="Start index in obs vector for 13 joint targets.",
     )
     p.add_argument(
+        "--hand-open-offset-ratio",
+        type=float,
+        default=0.0,
+        help="Optional additive offset on mapped hand angleRatio (positive opens, negative closes).",
+    )
+    p.add_argument(
+        "--hand-open-offset-ratio-pre",
+        type=float,
+        default=None,
+        help="Optional pre-interruption hand ratio offset. If unset, uses --hand-open-offset-ratio.",
+    )
+    p.add_argument(
+        "--hand-open-offset-ratio-post",
+        type=float,
+        default=None,
+        help="Optional post-interruption hand ratio offset. If unset, uses --hand-open-offset-ratio.",
+    )
+    p.add_argument(
+        "--hand-offset-transition-steps",
+        type=int,
+        default=10,
+        help="Smoothing steps for pre->post hand offset change (1 = hard switch).",
+    )
+    p.add_argument(
         "--disable-smoothing",
         action="store_true",
         help="Disable replay trajectory smoothing/interpolation.",
@@ -378,6 +450,11 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Pause before publishing this replay waypoint (1-based). 0 disables.",
     )
+    p.add_argument(
+        "--pause-at-midpoint",
+        action="store_true",
+        help="Pause once at the replay midpoint (before publish), then press enter to resume.",
+    )
     p.add_argument("--dry-run", action="store_true", help="Validate and print stats only (no publish).")
     return p.parse_args()
 
@@ -386,6 +463,12 @@ def main() -> int:
     args = parse_args()
     if args.pause_at_replay_step < 0:
         raise ValueError("--pause-at-replay-step must be >= 0.")
+    if args.hand_offset_transition_steps < 1:
+        raise ValueError("--hand-offset-transition-steps must be >= 1.")
+    if args.pause_at_midpoint and args.pause_at_replay_step > 0:
+        rospy.logwarn(
+            "Both --pause-at-midpoint and --pause-at-replay-step were set; using --pause-at-replay-step."
+        )
 
     joint_names = RIGHT_ARM_HAND_JOINTS
     dof = len(joint_names)
@@ -402,7 +485,6 @@ def main() -> int:
         joint_start=args.obs_joint_start,
         dof=dof,
     )
-    hand_ratio = _sim_hand_pos_to_ratio(traj_sim[:, 7:])
     traj = _sim_joint_to_bridge_command(traj_sim)
     source_desc = (
         f"obs[{args.obs_joint_start}:{args.obs_joint_start + dof}] "
@@ -448,6 +530,45 @@ def main() -> int:
             replay_uniform,
             max_step_rad=args.max_command_step_rad,
         )
+
+    pause_step = args.pause_at_replay_step
+    if args.pause_at_midpoint and pause_step == 0 and len(replay_path) > 0:
+        pause_step = int(math.ceil(len(replay_path) / 2.0))
+    pause_step_effective = pause_step if 1 <= pause_step <= len(replay_path) else 0
+
+    # Hand offset can switch at pause step: pre for steps < switch, post for steps >= switch.
+    offset_pre = (
+        float(args.hand_open_offset_ratio_pre)
+        if args.hand_open_offset_ratio_pre is not None
+        else float(args.hand_open_offset_ratio)
+    )
+    offset_post = (
+        float(args.hand_open_offset_ratio_post)
+        if args.hand_open_offset_ratio_post is not None
+        else float(args.hand_open_offset_ratio)
+    )
+    replay_path, hand_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
+        replay_path=replay_path,
+        offset_pre=offset_pre,
+        offset_post=offset_post,
+        switch_step_1based=pause_step_effective,
+        transition_steps=args.hand_offset_transition_steps,
+    )
+    # Keep init/hold hand targets continuous with replay pre-offset.
+    init_path, init_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
+        replay_path=init_path,
+        offset_pre=offset_pre,
+        offset_post=offset_pre,
+        switch_step_1based=0,
+        transition_steps=1,
+    )
+    init_hold_path, init_hold_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
+        replay_path=init_hold_path,
+        offset_pre=offset_pre,
+        offset_post=offset_pre,
+        switch_step_1based=0,
+        transition_steps=1,
+    )
 
     full = init_path + init_hold_path + replay_path
 
@@ -505,11 +626,45 @@ def main() -> int:
     rospy.loginfo("Replaying trajectory file: %s", os.path.expanduser(args.traj_file))
     rospy.loginfo("Dataset=%s shape=%s -> dof=%d", args.dataset_key, str(tuple(obs_traj.shape)), dof)
     rospy.loginfo("Replay mapping: %s", source_desc)
-    rospy.loginfo(
-        "Hand angleRatio range after mapping: min=%.3f max=%.3f",
-        float(np.min(hand_ratio)),
-        float(np.max(hand_ratio)),
-    )
+    if replay_path:
+        replay_hand_ratio = _bridge_hand_pos_to_ratio(np.stack([q[7:] for q in replay_path], axis=0))
+        rospy.loginfo(
+            "Hand angleRatio range after mapping: min=%.3f max=%.3f",
+            float(np.min(replay_hand_ratio)),
+            float(np.max(replay_hand_ratio)),
+        )
+    if abs(offset_pre) > 1e-12 or abs(offset_post) > 1e-12:
+        rospy.loginfo(
+            "Applied hand-open-offset-ratio pre=%.4f, post=%.4f (positive=open, negative=close)",
+            offset_pre,
+            offset_post,
+        )
+        if pause_step_effective > 0:
+            rospy.loginfo(
+                "Hand offset switch step=%d/%d (post applies from this step onward)",
+                pause_step_effective,
+                len(replay_path),
+            )
+            if abs(offset_post - offset_pre) > 1e-12:
+                rospy.loginfo(
+                    "Hand offset transition smoothing: %d step(s) for pre->post ramp",
+                    args.hand_offset_transition_steps,
+                )
+        elif abs(offset_post - offset_pre) > 1e-12:
+            rospy.logwarn(
+                "Post hand offset differs from pre but no valid pause/switch step is active; using pre for all steps."
+            )
+        if hand_offset_clipped_count > 0:
+            rospy.logwarn(
+                "Clamped %d hand ratio entries to [0,1] after applying hand-open-offset-ratio.",
+                hand_offset_clipped_count,
+            )
+        init_offset_total = init_offset_clipped_count + init_hold_offset_clipped_count
+        if init_offset_total > 0:
+            rospy.logwarn(
+                "Clamped %d init/hold hand ratio entries to [0,1] after applying pre hand offset.",
+                init_offset_total,
+            )
     if clipped_count > 0:
         rospy.logwarn("Clamped %d obs joint entries outside configured joint limits.", clipped_count)
     rospy.loginfo("Publish topic=%s, feedback topic=%s", args.command_topic, args.joint_state_topic)
@@ -535,17 +690,17 @@ def main() -> int:
             replay_inserted,
         )
     rospy.loginfo("First traj waypoint=%s", np.array2string(q_first, precision=3))
-    if args.pause_at_replay_step > 0:
-        if args.pause_at_replay_step > len(replay_path):
+    if pause_step > 0:
+        if pause_step > len(replay_path):
             rospy.logwarn(
                 "Pause step %d is beyond replay length %d; pause will not trigger.",
-                args.pause_at_replay_step,
+                pause_step,
                 len(replay_path),
             )
         else:
             rospy.loginfo(
                 "Replay pause configured at step %d/%d (before publish).",
-                args.pause_at_replay_step,
+                pause_step,
                 len(replay_path),
             )
     rospy.loginfo(
@@ -605,7 +760,7 @@ def main() -> int:
     rospy.loginfo("Execution phase: replay")
     for idx, q_cmd in enumerate(replay_path):
         step_1based = idx + 1
-        if args.pause_at_replay_step > 0 and step_1based == args.pause_at_replay_step:
+        if pause_step > 0 and step_1based == pause_step:
             try:
                 input(f"Paused at replay step {step_1based}/{len(replay_path)}. press enter to resume")
             except EOFError:
