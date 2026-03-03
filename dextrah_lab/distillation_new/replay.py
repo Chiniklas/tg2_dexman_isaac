@@ -229,7 +229,8 @@ class PolicyEvaluator:
         mus = res_dict["mus"]
         sigmas = res_dict["sigmas"]
         distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
-        selected_action = distr.sample().squeeze()
+        # Keep the batch dimension for single-env replay.
+        selected_action = distr.sample()
         selected_action = torch.clamp(selected_action, -1., 1.)
         
         # Store actions for next step

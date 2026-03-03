@@ -27,6 +27,7 @@ root_path = os.path.dirname(module_path)
 # tg2_inspirehand_usd_path = os.path.join(root_path, "tg2_inspirehand.usd")
 # tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand.usd"
 tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand_no_leg.usd"
+# tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand_no_leg_colored.usd"
 TG2_INSPIREHAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=tg2_inspirehand_usd_path,
