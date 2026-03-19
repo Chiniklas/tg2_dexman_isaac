@@ -1685,27 +1685,131 @@ class SafeDagger:
         )
 
     # --- Teacher Policy and Action Selection ---
+    def _resolve_teacher_checkpoint_path(self, path_spec):
+        path = os.path.expanduser(str(path_spec))
+        if os.path.isfile(path):
+            return path
+        if not os.path.isdir(path):
+            return None
+
+        preferred_names = ["dextrah_lstm.pth", "last.pth"]
+        for filename in preferred_names:
+            preferred_path = os.path.join(path, filename)
+            if os.path.isfile(preferred_path):
+                return preferred_path
+
+        direct_candidates = sorted(glob.glob(os.path.join(path, "*.pth")))
+        if len(direct_candidates) > 0:
+            return direct_candidates[0]
+
+        recursive_candidates = sorted(glob.glob(os.path.join(path, "**", "*.pth"), recursive=True))
+        if len(recursive_candidates) > 0:
+            return recursive_candidates[0]
+        return None
+
+    def _list_teacher_checkpoint_dirs(self, ckpt_root):
+        discovered = {}
+        if not os.path.isdir(ckpt_root):
+            return discovered
+        for entry in sorted(os.listdir(ckpt_root)):
+            if entry.startswith("."):
+                continue
+            subdir = os.path.join(ckpt_root, entry)
+            if not os.path.isdir(subdir):
+                continue
+            ckpt_path = self._resolve_teacher_checkpoint_path(subdir)
+            if ckpt_path is not None:
+                discovered[str(entry)] = ckpt_path
+        return discovered
+
     def _build_teacher_pool(self, ckpt_root):
         if not hasattr(self.ov_env, "object_names"):
             raise ValueError("Environment does not expose object_names for multi-teacher loading.")
         object_names = list(self.ov_env.object_names)
         if len(object_names) == 0:
             raise ValueError("No object names found for multi-teacher loading.")
+
+        ckpt_root = os.path.expanduser(str(ckpt_root))
+        discovered_by_dir = self._list_teacher_checkpoint_dirs(ckpt_root)
+        teacher_cfg = self.config.get("teacher", {}) or {}
+        explicit_map = teacher_cfg.get("object_ckpt_map", None)
+        if explicit_map is not None and not isinstance(explicit_map, dict):
+            raise ValueError("teacher.object_ckpt_map must be a dictionary when provided.")
+        explicit_map = {str(k): str(v) for k, v in (explicit_map or {}).items()}
+
         ckpt_map = {}
         missing = []
-        for name in object_names:
-            subdir = os.path.join(ckpt_root, name)
-            if not os.path.isdir(subdir):
-                missing.append(name)
-                continue
-            candidates = sorted(glob.glob(os.path.join(subdir, "*.pth")))
-            if len(candidates) == 0:
-                missing.append(name)
-                continue
-            ckpt_map[name] = candidates[0]
-        if missing:
+        if len(explicit_map) > 0:
+            for object_name in object_names:
+                map_value = explicit_map.get(str(object_name), None)
+                if map_value is None:
+                    map_value = explicit_map.get("*", None)
+                if map_value is None and object_name in discovered_by_dir:
+                    ckpt_map[object_name] = discovered_by_dir[object_name]
+                    continue
+                if map_value is None:
+                    missing.append(object_name)
+                    continue
+
+                mapped_path = os.path.expanduser(map_value)
+                if not os.path.isabs(mapped_path):
+                    mapped_path = os.path.join(ckpt_root, mapped_path)
+                resolved_ckpt = self._resolve_teacher_checkpoint_path(mapped_path)
+                if resolved_ckpt is None:
+                    missing.append(object_name)
+                    if self.rank == 0:
+                        print(
+                            f"[TeacherPool] Could not resolve mapped checkpoint for object '{object_name}' "
+                            f"from map value '{map_value}' (root={ckpt_root}).",
+                            flush=True,
+                        )
+                    continue
+                ckpt_map[object_name] = resolved_ckpt
+        else:
+            for object_name in object_names:
+                if object_name in discovered_by_dir:
+                    ckpt_map[object_name] = discovered_by_dir[object_name]
+                else:
+                    missing.append(object_name)
+
+            if len(missing) > 0:
+                if len(discovered_by_dir) == 1:
+                    single_ckpt = next(iter(discovered_by_dir.values()))
+                    for object_name in object_names:
+                        ckpt_map[object_name] = single_ckpt
+                    missing = []
+                    if self.rank == 0:
+                        print(
+                            "[TeacherPool] Object names do not match checkpoint folders; "
+                            f"using single teacher checkpoint for all objects: {single_ckpt}",
+                            flush=True,
+                        )
+                elif len(discovered_by_dir) == len(object_names) and len(discovered_by_dir) > 0:
+                    sorted_objects = sorted(object_names)
+                    sorted_dirs = sorted(discovered_by_dir.keys())
+                    ckpt_map = {
+                        obj_name: discovered_by_dir[dir_name]
+                        for obj_name, dir_name in zip(sorted_objects, sorted_dirs)
+                    }
+                    missing = []
+                    if self.rank == 0:
+                        mapping_str = ", ".join(
+                            [f"{obj}->{src}" for obj, src in zip(sorted_objects, sorted_dirs)]
+                        )
+                        print(
+                            "[TeacherPool] Object names do not match checkpoint folder names; "
+                            f"using sorted fallback mapping: {mapping_str}",
+                            flush=True,
+                        )
+
+        if len(missing) > 0:
             missing_str = ", ".join(missing)
-            raise ValueError(f"Missing teacher checkpoints for objects: {missing_str} (root: {ckpt_root})")
+            available_str = ", ".join(sorted(discovered_by_dir.keys()))
+            raise ValueError(
+                f"Missing teacher checkpoints for objects: {missing_str} (root: {ckpt_root}). "
+                f"Available checkpoint folders: [{available_str}]. "
+                "Provide --teacher_object_map to map object names to checkpoint folders/files."
+            )
 
         models = []
         for name in object_names:
@@ -1843,7 +1947,10 @@ class SafeDagger:
                 mus = res_dict["mus"]
                 sigmas = res_dict["sigmas"]
         distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
-        selected_action = distr.sample().squeeze()
+        selected_action = distr.sample()
+        # Keep batch dimension for single-env runs (num_envs=1).
+        if selected_action.ndim == 1:
+            selected_action = selected_action.unsqueeze(0)
         # clamp selected action between 1 and -1
         selected_action = torch.clamp(selected_action, -1., 1.)
 
@@ -1883,7 +1990,10 @@ class SafeDagger:
             else:
                 hidden_states = [s for s in res_dict["rnn_states"]]
         distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
-        selected_action = distr.sample().squeeze()
+        selected_action = distr.sample()
+        # Keep batch dimension for single-env evaluation.
+        if selected_action.ndim == 1:
+            selected_action = selected_action.unsqueeze(0)
         selected_action = torch.clamp(selected_action, -1., 1.)
         return selected_action.detach(), hidden_states
 

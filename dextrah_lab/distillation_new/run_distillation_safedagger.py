@@ -23,6 +23,15 @@ parser.add_argument(
 )
 parser.add_argument("--max_iterations", type=int, default=100000, help="Total distillation iterations.")
 parser.add_argument("--teacher", type=str, default=None, help="Teacher checkpoint to use")
+parser.add_argument(
+    "--teacher_object_map",
+    type=str,
+    default=None,
+    help=(
+        "Optional JSON/YAML object->teacher mapping (file path or inline JSON). "
+        "Map values can be subdir names under --teacher root or explicit .pth/.pt paths."
+    ),
+)
 parser.add_argument("--student", type=str, default=None, help="Student checkpoint to use")
 parser.add_argument("--play_policy", type=bool, default=False, help="Play a distilled policy.")
 parser.add_argument(
@@ -36,6 +45,18 @@ parser.add_argument(
         "safedagger = teacher-intervention training only, "
         "both = warmstart + safedagger."
     ),
+)
+parser.add_argument(
+    "--warm_start_collect_steps",
+    type=int,
+    default=None,
+    help="Override warm-start rollout collection steps.",
+)
+parser.add_argument(
+    "--warm_start_predictor_train_steps",
+    type=int,
+    default=None,
+    help="Override warm-start safety-model fit steps.",
 )
 parser.add_argument("--data_aug", action="store_true", default=False, help="Whether to use data augmentation for student")
 parser.add_argument(
@@ -180,6 +201,39 @@ def _to_jsonable(value):
     return value
 
 
+def _load_teacher_object_map(raw_value: str | None):
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    if len(text) == 0:
+        return None
+
+    loaded = None
+    candidate_path = pathlib.Path(text).expanduser()
+    if candidate_path.is_file():
+        with candidate_path.open("r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+    else:
+        try:
+            loaded = json.loads(text)
+        except Exception as exc:
+            raise ValueError(
+                "--teacher_object_map must be a valid JSON string or an existing JSON/YAML file path."
+            ) from exc
+
+    if loaded is None:
+        return None
+    if not isinstance(loaded, dict):
+        raise ValueError("--teacher_object_map must parse to a dictionary.")
+
+    normalized = {}
+    for key, value in loaded.items():
+        if value is None:
+            continue
+        normalized[str(key)] = str(value)
+    return normalized if len(normalized) > 0 else None
+
+
 def _reason_prop_to_pct(reason_prop: dict, unsafe_rate: float, reason_names: list[str]) -> dict[str, float]:
     if unsafe_rate <= 0.0:
         return {name: 0.0 for name in reason_names}
@@ -289,6 +343,7 @@ def main(env_cfg, agent_cfg: dict):
             student_ckpt = args_cli.student
             if not os.path.isabs(student_ckpt):
                 student_ckpt = os.path.join(parent_path, "pretrained_ckpts", student_ckpt)
+        teacher_object_map = _load_teacher_object_map(args_cli.teacher_object_map)
 
         train_dir = "runs"
         pipeline_tag = str(args_cli.pipeline).lower()
@@ -327,6 +382,7 @@ def main(env_cfg, agent_cfg: dict):
             "cfg": teacher_cfg,
             "ckpt": teacher_ckpt,
             "obs_type": "expert_policy",
+            "object_ckpt_map": teacher_object_map,
         },
         "imitation_loss_type": distill_cfg.get("imitation_loss_type", "l2"),
         "unsafe_mode": distill_cfg.get("unsafe_mode", "l2"),
@@ -404,6 +460,10 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["switch_back_min_teacher_steps"] = int(args_cli.switch_back_min_teacher_steps)
         if args_cli.eval_lift_hold_s is not None:
             dagger_config["eval_lift_hold_s"] = args_cli.eval_lift_hold_s
+        if args_cli.warm_start_collect_steps is not None:
+            dagger_config["warm_start"]["collect_steps"] = int(args_cli.warm_start_collect_steps)
+        if args_cli.warm_start_predictor_train_steps is not None:
+            dagger_config["warm_start"]["predictor_train_steps"] = int(args_cli.warm_start_predictor_train_steps)
 
     # Save run metadata/config snapshots in the same style as rl_games train logs.
         run_meta = {

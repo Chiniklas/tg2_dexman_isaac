@@ -22,6 +22,8 @@ Output Structure:
         └── videos/
             ├── env_0_file_0.mp4
             └── ...
+
+python3 replay.py   --task dextrah_tg2_inspirehand   --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-safedagger_02-11-56-50/nn/dextrah_student_safe_dagger.pth.pth   --num_envs 1   --num_episodes 5   --enable_cameras   env.objects_dir=test_object   env.distillation=True   env.simulate_stereo=True   env.disable_dome_light_randomization=False
 """
 
 import argparse

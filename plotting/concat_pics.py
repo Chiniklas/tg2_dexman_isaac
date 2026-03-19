@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 
 DEFAULT_INPUT_ROOT = Path("/home/chizhang/projects/dextrah/tg2_dexman_isaac/plotting/plots")
@@ -19,6 +19,13 @@ ROW_SPECS = (
     ("palm_flipped", "Palm Flipped"),
     ("hand_too_far", "Hand Too Far"),
 )
+
+OBJECT_ALIASES = {
+    "windcart": "1m0lvpzs",
+    # "boot": "2kp2e9k7",
+    # "toolbox": "2oiqpnts",
+    "cow": "z73ltdbb",
+}
 
 BACKGROUND = (255, 255, 255)
 TEXT_COLOR = (32, 32, 32)
@@ -48,19 +55,32 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_font() -> ImageFont.ImageFont:
-    try:
-        return ImageFont.truetype("DejaVuSans.ttf", 20)
-    except OSError:
-        return ImageFont.load_default()
-
-
 def _discover_object_dirs(input_root: Path) -> list[Path]:
     object_dirs = []
     for child in sorted(p for p in input_root.iterdir() if p.is_dir()):
         if any((child / f"{metric_key}.png").exists() for metric_key, _ in ROW_SPECS):
             object_dirs.append(child)
     return object_dirs
+
+
+def _resolve_object_dirs(input_root: Path) -> list[Path]:
+    discovered = _discover_object_dirs(input_root)
+    dir_map = {path.name.lower(): path for path in discovered}
+
+    resolved = []
+    for object_id in OBJECT_ALIASES.values():
+        object_dir = dir_map.get(object_id.lower())
+        if object_dir is None:
+            continue
+        resolved.append(object_dir)
+    if not resolved:
+        configured = " ".join(OBJECT_ALIASES.values())
+        available = " ".join(path.name for path in discovered)
+        raise ValueError(
+            "None of the configured object rows were found. "
+            f"Configured object ids: {configured}. Available directories: {available}"
+        )
+    return resolved
 
 
 def _measure_cell_size(object_dirs: list[Path]) -> tuple[int, int]:
@@ -98,7 +118,7 @@ def main() -> int:
     if not input_root.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_root}")
 
-    object_dirs = _discover_object_dirs(input_root)
+    object_dirs = _resolve_object_dirs(input_root)
     if not object_dirs:
         raise ValueError(f"No object subdirectories with metric PNGs found under: {input_root}")
 
@@ -110,8 +130,6 @@ def main() -> int:
 
     canvas = Image.new("RGB", (canvas_width, canvas_height), BACKGROUND)
     draw = ImageDraw.Draw(canvas)
-    font = _load_font()
-
     for row_idx, object_dir in enumerate(object_dirs):
         for col_idx, (metric_key, _) in enumerate(ROW_SPECS):
             image_path = object_dir / f"{metric_key}.png"
