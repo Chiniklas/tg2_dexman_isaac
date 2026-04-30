@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>policy_inference_stereo_transformer</name>
+  <version>0.1.0</version>
+  <description>ROS 2 stereo transformer policy inference bridge for TG2 deployment.</description>
+  <maintainer email="tg2@example.com">tg2</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -35,3 +35,7 @@ temp
 traj_env_*
 teacher_replay_results.yaml
 .codex
+
+build/
+install/
+log/
