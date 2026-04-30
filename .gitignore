@@ -34,3 +34,4 @@ student_replay_logs
 temp
 traj_env_*
 teacher_replay_results.yaml
+.codex
