@@ -14,23 +14,26 @@ Hand translation rule:
 - For init defaults taken from sim joint positions, this script converts to real ratio with:
   ratio = 1 - (sim_pos - min) / (max - min)
 - Before publishing to /arm/command_joint_states (so the bridge outputs that ratio), it maps back with:
-  cmd_pos = min + ratio * (max - min)
+  cmd_pos = max - ratio * (max - min)
 
 Examples:
-python3 test_init_and_homing.py --mode homing --steps 120 --rate 30 --hold-sec 3
-python3 test_init_and_homing.py --mode init --steps 120 --rate 30 --hold-sec 3
+python3 src/inference_offline/tests/test_init_and_homing.py --mode homing --steps 120 --rate 30 --hold-sec 3
+python3 src/inference_offline/tests/test_init_and_homing.py --mode init --steps 120 --rate 30 --hold-sec 3
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-import rospy
+import rclpy
+from rclpy.node import Node
+from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import JointState
 
 
@@ -49,6 +52,31 @@ RIGHT_ARM_HAND_JOINTS = [
     "thumb_joint_0",
     "thumb_joint_1",
 ]
+
+RIGHT_ARM_HAND_COMMAND_JOINTS = [
+    "shoulder_pitch_r_joint",
+    "shoulder_roll_r_joint",
+    "shoulder_yaw_r_joint",
+    "elbow_pitch_r_joint",
+    "elbow_yaw_r_joint",
+    "wrist_pitch_r_joint",
+    "wrist_roll_r_joint",
+    "right_little_1_joint",
+    "right_ring_1_joint",
+    "right_middle_1_joint",
+    "right_index_1_joint",
+    "right_thumb_1_joint",
+    "right_thumb_2_joint",
+]
+
+JOINT_NAME_ALIASES = {
+    "little_joint_0": ("little_joint_0", "right_little_1_joint"),
+    "ring_joint_0": ("ring_joint_0", "right_ring_1_joint"),
+    "middle_joint_0": ("middle_joint_0", "right_middle_1_joint"),
+    "index_joint_0": ("index_joint_0", "right_index_1_joint"),
+    "thumb_joint_0": ("thumb_joint_0", "right_thumb_1_joint"),
+    "thumb_joint_1": ("thumb_joint_1", "right_thumb_2_joint"),
+}
 
 RIGHT_ARM_INIT = np.asarray(
     [-1.570796, -0.523599, 1.108284, -1.275836, 0.089012, -0.027925, -0.048869],
@@ -77,6 +105,14 @@ RIGHT_HAND_HOMING_RATIO = np.asarray(
     [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     dtype=np.float64,
 )
+
+
+def _log_info(logger, msg: str, *args: object) -> None:
+    logger.info(msg % args if args else msg)
+
+
+def _log_error(logger, msg: str, *args: object) -> None:
+    logger.error(msg % args if args else msg)
 
 
 def _parse_vec(raw: str, label: str, size: int) -> np.ndarray:
@@ -108,8 +144,8 @@ def _hand_ratio_to_pos(ratio: np.ndarray) -> np.ndarray:
     lo = HAND_JOINT_LIMITS[:, 0]
     hi = HAND_JOINT_LIMITS[:, 1]
     ratio = np.clip(ratio, 0.0, 1.0)
-    # Publish hand joint values such that the bridge sends this exact ratio.
-    return lo + ratio * (hi - lo)
+    # Bridge command semantics use joint-space min=open, max=close.
+    return hi - ratio * (hi - lo)
 
 
 @dataclass
@@ -118,34 +154,65 @@ class FeedbackState:
     q: Optional[np.ndarray] = None
 
 
-class JointStateWatcher:
-    def __init__(self, topic: str, joint_names: list[str]) -> None:
+class JointStateCommandNode(Node):
+    def __init__(
+        self,
+        command_topic: str,
+        joint_state_topic: str,
+        joint_names: list[str],
+        command_joint_names: list[str],
+    ) -> None:
+        super().__init__("test_init_and_homing")
         self._joint_names = joint_names
+        self._command_joint_names = command_joint_names
         self.state = FeedbackState()
-        self._sub = rospy.Subscriber(topic, JointState, self._cb, queue_size=10)
+        self._pub = self.create_publisher(JointState, command_topic, 10)
+        self._sub = self.create_subscription(JointState, joint_state_topic, self._cb, 10)
 
     def _cb(self, msg: JointState) -> None:
         idx = {name: i for i, name in enumerate(msg.name)}
         q = np.zeros(len(self._joint_names), dtype=np.float64)
         for j, name in enumerate(self._joint_names):
-            i = idx.get(name)
+            aliases = JOINT_NAME_ALIASES.get(name, (name,))
+            i = None
+            for alias in aliases:
+                candidate = idx.get(alias)
+                if candidate is not None:
+                    i = candidate
+                    break
             if i is None or i >= len(msg.position):
                 return
             q[j] = float(msg.position[i])
         self.state = FeedbackState(stamp=time.time(), q=q)
 
+    def publish_target(self, q_cmd: np.ndarray) -> None:
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = list(self._command_joint_names)
+        msg.position = q_cmd.astype(float).tolist()
+        msg.velocity = []
+        msg.effort = []
+        self._pub.publish(msg)
 
-def _publish_target(pub: rospy.Publisher, joint_names: list[str], q_cmd: np.ndarray) -> None:
-    msg = JointState()
-    msg.header.stamp = rospy.Time.now()
-    msg.name = list(joint_names)
-    msg.position = q_cmd.astype(float).tolist()
-    msg.velocity = []
-    msg.effort = []
-    pub.publish(msg)
+    def wait_for_feedback(self, timeout_sec: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        while rclpy.ok() and self.state.q is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            rclpy.spin_once(self, timeout_sec=min(0.05, remaining))
+        return self.state.q is not None
+
+    def sleep_with_spin(self, duration_sec: float) -> None:
+        deadline = time.monotonic() + max(0.0, duration_sec)
+        while rclpy.ok():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            rclpy.spin_once(self, timeout_sec=min(0.05, remaining))
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Move right arm+hand to hardcoded homing/init pose and hold.")
     p.add_argument("--command-topic", default="/arm/command_joint_states")
     p.add_argument("--joint-state-topic", default="/joint_states")
@@ -202,101 +269,114 @@ def parse_args() -> argparse.Namespace:
         help="Safety clamp: max per-step joint delta in radians.",
     )
     p.add_argument("--dry-run", action="store_true", help="Print trajectory but do not publish.")
-    return p.parse_args()
+    cli_args = remove_ros_args(args=argv or sys.argv)[1:]
+    return p.parse_args(cli_args)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     joint_names = RIGHT_ARM_HAND_JOINTS
     dof = len(joint_names)
 
-    rospy.init_node("test_init_and_homing", anonymous=True)
-    pub = rospy.Publisher(args.command_topic, JointState, queue_size=10)
-    watcher = JointStateWatcher(args.joint_state_topic, joint_names)
+    rclpy.init(args=argv)
+    node = JointStateCommandNode(
+        args.command_topic,
+        args.joint_state_topic,
+        joint_names,
+        RIGHT_ARM_HAND_COMMAND_JOINTS,
+    )
+    logger = node.get_logger()
 
-    # Wait for at least one feedback frame so we can start from real state.
-    t0 = time.time()
-    while not rospy.is_shutdown() and watcher.state.q is None and (time.time() - t0) < args.wait_feedback_sec:
-        time.sleep(0.05)
-    if watcher.state.q is None and not args.start:
-        rospy.logerr("No /joint_states received within %.2fs, and --start not provided.", args.wait_feedback_sec)
-        return 1
+    try:
+        if not args.start and not node.wait_for_feedback(args.wait_feedback_sec):
+            _log_error(logger, "No /joint_states received within %.2fs, and --start not provided.", args.wait_feedback_sec)
+            return 1
 
-    q_start = _parse_vec(args.start, "--start", dof) if args.start else watcher.state.q.copy()
-    if q_start is None:
-        rospy.logerr("Start vector is unavailable.")
-        return 1
+        q_start = _parse_vec(args.start, "--start", dof) if args.start else node.state.q.copy()
+        if q_start is None:
+            _log_error(logger, "Start vector is unavailable.")
+            return 1
 
-    if args.mode == "init":
-        q_arm_goal = _parse_vec(args.init_pose, "--init-pose", 7) if args.init_pose else RIGHT_ARM_INIT.copy()
-        q_hand_ratio = (
-            _parse_vec(args.init_hand, "--init-hand", 6)
-            if args.init_hand
-            else _hand_pos_to_ratio(RIGHT_HAND_INIT_SIM_POS)
+        if args.mode == "init":
+            q_arm_goal = _parse_vec(args.init_pose, "--init-pose", 7) if args.init_pose else RIGHT_ARM_INIT.copy()
+            q_hand_ratio = (
+                _parse_vec(args.init_hand, "--init-hand", 6)
+                if args.init_hand
+                else _hand_pos_to_ratio(RIGHT_HAND_INIT_SIM_POS)
+            )
+            goal_label = "init"
+        else:
+            q_arm_goal = (
+                _parse_vec(args.homing_pose, "--homing-pose", 7) if args.homing_pose else RIGHT_ARM_HOMING.copy()
+            )
+            q_hand_ratio = (
+                _parse_vec(args.homing_hand, "--homing-hand", 6)
+                if args.homing_hand
+                else RIGHT_HAND_HOMING_RATIO.copy()
+            )
+            goal_label = "homing"
+
+        q_hand_goal = _hand_ratio_to_pos(q_hand_ratio)
+        q_goal = np.concatenate([q_arm_goal, q_hand_goal], axis=0)
+        full = _interpolate(q_start, q_goal, args.steps)
+
+        max_step = 0.0
+        for i in range(1, len(full)):
+            step = float(np.max(np.abs(full[i] - full[i - 1])))
+            max_step = max(max_step, step)
+        if max_step > args.max_command_step_rad:
+            _log_error(
+                logger,
+                "Aborting: per-step delta %.4f rad exceeds --max-command-step-rad %.4f rad.",
+                max_step,
+                args.max_command_step_rad,
+            )
+            return 1
+
+        _log_info(logger, "Moving right arm+hand (%d DoF) via %s", dof, args.command_topic)
+        _log_info(logger, "Start=%s", np.array2string(q_start, precision=3))
+        _log_info(logger, "Goal (%s)=%s", goal_label, np.array2string(q_goal, precision=3))
+        _log_info(
+            logger,
+            "Hand ratio goal (%s)=%s",
+            goal_label,
+            np.array2string(np.clip(q_hand_ratio, 0.0, 1.0), precision=3),
         )
-        goal_label = "init"
-    else:
-        q_arm_goal = _parse_vec(args.homing_pose, "--homing-pose", 7) if args.homing_pose else RIGHT_ARM_HOMING.copy()
-        q_hand_ratio = (
-            _parse_vec(args.homing_hand, "--homing-hand", 6)
-            if args.homing_hand
-            else RIGHT_HAND_HOMING_RATIO.copy()
-        )
-        goal_label = "homing"
-    q_hand_goal = _hand_ratio_to_pos(q_hand_ratio)
-    q_goal = np.concatenate([q_arm_goal, q_hand_goal], axis=0)
-    full = _interpolate(q_start, q_goal, args.steps)
+        _log_info(logger, "Waypoints=%d max_step=%.4f rad", len(full), max_step)
 
-    # Basic safety gate on trajectory smoothness.
-    max_step = 0.0
-    for i in range(1, len(full)):
-        step = float(np.max(np.abs(full[i] - full[i - 1])))
-        max_step = max(max_step, step)
-    if max_step > args.max_command_step_rad:
-        rospy.logerr(
-            "Aborting: per-step delta %.4f rad exceeds --max-command-step-rad %.4f rad.",
-            max_step,
-            args.max_command_step_rad,
-        )
-        return 1
+        if args.dry_run:
+            return 0
 
-    rospy.loginfo("Moving right arm+hand (%d DoF) via %s", dof, args.command_topic)
-    rospy.loginfo("Start=%s", np.array2string(q_start, precision=3))
-    rospy.loginfo("Goal (%s)=%s", goal_label, np.array2string(q_goal, precision=3))
-    rospy.loginfo("Hand ratio goal (%s)=%s", goal_label, np.array2string(np.clip(q_hand_ratio, 0.0, 1.0), precision=3))
-    rospy.loginfo("Waypoints=%d max_step=%.4f rad", len(full), max_step)
+        period_sec = 1.0 / max(1e-3, args.rate)
+        hold_ticks = int(math.ceil(max(0.0, args.hold_sec) * args.rate))
+        last_log = time.time()
 
-    if args.dry_run:
+        for idx, q_cmd in enumerate(full):
+            if not rclpy.ok():
+                return 1
+            node.publish_target(q_cmd)
+            node.sleep_with_spin(period_sec)
+
+            if node.state.q is not None and (time.time() - node.state.stamp) > args.feedback_timeout_sec:
+                _log_error(logger, "Stale joint feedback (> %.2fs). Aborting.", args.feedback_timeout_sec)
+                return 1
+
+            if node.state.q is not None and (time.time() - last_log) > 0.5:
+                err = float(np.max(np.abs(q_cmd - node.state.q)))
+                _log_info(logger, "Waypoint %d/%d max|cmd-feedback|=%.4f rad", idx + 1, len(full), err)
+                last_log = time.time()
+
+        for _ in range(hold_ticks):
+            if not rclpy.ok():
+                return 1
+            node.publish_target(q_goal)
+            node.sleep_with_spin(period_sec)
+
+        _log_info(logger, "Move complete (mode=%s, held for %.2fs).", goal_label, args.hold_sec)
         return 0
-
-    rate = rospy.Rate(max(1e-3, args.rate))
-    hold_ticks = int(math.ceil(max(0.0, args.hold_sec) * args.rate))
-    last_log = time.time()
-
-    for idx, q_cmd in enumerate(full):
-        if rospy.is_shutdown():
-            return 1
-        _publish_target(pub, joint_names, q_cmd)
-
-        if watcher.state.q is not None and (time.time() - watcher.state.stamp) > args.feedback_timeout_sec:
-            rospy.logerr("Stale joint feedback (> %.2fs). Aborting.", args.feedback_timeout_sec)
-            return 1
-
-        if watcher.state.q is not None and (time.time() - last_log) > 0.5:
-            err = float(np.max(np.abs(q_cmd - watcher.state.q)))
-            rospy.loginfo("Waypoint %d/%d max|cmd-feedback|=%.4f rad", idx + 1, len(full), err)
-            last_log = time.time()
-        rate.sleep()
-
-    # Hold goal pose for stability.
-    for _ in range(hold_ticks):
-        if rospy.is_shutdown():
-            return 1
-        _publish_target(pub, joint_names, q_goal)
-        rate.sleep()
-
-    rospy.loginfo("Move complete (mode=%s, held for %.2fs).", goal_label, args.hold_sec)
-    return 0
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

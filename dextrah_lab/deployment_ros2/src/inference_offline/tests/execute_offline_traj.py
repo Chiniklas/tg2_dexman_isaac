@@ -11,32 +11,31 @@ Runtime flow:
 4) Replay offline trajectory
 
 Default target file:
-  /home/chi/projects/tg2_dexman_isaac/dextrah_lab/deployment_tg2_inspirehand/ws/src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5
+  .../deployment_ros2/src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5
 
-Working command (inside tiangong-noetic-ws container):
-python3 /tiangong_infra_ws/ws/src/inference_offline/tests/execute_offline_traj.py \
---traj-file /tiangong_infra_ws/ws/src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5 \
---dataset-key obs \
---obs-joint-start 0 \
---rate 30
+Working command (from a sourced ROS 2 workspace):
+python3 src/inference_offline/tests/execute_offline_traj.py \
+  --traj-file src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5 \
+  --dataset-key obs \
+  --obs-joint-start 0 \
+  --rate 30
 
 Dry-run check:
-  python3 /tiangong_infra_ws/ws/src/inference_offline/tests/execute_offline_traj.py \
-    --traj-file /tiangong_infra_ws/ws/src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5 \
-    --dataset-key obs \
-    --obs-joint-start 0 \
-    --rate 30 \
-    --dry-run
+python3 src/inference_offline/tests/execute_offline_traj.py \
+  --traj-file src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5 \
+  --dataset-key obs \
+  --obs-joint-start 0 \
+  --rate 30 \
+  --dry-run
 
-midtime interruption:
-python3 /tiangong_infra_ws/ws/src/inference_offline/tests/execute_offline_traj.py \
-  --traj-file /tiangong_infra_ws/ws/src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5 \
+Mid-execution interruption:
+python3 src/inference_offline/tests/execute_offline_traj.py \
+  --traj-file src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5 \
   --dataset-key obs \
   --obs-joint-start 0 \
   --rate 30 \
   --pause-at-replay-step 120 \
   --hand-open-offset-ratio 0.08
-
 """
 
 from __future__ import annotations
@@ -44,12 +43,16 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import rospy
+import rclpy
+from rclpy.node import Node
+from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import JointState
 
 
@@ -68,6 +71,31 @@ RIGHT_ARM_HAND_JOINTS = [
     "thumb_joint_0",
     "thumb_joint_1",
 ]
+
+RIGHT_ARM_HAND_COMMAND_JOINTS = [
+    "shoulder_pitch_r_joint",
+    "shoulder_roll_r_joint",
+    "shoulder_yaw_r_joint",
+    "elbow_pitch_r_joint",
+    "elbow_yaw_r_joint",
+    "wrist_pitch_r_joint",
+    "wrist_roll_r_joint",
+    "right_little_1_joint",
+    "right_ring_1_joint",
+    "right_middle_1_joint",
+    "right_index_1_joint",
+    "right_thumb_1_joint",
+    "right_thumb_2_joint",
+]
+
+JOINT_NAME_ALIASES = {
+    "little_joint_0": ("little_joint_0", "right_little_1_joint"),
+    "ring_joint_0": ("ring_joint_0", "right_ring_1_joint"),
+    "middle_joint_0": ("middle_joint_0", "right_middle_1_joint"),
+    "index_joint_0": ("index_joint_0", "right_index_1_joint"),
+    "thumb_joint_0": ("thumb_joint_0", "right_thumb_1_joint"),
+    "thumb_joint_1": ("thumb_joint_1", "right_thumb_2_joint"),
+}
 
 RIGHT_ARM_INIT = np.asarray(
     [-1.570796, -0.523599, 1.108284, -1.275836, 0.089012, -0.027925, -0.048869],
@@ -103,10 +131,21 @@ INIT_STEPS_DEFAULT = 120
 INIT_HOLD_SEC_DEFAULT = 3.0
 MAX_STEP_EPS = 1e-6
 
-DEFAULT_TRAJ_FILE = (
-    "/home/chi/projects/tg2_dexman_isaac/dextrah_lab/deployment_tg2_inspirehand/ws/src/"
-    "inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5"
+DEFAULT_TRAJ_FILE = str(
+    Path(__file__).resolve().parent / "offline_tarjs" / "1m0lvpzs" / "traj_env_0_file_1.h5"
 )
+
+
+def _log_info(logger, msg: str, *args: object) -> None:
+    logger.info(msg % args if args else msg)
+
+
+def _log_warn(logger, msg: str, *args: object) -> None:
+    logger.warning(msg % args if args else msg)
+
+
+def _log_error(logger, msg: str, *args: object) -> None:
+    logger.error(msg % args if args else msg)
 
 
 def _interpolate(a: np.ndarray, b: np.ndarray, steps: int) -> list[np.ndarray]:
@@ -130,7 +169,7 @@ def _hand_ratio_to_pos(ratio: np.ndarray) -> np.ndarray:
     lo = HAND_JOINT_LIMITS[:, 0]
     hi = HAND_JOINT_LIMITS[:, 1]
     ratio = np.clip(ratio, 0.0, 1.0)
-    return lo + ratio * (hi - lo)
+    return hi - ratio * (hi - lo)
 
 
 def _sim_hand_pos_to_ratio(pos: np.ndarray) -> np.ndarray:
@@ -148,7 +187,7 @@ def _hand_ratio_to_bridge_pos(ratio: np.ndarray) -> np.ndarray:
     lo = JOINT_LOWER_LIMITS[7:]
     hi = JOINT_UPPER_LIMITS[7:]
     ratio = np.clip(ratio, 0.0, 1.0)
-    return lo + ratio * (hi - lo)
+    return hi - ratio * (hi - lo)
 
 
 def _bridge_hand_pos_to_ratio(pos: np.ndarray) -> np.ndarray:
@@ -156,7 +195,7 @@ def _bridge_hand_pos_to_ratio(pos: np.ndarray) -> np.ndarray:
     lo = JOINT_LOWER_LIMITS[7:]
     hi = JOINT_UPPER_LIMITS[7:]
     span = np.maximum(1e-6, hi - lo)
-    ratio = (pos - lo) / span
+    ratio = 1.0 - ((pos - lo) / span)
     return np.clip(ratio, 0.0, 1.0)
 
 
@@ -298,31 +337,62 @@ class FeedbackState:
     q: Optional[np.ndarray] = None
 
 
-class JointStateWatcher:
-    def __init__(self, topic: str, joint_names: list[str]) -> None:
+class JointStateCommandNode(Node):
+    def __init__(
+        self,
+        command_topic: str,
+        joint_state_topic: str,
+        joint_names: list[str],
+        command_joint_names: list[str],
+    ) -> None:
+        super().__init__("execute_offline_traj")
         self._joint_names = joint_names
+        self._command_joint_names = command_joint_names
         self.state = FeedbackState()
-        self._sub = rospy.Subscriber(topic, JointState, self._cb, queue_size=10)
+        self._pub = self.create_publisher(JointState, command_topic, 10)
+        self._sub = self.create_subscription(JointState, joint_state_topic, self._cb, 10)
 
     def _cb(self, msg: JointState) -> None:
         idx = {name: i for i, name in enumerate(msg.name)}
         q = np.zeros(len(self._joint_names), dtype=np.float64)
         for j, name in enumerate(self._joint_names):
-            i = idx.get(name)
+            aliases = JOINT_NAME_ALIASES.get(name, (name,))
+            i = None
+            for alias in aliases:
+                candidate = idx.get(alias)
+                if candidate is not None:
+                    i = candidate
+                    break
             if i is None or i >= len(msg.position):
                 return
             q[j] = float(msg.position[i])
         self.state = FeedbackState(stamp=time.time(), q=q)
 
+    def publish_target(self, q_cmd: np.ndarray) -> None:
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = list(self._command_joint_names)
+        msg.position = q_cmd.astype(float).tolist()
+        msg.velocity = []
+        msg.effort = []
+        self._pub.publish(msg)
 
-def _publish_target(pub: rospy.Publisher, joint_names: list[str], q_cmd: np.ndarray) -> None:
-    msg = JointState()
-    msg.header.stamp = rospy.Time.now()
-    msg.name = list(joint_names)
-    msg.position = q_cmd.astype(float).tolist()
-    msg.velocity = []
-    msg.effort = []
-    pub.publish(msg)
+    def wait_for_feedback(self, timeout_sec: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        while rclpy.ok() and self.state.q is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            rclpy.spin_once(self, timeout_sec=min(0.05, remaining))
+        return self.state.q is not None
+
+    def sleep_with_spin(self, duration_sec: float) -> None:
+        deadline = time.monotonic() + max(0.0, duration_sec)
+        while rclpy.ok():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            rclpy.spin_once(self, timeout_sec=min(0.05, remaining))
 
 
 def _load_traj(
@@ -335,7 +405,7 @@ def _load_traj(
         import h5py
     except ImportError as exc:
         raise RuntimeError(
-            "h5py is required to read trajectory files. Install it in the ROS python environment."
+            "h5py is required to read trajectory files. Install it in the ROS 2 Python environment."
         ) from exc
 
     path = os.path.expanduser(traj_file)
@@ -364,7 +434,7 @@ def _load_traj(
     return arr
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Execute H5 trajectory via /arm/command_joint_states.")
     p.add_argument("--traj-file", default=DEFAULT_TRAJ_FILE, help="Path to trajectory .h5 file.")
     p.add_argument("--dataset-key", default="obs", help="Dataset key to replay (default: obs).")
@@ -456,19 +526,16 @@ def parse_args() -> argparse.Namespace:
         help="Pause once at the replay midpoint (before publish), then press enter to resume.",
     )
     p.add_argument("--dry-run", action="store_true", help="Validate and print stats only (no publish).")
-    return p.parse_args()
+    cli_args = remove_ros_args(args=argv or sys.argv)[1:]
+    return p.parse_args(cli_args)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     if args.pause_at_replay_step < 0:
         raise ValueError("--pause-at-replay-step must be >= 0.")
     if args.hand_offset_transition_steps < 1:
         raise ValueError("--hand-offset-transition-steps must be >= 1.")
-    if args.pause_at_midpoint and args.pause_at_replay_step > 0:
-        rospy.logwarn(
-            "Both --pause-at-midpoint and --pause-at-replay-step were set; using --pause-at-replay-step."
-        )
 
     joint_names = RIGHT_ARM_HAND_JOINTS
     dof = len(joint_names)
@@ -491,307 +558,332 @@ def main() -> int:
         "joint targets -> bridge command semantics"
     )
 
-    rospy.init_node("execute_offline_traj", anonymous=True)
-    pub = rospy.Publisher(args.command_topic, JointState, queue_size=10)
-    watcher = JointStateWatcher(args.joint_state_topic, joint_names)
-
-    t0 = time.time()
-    while not rospy.is_shutdown() and watcher.state.q is None and (time.time() - t0) < args.wait_feedback_sec:
-        time.sleep(0.05)
-    if watcher.state.q is None:
-        rospy.logerr("No /joint_states received within %.2fs.", args.wait_feedback_sec)
-        return 1
-
-    q_start = watcher.state.q.copy()
-    if q_start is None:
-        rospy.logerr("Start vector is unavailable.")
-        return 1
-
-    rate_hz = max(1e-3, args.rate)
-    init_hold_ticks = int(math.ceil(max(0.0, INIT_HOLD_SEC_DEFAULT) * rate_hz))
-
-    q_hand_ratio = _hand_pos_to_ratio(RIGHT_HAND_INIT_SIM_POS)
-    q_hand_init = _hand_ratio_to_pos(q_hand_ratio)
-    q_init = np.concatenate([RIGHT_ARM_INIT.copy(), q_hand_init], axis=0)
-
-    init_path = _interpolate(q_start, q_init, INIT_STEPS_DEFAULT)
-    init_hold_path = [q_init.copy() for _ in range(init_hold_ticks)]
-
-    q_first = traj[0]
-    warmup = _interpolate(q_init, q_first, max(0, args.warmup_steps))
-    traj_tail = [traj[i].astype(np.float64) for i in range(1, traj.shape[0])]
-    replay_raw = warmup + traj_tail
-    replay_uniform, replay_uniform_inserted = _subdivide_path(replay_raw, args.replay_substeps)
-    if args.disable_smoothing:
-        replay_path = list(replay_uniform)
-        replay_inserted = 0
-    else:
-        replay_path, replay_inserted = _densify_path_with_step_limit(
-            replay_uniform,
-            max_step_rad=args.max_command_step_rad,
-        )
-
-    pause_step = args.pause_at_replay_step
-    if args.pause_at_midpoint and pause_step == 0 and len(replay_path) > 0:
-        pause_step = int(math.ceil(len(replay_path) / 2.0))
-    pause_step_effective = pause_step if 1 <= pause_step <= len(replay_path) else 0
-
-    # Hand offset can switch at pause step: pre for steps < switch, post for steps >= switch.
-    offset_pre = (
-        float(args.hand_open_offset_ratio_pre)
-        if args.hand_open_offset_ratio_pre is not None
-        else float(args.hand_open_offset_ratio)
+    rclpy.init(args=argv)
+    node = JointStateCommandNode(
+        args.command_topic,
+        args.joint_state_topic,
+        joint_names,
+        RIGHT_ARM_HAND_COMMAND_JOINTS,
     )
-    offset_post = (
-        float(args.hand_open_offset_ratio_post)
-        if args.hand_open_offset_ratio_post is not None
-        else float(args.hand_open_offset_ratio)
-    )
-    replay_path, hand_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
-        replay_path=replay_path,
-        offset_pre=offset_pre,
-        offset_post=offset_post,
-        switch_step_1based=pause_step_effective,
-        transition_steps=args.hand_offset_transition_steps,
-    )
-    # Keep init/hold hand targets continuous with replay pre-offset.
-    init_path, init_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
-        replay_path=init_path,
-        offset_pre=offset_pre,
-        offset_post=offset_pre,
-        switch_step_1based=0,
-        transition_steps=1,
-    )
-    init_hold_path, init_hold_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
-        replay_path=init_hold_path,
-        offset_pre=offset_pre,
-        offset_post=offset_pre,
-        switch_step_1based=0,
-        transition_steps=1,
-    )
+    logger = node.get_logger()
 
-    full = init_path + init_hold_path + replay_path
-
-    init_max = _max_abs_step(init_path)
-    hold_max = _max_abs_step(init_hold_path)
-    replay_max = _max_abs_step(replay_path)
-    init_to_hold = (
-        float(np.max(np.abs(init_hold_path[0] - init_path[-1])))
-        if init_path and init_hold_path
-        else 0.0
-    )
-    hold_to_replay = (
-        float(np.max(np.abs(replay_path[0] - init_hold_path[-1])))
-        if replay_path and init_hold_path
-        else 0.0
-    )
-
-    max_step = 0.0
-    max_step_idx = 0
-    for i in range(1, len(full)):
-        step = float(np.max(np.abs(full[i] - full[i - 1])))
-        if step > max_step:
-            max_step = step
-            max_step_idx = i
-
-    max_step_phase = _step_phase(
-        step_idx=max_step_idx,
-        init_len=len(init_path),
-        hold_len=len(init_hold_path),
-        replay_len=len(replay_path),
-    )
-
-    rospy.loginfo(
-        "Safety delta breakdown (rad): init=%.6f, init_hold=%.6f, replay=%.6f, init->hold=%.6f, hold->replay=%.6f",
-        init_max,
-        hold_max,
-        replay_max,
-        init_to_hold,
-        hold_to_replay,
-    )
-
-    if (max_step - args.max_command_step_rad) > MAX_STEP_EPS:
-        rospy.logerr(
-            "Aborting: per-step delta %.6f rad at step %d (phase=%s) exceeds "
-            "--max-command-step-rad %.6f rad (tolerance=%.1e). Increase warmup-steps "
-            "or replay-substeps, or raise the threshold if intentional.",
-            max_step,
-            max_step_idx,
-            max_step_phase,
-            args.max_command_step_rad,
-            MAX_STEP_EPS,
-        )
-        return 1
-
-    rospy.loginfo("Replaying trajectory file: %s", os.path.expanduser(args.traj_file))
-    rospy.loginfo("Dataset=%s shape=%s -> dof=%d", args.dataset_key, str(tuple(obs_traj.shape)), dof)
-    rospy.loginfo("Replay mapping: %s", source_desc)
-    if replay_path:
-        replay_hand_ratio = _bridge_hand_pos_to_ratio(np.stack([q[7:] for q in replay_path], axis=0))
-        rospy.loginfo(
-            "Hand angleRatio range after mapping: min=%.3f max=%.3f",
-            float(np.min(replay_hand_ratio)),
-            float(np.max(replay_hand_ratio)),
-        )
-    if abs(offset_pre) > 1e-12 or abs(offset_post) > 1e-12:
-        rospy.loginfo(
-            "Applied hand-open-offset-ratio pre=%.4f, post=%.4f (positive=open, negative=close)",
-            offset_pre,
-            offset_post,
-        )
-        if pause_step_effective > 0:
-            rospy.loginfo(
-                "Hand offset switch step=%d/%d (post applies from this step onward)",
-                pause_step_effective,
-                len(replay_path),
+    try:
+        if args.pause_at_midpoint and args.pause_at_replay_step > 0:
+            _log_warn(
+                logger,
+                "Both --pause-at-midpoint and --pause-at-replay-step were set; using --pause-at-replay-step.",
             )
-            if abs(offset_post - offset_pre) > 1e-12:
-                rospy.loginfo(
-                    "Hand offset transition smoothing: %d step(s) for pre->post ramp",
-                    args.hand_offset_transition_steps,
+
+        if not node.wait_for_feedback(args.wait_feedback_sec):
+            _log_error(logger, "No /joint_states received within %.2fs.", args.wait_feedback_sec)
+            return 1
+
+        q_start = node.state.q.copy()
+        if q_start is None:
+            _log_error(logger, "Start vector is unavailable.")
+            return 1
+
+        rate_hz = max(1e-3, args.rate)
+        period_sec = 1.0 / rate_hz
+        init_hold_ticks = int(math.ceil(max(0.0, INIT_HOLD_SEC_DEFAULT) * rate_hz))
+
+        q_hand_ratio = _hand_pos_to_ratio(RIGHT_HAND_INIT_SIM_POS)
+        q_hand_init = _hand_ratio_to_pos(q_hand_ratio)
+        q_init = np.concatenate([RIGHT_ARM_INIT.copy(), q_hand_init], axis=0)
+
+        init_path = _interpolate(q_start, q_init, INIT_STEPS_DEFAULT)
+        init_hold_path = [q_init.copy() for _ in range(init_hold_ticks)]
+
+        q_first = traj[0]
+        warmup = _interpolate(q_init, q_first, max(0, args.warmup_steps))
+        traj_tail = [traj[i].astype(np.float64) for i in range(1, traj.shape[0])]
+        replay_raw = warmup + traj_tail
+        replay_uniform, replay_uniform_inserted = _subdivide_path(replay_raw, args.replay_substeps)
+        if args.disable_smoothing:
+            replay_path = list(replay_uniform)
+            replay_inserted = 0
+        else:
+            replay_path, replay_inserted = _densify_path_with_step_limit(
+                replay_uniform,
+                max_step_rad=args.max_command_step_rad,
+            )
+
+        pause_step = args.pause_at_replay_step
+        if args.pause_at_midpoint and pause_step == 0 and len(replay_path) > 0:
+            pause_step = int(math.ceil(len(replay_path) / 2.0))
+        pause_step_effective = pause_step if 1 <= pause_step <= len(replay_path) else 0
+
+        offset_pre = (
+            float(args.hand_open_offset_ratio_pre)
+            if args.hand_open_offset_ratio_pre is not None
+            else float(args.hand_open_offset_ratio)
+        )
+        offset_post = (
+            float(args.hand_open_offset_ratio_post)
+            if args.hand_open_offset_ratio_post is not None
+            else float(args.hand_open_offset_ratio)
+        )
+        replay_path, hand_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
+            replay_path=replay_path,
+            offset_pre=offset_pre,
+            offset_post=offset_post,
+            switch_step_1based=pause_step_effective,
+            transition_steps=args.hand_offset_transition_steps,
+        )
+        init_path, init_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
+            replay_path=init_path,
+            offset_pre=offset_pre,
+            offset_post=offset_pre,
+            switch_step_1based=0,
+            transition_steps=1,
+        )
+        init_hold_path, init_hold_offset_clipped_count = _apply_hand_open_offsets_to_replay_path(
+            replay_path=init_hold_path,
+            offset_pre=offset_pre,
+            offset_post=offset_pre,
+            switch_step_1based=0,
+            transition_steps=1,
+        )
+
+        full = init_path + init_hold_path + replay_path
+
+        init_max = _max_abs_step(init_path)
+        hold_max = _max_abs_step(init_hold_path)
+        replay_max = _max_abs_step(replay_path)
+        init_to_hold = (
+            float(np.max(np.abs(init_hold_path[0] - init_path[-1])))
+            if init_path and init_hold_path
+            else 0.0
+        )
+        hold_to_replay = (
+            float(np.max(np.abs(replay_path[0] - init_hold_path[-1])))
+            if replay_path and init_hold_path
+            else 0.0
+        )
+
+        max_step = 0.0
+        max_step_idx = 0
+        for i in range(1, len(full)):
+            step = float(np.max(np.abs(full[i] - full[i - 1])))
+            if step > max_step:
+                max_step = step
+                max_step_idx = i
+
+        max_step_phase = _step_phase(
+            step_idx=max_step_idx,
+            init_len=len(init_path),
+            hold_len=len(init_hold_path),
+            replay_len=len(replay_path),
+        )
+
+        _log_info(
+            logger,
+            "Safety delta breakdown (rad): init=%.6f, init_hold=%.6f, replay=%.6f, init->hold=%.6f, hold->replay=%.6f",
+            init_max,
+            hold_max,
+            replay_max,
+            init_to_hold,
+            hold_to_replay,
+        )
+
+        if (max_step - args.max_command_step_rad) > MAX_STEP_EPS:
+            _log_error(
+                logger,
+                "Aborting: per-step delta %.6f rad at step %d (phase=%s) exceeds "
+                "--max-command-step-rad %.6f rad (tolerance=%.1e). Increase warmup-steps "
+                "or replay-substeps, or raise the threshold if intentional.",
+                max_step,
+                max_step_idx,
+                max_step_phase,
+                args.max_command_step_rad,
+                MAX_STEP_EPS,
+            )
+            return 1
+
+        _log_info(logger, "Replaying trajectory file: %s", os.path.expanduser(args.traj_file))
+        _log_info(logger, "Dataset=%s shape=%s -> dof=%d", args.dataset_key, str(tuple(obs_traj.shape)), dof)
+        _log_info(logger, "Replay mapping: %s", source_desc)
+        if replay_path:
+            replay_hand_ratio = _bridge_hand_pos_to_ratio(np.stack([q[7:] for q in replay_path], axis=0))
+            _log_info(
+                logger,
+                "Hand angleRatio range after mapping: min=%.3f max=%.3f",
+                float(np.min(replay_hand_ratio)),
+                float(np.max(replay_hand_ratio)),
+            )
+        if abs(offset_pre) > 1e-12 or abs(offset_post) > 1e-12:
+            _log_info(
+                logger,
+                "Applied hand-open-offset-ratio pre=%.4f, post=%.4f (positive=open, negative=close)",
+                offset_pre,
+                offset_post,
+            )
+            if pause_step_effective > 0:
+                _log_info(
+                    logger,
+                    "Hand offset switch step=%d/%d (post applies from this step onward)",
+                    pause_step_effective,
+                    len(replay_path),
                 )
-        elif abs(offset_post - offset_pre) > 1e-12:
-            rospy.logwarn(
-                "Post hand offset differs from pre but no valid pause/switch step is active; using pre for all steps."
-            )
-        if hand_offset_clipped_count > 0:
-            rospy.logwarn(
-                "Clamped %d hand ratio entries to [0,1] after applying hand-open-offset-ratio.",
-                hand_offset_clipped_count,
-            )
-        init_offset_total = init_offset_clipped_count + init_hold_offset_clipped_count
-        if init_offset_total > 0:
-            rospy.logwarn(
-                "Clamped %d init/hold hand ratio entries to [0,1] after applying pre hand offset.",
-                init_offset_total,
-            )
-    if clipped_count > 0:
-        rospy.logwarn("Clamped %d obs joint entries outside configured joint limits.", clipped_count)
-    rospy.loginfo("Publish topic=%s, feedback topic=%s", args.command_topic, args.joint_state_topic)
-    rospy.loginfo("Start=%s", np.array2string(q_start, precision=3))
-    rospy.loginfo("Init enabled: init_steps=%d init_hold_sec=%.2f", INIT_STEPS_DEFAULT, INIT_HOLD_SEC_DEFAULT)
-    if args.replay_substeps > 1:
-        rospy.loginfo(
-            "Replay substeps enabled: %d -> %d waypoints (inserted %d, substeps=%d)",
-            len(replay_raw),
-            len(replay_uniform),
-            replay_uniform_inserted,
-            args.replay_substeps,
-        )
-    else:
-        rospy.loginfo("Replay substeps disabled: using %d base replay waypoints", len(replay_raw))
-    if args.disable_smoothing:
-        rospy.loginfo("Replay smoothing disabled: using %d replay waypoints", len(replay_path))
-    else:
-        rospy.loginfo(
-            "Replay smoothing enabled: %d -> %d waypoints (inserted %d)",
-            len(replay_uniform),
-            len(replay_path),
-            replay_inserted,
-        )
-    rospy.loginfo("First traj waypoint=%s", np.array2string(q_first, precision=3))
-    if pause_step > 0:
-        if pause_step > len(replay_path):
-            rospy.logwarn(
-                "Pause step %d is beyond replay length %d; pause will not trigger.",
-                pause_step,
-                len(replay_path),
+                if abs(offset_post - offset_pre) > 1e-12:
+                    _log_info(
+                        logger,
+                        "Hand offset transition smoothing: %d step(s) for pre->post ramp",
+                        args.hand_offset_transition_steps,
+                    )
+            elif abs(offset_post - offset_pre) > 1e-12:
+                _log_warn(
+                    logger,
+                    "Post hand offset differs from pre but no valid pause/switch step is active; using pre for all steps.",
+                )
+            if hand_offset_clipped_count > 0:
+                _log_warn(
+                    logger,
+                    "Clamped %d hand ratio entries to [0,1] after applying hand-open-offset-ratio.",
+                    hand_offset_clipped_count,
+                )
+            init_offset_total = init_offset_clipped_count + init_hold_offset_clipped_count
+            if init_offset_total > 0:
+                _log_warn(
+                    logger,
+                    "Clamped %d init/hold hand ratio entries to [0,1] after applying pre hand offset.",
+                    init_offset_total,
+                )
+        if clipped_count > 0:
+            _log_warn(logger, "Clamped %d obs joint entries outside configured joint limits.", clipped_count)
+        _log_info(logger, "Publish topic=%s, feedback topic=%s", args.command_topic, args.joint_state_topic)
+        _log_info(logger, "Start=%s", np.array2string(q_start, precision=3))
+        _log_info(logger, "Init enabled: init_steps=%d init_hold_sec=%.2f", INIT_STEPS_DEFAULT, INIT_HOLD_SEC_DEFAULT)
+        if args.replay_substeps > 1:
+            _log_info(
+                logger,
+                "Replay substeps enabled: %d -> %d waypoints (inserted %d, substeps=%d)",
+                len(replay_raw),
+                len(replay_uniform),
+                replay_uniform_inserted,
+                args.replay_substeps,
             )
         else:
-            rospy.loginfo(
-                "Replay pause configured at step %d/%d (before publish).",
-                pause_step,
+            _log_info(logger, "Replay substeps disabled: using %d base replay waypoints", len(replay_raw))
+        if args.disable_smoothing:
+            _log_info(logger, "Replay smoothing disabled: using %d replay waypoints", len(replay_path))
+        else:
+            _log_info(
+                logger,
+                "Replay smoothing enabled: %d -> %d waypoints (inserted %d)",
+                len(replay_uniform),
                 len(replay_path),
+                replay_inserted,
             )
-    rospy.loginfo(
-        "Total waypoints=%d (init=%d + init_hold=%d + replay=%d), max_step=%.6f rad",
-        len(full),
-        len(init_path),
-        len(init_hold_path),
-        len(replay_path),
-        max_step,
-    )
+        _log_info(logger, "First traj waypoint=%s", np.array2string(q_first, precision=3))
+        if pause_step > 0:
+            if pause_step > len(replay_path):
+                _log_warn(
+                    logger,
+                    "Pause step %d is beyond replay length %d; pause will not trigger.",
+                    pause_step,
+                    len(replay_path),
+                )
+            else:
+                _log_info(
+                    logger,
+                    "Replay pause configured at step %d/%d (before publish).",
+                    pause_step,
+                    len(replay_path),
+                )
+        _log_info(
+            logger,
+            "Total waypoints=%d (init=%d + init_hold=%d + replay=%d), max_step=%.6f rad",
+            len(full),
+            len(init_path),
+            len(init_hold_path),
+            len(replay_path),
+            max_step,
+        )
 
-    if args.dry_run:
+        if args.dry_run:
+            try:
+                input("press enter to start execution")
+            except EOFError:
+                _log_warn(logger, "No stdin available; continuing dry-run completion.")
+            except KeyboardInterrupt:
+                _log_warn(logger, "Dry-run canceled by user.")
+                return 1
+            _log_info(logger, "Dry-run complete. No commands were published.")
+            return 0
+
+        hold_ticks = int(math.ceil(max(0.0, args.hold_sec) * rate_hz))
+        last_log = time.time()
+
+        _log_info(logger, "Execution phase: init")
+        init_exec_path = init_path + init_hold_path
+        for idx, q_cmd in enumerate(init_exec_path):
+            if not rclpy.ok():
+                return 1
+            node.publish_target(q_cmd)
+            node.sleep_with_spin(period_sec)
+
+            if node.state.q is not None and (time.time() - node.state.stamp) > args.feedback_timeout_sec:
+                _log_error(logger, "Stale joint feedback (> %.2fs). Aborting.", args.feedback_timeout_sec)
+                return 1
+
+            if node.state.q is not None and (time.time() - last_log) > 0.5:
+                err = float(np.max(np.abs(q_cmd - node.state.q)))
+                _log_info(logger, "Init waypoint %d/%d max|cmd-feedback|=%.4f rad", idx + 1, len(init_exec_path), err)
+                last_log = time.time()
+
         try:
             input("press enter to start execution")
         except EOFError:
-            rospy.logwarn("No stdin available; continuing dry-run completion.")
+            _log_warn(logger, "No stdin available; continuing execution.")
         except KeyboardInterrupt:
-            rospy.logwarn("Dry-run canceled by user.")
-            return 1
-        rospy.loginfo("Dry-run complete. No commands were published.")
-        return 0
-
-    rate = rospy.Rate(rate_hz)
-    hold_ticks = int(math.ceil(max(0.0, args.hold_sec) * rate_hz))
-    last_log = time.time()
-
-    rospy.loginfo("Execution phase: init")
-    init_exec_path = init_path + init_hold_path
-    for idx, q_cmd in enumerate(init_exec_path):
-        if rospy.is_shutdown():
-            return 1
-        _publish_target(pub, joint_names, q_cmd)
-
-        if watcher.state.q is not None and (time.time() - watcher.state.stamp) > args.feedback_timeout_sec:
-            rospy.logerr("Stale joint feedback (> %.2fs). Aborting.", args.feedback_timeout_sec)
+            _log_warn(logger, "Execution canceled by user before trajectory replay.")
             return 1
 
-        if watcher.state.q is not None and (time.time() - last_log) > 0.5:
-            err = float(np.max(np.abs(q_cmd - watcher.state.q)))
-            rospy.loginfo("Init waypoint %d/%d max|cmd-feedback|=%.4f rad", idx + 1, len(init_exec_path), err)
-            last_log = time.time()
-        rate.sleep()
+        _log_info(
+            logger,
+            "Resuming after init pause: replay steps=%d, total command waypoints=%d",
+            len(replay_path),
+            len(full),
+        )
+        _log_info(logger, "Execution phase: replay")
+        for idx, q_cmd in enumerate(replay_path):
+            step_1based = idx + 1
+            if pause_step > 0 and step_1based == pause_step:
+                try:
+                    input(f"Paused at replay step {step_1based}/{len(replay_path)}. press enter to resume")
+                except EOFError:
+                    _log_warn(logger, "No stdin available at pause step; continuing replay.")
+                except KeyboardInterrupt:
+                    _log_warn(logger, "Execution canceled by user at pause step %d.", step_1based)
+                    return 1
 
-    try:
-        input("press enter to start execution")
-    except EOFError:
-        rospy.logwarn("No stdin available; continuing execution.")
-    except KeyboardInterrupt:
-        rospy.logwarn("Execution canceled by user before trajectory replay.")
-        return 1
+            if not rclpy.ok():
+                return 1
+            node.publish_target(q_cmd)
+            node.sleep_with_spin(period_sec)
 
-    rospy.loginfo(
-        "Resuming after init pause: replay steps=%d, total command waypoints=%d",
-        len(replay_path),
-        len(full),
-    )
-    rospy.loginfo("Execution phase: replay")
-    for idx, q_cmd in enumerate(replay_path):
-        step_1based = idx + 1
-        if pause_step > 0 and step_1based == pause_step:
-            try:
-                input(f"Paused at replay step {step_1based}/{len(replay_path)}. press enter to resume")
-            except EOFError:
-                rospy.logwarn("No stdin available at pause step; continuing replay.")
-            except KeyboardInterrupt:
-                rospy.logwarn("Execution canceled by user at pause step %d.", step_1based)
+            if node.state.q is not None and (time.time() - node.state.stamp) > args.feedback_timeout_sec:
+                _log_error(logger, "Stale joint feedback (> %.2fs). Aborting.", args.feedback_timeout_sec)
                 return 1
 
-        if rospy.is_shutdown():
-            return 1
-        _publish_target(pub, joint_names, q_cmd)
+            if node.state.q is not None and (time.time() - last_log) > 0.5:
+                err = float(np.max(np.abs(q_cmd - node.state.q)))
+                _log_info(logger, "Replay waypoint %d/%d max|cmd-feedback|=%.4f rad", idx + 1, len(replay_path), err)
+                last_log = time.time()
 
-        if watcher.state.q is not None and (time.time() - watcher.state.stamp) > args.feedback_timeout_sec:
-            rospy.logerr("Stale joint feedback (> %.2fs). Aborting.", args.feedback_timeout_sec)
-            return 1
+        q_goal = replay_path[-1]
+        for _ in range(hold_ticks):
+            if not rclpy.ok():
+                return 1
+            node.publish_target(q_goal)
+            node.sleep_with_spin(period_sec)
 
-        if watcher.state.q is not None and (time.time() - last_log) > 0.5:
-            err = float(np.max(np.abs(q_cmd - watcher.state.q)))
-            rospy.loginfo("Replay waypoint %d/%d max|cmd-feedback|=%.4f rad", idx + 1, len(replay_path), err)
-            last_log = time.time()
-        rate.sleep()
-
-    q_goal = replay_path[-1]
-    for _ in range(hold_ticks):
-        if rospy.is_shutdown():
-            return 1
-        _publish_target(pub, joint_names, q_goal)
-        rate.sleep()
-
-    rospy.loginfo("Trajectory replay complete. Held final pose for %.2fs.", args.hold_sec)
-    return 0
+        _log_info(logger, "Trajectory replay complete. Held final pose for %.2fs.", args.hold_sec)
+        return 0
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

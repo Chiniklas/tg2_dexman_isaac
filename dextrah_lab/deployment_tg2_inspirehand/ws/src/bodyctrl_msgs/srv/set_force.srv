@@ -1,8 +1,0 @@
-float32 force0Ratio
-float32 force1Ratio
-float32 force2Ratio
-float32 force3Ratio
-float32 force4Ratio
-float32 force5Ratio
----
-bool force_accepted

@@ -1,1 +1,0 @@
-"""Stereo camera calibration helpers."""

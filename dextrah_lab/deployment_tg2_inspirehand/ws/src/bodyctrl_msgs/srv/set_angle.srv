@@ -1,8 +1,0 @@
-float32 angle0Ratio
-float32 angle1Ratio
-float32 angle2Ratio
-float32 angle3Ratio
-float32 angle4Ratio
-float32 angle5Ratio
----
-bool angle_accepted

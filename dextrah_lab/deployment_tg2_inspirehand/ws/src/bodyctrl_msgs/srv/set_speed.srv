@@ -1,8 +1,0 @@
-float32 speed0Ratio
-float32 speed1Ratio
-float32 speed2Ratio
-float32 speed3Ratio
-float32 speed4Ratio
-float32 speed5Ratio
----
-bool speed_accepted
