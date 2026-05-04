@@ -29,8 +29,11 @@ setup(
         "stereo_camera": STEREO_CAMERA_PKG,
     },
     install_requires=[
-        "numpy",
+        "numpy>=1.23.5,<2.0.0",
+        "networkx==3.3",
         "opencv-python",
+        "pillow==11.3.0",
         "PyYAML",
+        "warp-lang>=1.5.0",
     ],
 )

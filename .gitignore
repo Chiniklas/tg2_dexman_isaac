@@ -39,3 +39,4 @@ teacher_replay_results.yaml
 build/
 install/
 log/
+visdex_objects/
