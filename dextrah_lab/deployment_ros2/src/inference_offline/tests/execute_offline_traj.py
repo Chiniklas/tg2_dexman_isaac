@@ -36,6 +36,18 @@ python3 src/inference_offline/tests/execute_offline_traj.py \
   --rate 30 \
   --pause-at-replay-step 120 \
   --hand-open-offset-ratio 0.08
+
+Custom hand path override:
+python3 src/inference_offline/tests/execute_offline_traj.py \
+  --traj-file src/inference_offline/tests/teacher_policies/tr3e4tbm/traj_env_0_episode_5.h5 \
+  --dataset-key obs \
+  --obs-joint-start 0 \
+  --rate 30 \
+  --pause-at-replay-step 125 \
+  --custom-hand-traj \
+  --custom-hand-postpone-steps 15 \
+  --custom-hand-pre-open-percent 60 \
+  --custom-hand-post-open-percent 20
 """
 
 from __future__ import annotations
@@ -235,6 +247,105 @@ def _apply_hand_open_offsets_to_replay_path(
         q_new[7:] = _hand_ratio_to_bridge_pos(ratio_clipped)
         out.append(q_new)
     return out, clipped_count
+
+
+def _apply_uniform_hand_ratio_to_path(
+    replay_path: list[np.ndarray],
+    ratio_pre: float,
+    ratio_post: float,
+    switch_step_1based: int,
+    transition_steps: int,
+) -> tuple[list[np.ndarray], int]:
+    """Overwrite hand commands with uniform angleRatio targets, optionally switching at a replay step."""
+    if transition_steps < 1:
+        raise ValueError("--hand-offset-transition-steps must be >= 1.")
+    if not replay_path:
+        return [], 0
+
+    eps = 1e-12
+    out: list[np.ndarray] = []
+    clipped_count = 0
+    for i, q in enumerate(replay_path, start=1):
+        ratio_scalar = ratio_pre
+        if switch_step_1based > 0 and i >= switch_step_1based and abs(ratio_post - ratio_pre) > eps:
+            if i >= (switch_step_1based + transition_steps):
+                ratio_scalar = ratio_post
+            else:
+                alpha = float(i - switch_step_1based + 1) / float(transition_steps)
+                alpha = min(max(alpha, 0.0), 1.0)
+                ratio_scalar = (1.0 - alpha) * ratio_pre + alpha * ratio_post
+        ratio = np.full(6, ratio_scalar, dtype=np.float64)
+        ratio_clipped = np.clip(ratio, 0.0, 1.0)
+        clipped_count += int(np.count_nonzero(np.abs(ratio - ratio_clipped) > 1e-9))
+        q_new = q.copy()
+        q_new[7:] = _hand_ratio_to_bridge_pos(ratio_clipped)
+        out.append(q_new)
+    return out, clipped_count
+
+
+def _apply_custom_hand_ratio_to_replay_path(
+    replay_path: list[np.ndarray],
+    ratio_init: float,
+    ratio_pre: float,
+    ratio_post: float,
+    warmup_steps: int,
+    switch_step_1based: int,
+    transition_steps: int,
+    postpone_steps: int,
+) -> tuple[list[np.ndarray], int]:
+    """Blend hand ratio init->pre over warmup, then optionally pre->post at the switch step.
+
+    When `postpone_steps > 0`, the initial init->pre closing transition is delayed by
+    that many replay steps. The later pre->post switch uses only transition smoothing
+    and is not postponed.
+    """
+    if transition_steps < 1:
+        raise ValueError("--hand-offset-transition-steps must be >= 1.")
+    if postpone_steps < 0:
+        raise ValueError("--custom-hand-postpone-steps must be >= 0.")
+    if not replay_path:
+        return [], 0
+
+    def _base_ratio(step_1based: int) -> float:
+        if warmup_steps > 1 and 1 <= step_1based <= warmup_steps:
+            close_delay = postpone_steps if ratio_pre < ratio_init else 0
+            if step_1based <= close_delay:
+                return ratio_init
+            effective_steps = max(1, warmup_steps - close_delay)
+            if effective_steps == 1:
+                return ratio_pre
+            alpha = float(step_1based - close_delay - 1) / float(effective_steps - 1)
+            alpha = min(max(alpha, 0.0), 1.0)
+            return (1.0 - alpha) * ratio_init + alpha * ratio_pre
+        return ratio_pre
+
+    eps = 1e-12
+    switch_base_ratio = _base_ratio(switch_step_1based) if switch_step_1based > 0 else ratio_pre
+    out: list[np.ndarray] = []
+    clipped_count = 0
+    for i, q in enumerate(replay_path, start=1):
+        ratio_scalar = _base_ratio(i)
+        if switch_step_1based > 0 and i >= switch_step_1based and abs(ratio_post - switch_base_ratio) > eps:
+            transition_start = switch_step_1based
+            if i >= (transition_start + transition_steps):
+                ratio_scalar = ratio_post
+            else:
+                alpha = float(i - transition_start + 1) / float(transition_steps)
+                alpha = min(max(alpha, 0.0), 1.0)
+                ratio_scalar = (1.0 - alpha) * switch_base_ratio + alpha * ratio_post
+        ratio = np.full(6, ratio_scalar, dtype=np.float64)
+        ratio_clipped = np.clip(ratio, 0.0, 1.0)
+        clipped_count += int(np.count_nonzero(np.abs(ratio - ratio_clipped) > 1e-9))
+        q_new = q.copy()
+        q_new[7:] = _hand_ratio_to_bridge_pos(ratio_clipped)
+        out.append(q_new)
+    return out, clipped_count
+
+
+def _percent_open_to_ratio(percent_open: float, label: str) -> float:
+    if percent_open < 0.0 or percent_open > 100.0:
+        raise ValueError(f"{label} must be within [0, 100], got {percent_open}")
+    return float(percent_open) / 100.0
 
 
 def _extract_obs_joint_targets(
@@ -504,6 +615,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Smoothing steps for pre->post hand offset change (1 = hard switch).",
     )
     p.add_argument(
+        "--custom-hand-traj",
+        action="store_true",
+        help=(
+            "Override hand commands with manual open percentages while keeping the arm trajectory from the file. "
+            "Init uses --custom-hand-init-open-percent, replay uses pre/post percentages around the pause step."
+        ),
+    )
+    p.add_argument(
+        "--custom-hand-init-open-percent",
+        type=float,
+        default=100.0,
+        help="Init/hold hand open percentage for --custom-hand-traj (0=close, 100=full open).",
+    )
+    p.add_argument(
+        "--custom-hand-pre-open-percent",
+        type=float,
+        default=None,
+        help="Replay hand open percentage before the pause/switch step for --custom-hand-traj.",
+    )
+    p.add_argument(
+        "--custom-hand-post-open-percent",
+        type=float,
+        default=None,
+        help="Replay hand open percentage from the pause/switch step onward for --custom-hand-traj.",
+    )
+    p.add_argument(
+        "--custom-hand-postpone-steps",
+        type=int,
+        default=0,
+        help=(
+            "Delay the initial custom-hand init->pre closing by this many replay steps. "
+            "Does not delay the later pre->post switch after pause."
+        ),
+    )
+    p.add_argument(
         "--disable-smoothing",
         action="store_true",
         help="Disable replay trajectory smoothing/interpolation.",
@@ -536,6 +682,13 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--pause-at-replay-step must be >= 0.")
     if args.hand_offset_transition_steps < 1:
         raise ValueError("--hand-offset-transition-steps must be >= 1.")
+    if args.custom_hand_postpone_steps < 0:
+        raise ValueError("--custom-hand-postpone-steps must be >= 0.")
+    if args.custom_hand_traj:
+        if args.custom_hand_pre_open_percent is None:
+            raise ValueError("--custom-hand-pre-open-percent is required when --custom-hand-traj is set.")
+        if args.custom_hand_post_open_percent is None:
+            raise ValueError("--custom-hand-post-open-percent is required when --custom-hand-traj is set.")
 
     joint_names = RIGHT_ARM_HAND_JOINTS
     dof = len(joint_names)
@@ -588,6 +741,24 @@ def main(argv: list[str] | None = None) -> int:
         init_hold_ticks = int(math.ceil(max(0.0, INIT_HOLD_SEC_DEFAULT) * rate_hz))
 
         q_hand_ratio = _hand_pos_to_ratio(RIGHT_HAND_INIT_SIM_POS)
+        custom_hand_clipped_count = 0
+        custom_hand_ratio_init = 0.0
+        custom_hand_ratio_pre = 0.0
+        custom_hand_ratio_post = 0.0
+        if args.custom_hand_traj:
+            custom_hand_ratio_init = _percent_open_to_ratio(
+                float(args.custom_hand_init_open_percent),
+                "--custom-hand-init-open-percent",
+            )
+            custom_hand_ratio_pre = _percent_open_to_ratio(
+                float(args.custom_hand_pre_open_percent),
+                "--custom-hand-pre-open-percent",
+            )
+            custom_hand_ratio_post = _percent_open_to_ratio(
+                float(args.custom_hand_post_open_percent),
+                "--custom-hand-post-open-percent",
+            )
+            q_hand_ratio = np.full(6, custom_hand_ratio_init, dtype=np.float64)
         q_hand_init = _hand_ratio_to_pos(q_hand_ratio)
         q_init = np.concatenate([RIGHT_ARM_INIT.copy(), q_hand_init], axis=0)
 
@@ -644,6 +815,42 @@ def main(argv: list[str] | None = None) -> int:
             switch_step_1based=0,
             transition_steps=1,
         )
+        if args.custom_hand_traj:
+            if (
+                abs(offset_pre) > 1e-12
+                or abs(offset_post) > 1e-12
+            ):
+                _log_warn(
+                    logger,
+                    "Ignoring hand-open-offset-ratio settings because --custom-hand-traj is active.",
+                )
+            replay_path, custom_replay_clipped_count = _apply_custom_hand_ratio_to_replay_path(
+                replay_path=replay_path,
+                ratio_init=custom_hand_ratio_init,
+                ratio_pre=custom_hand_ratio_pre,
+                ratio_post=custom_hand_ratio_post,
+                warmup_steps=len(warmup),
+                switch_step_1based=pause_step_effective,
+                transition_steps=args.hand_offset_transition_steps,
+                postpone_steps=args.custom_hand_postpone_steps,
+            )
+            init_path, custom_init_clipped_count = _apply_uniform_hand_ratio_to_path(
+                replay_path=init_path,
+                ratio_pre=custom_hand_ratio_init,
+                ratio_post=custom_hand_ratio_init,
+                switch_step_1based=0,
+                transition_steps=1,
+            )
+            init_hold_path, custom_hold_clipped_count = _apply_uniform_hand_ratio_to_path(
+                replay_path=init_hold_path,
+                ratio_pre=custom_hand_ratio_init,
+                ratio_post=custom_hand_ratio_init,
+                switch_step_1based=0,
+                transition_steps=1,
+            )
+            custom_hand_clipped_count = (
+                custom_replay_clipped_count + custom_init_clipped_count + custom_hold_clipped_count
+            )
 
         full = init_path + init_hold_path + replay_path
 
@@ -748,6 +955,50 @@ def main(argv: list[str] | None = None) -> int:
                     logger,
                     "Clamped %d init/hold hand ratio entries to [0,1] after applying pre hand offset.",
                     init_offset_total,
+                )
+        if args.custom_hand_traj:
+            _log_info(
+                logger,
+                "Custom hand traj active: init=%.1f%% open, pre-pause=%.1f%% open, post-pause=%.1f%% open",
+                100.0 * custom_hand_ratio_init,
+                100.0 * custom_hand_ratio_pre,
+                100.0 * custom_hand_ratio_post,
+            )
+            if len(warmup) > 1 and abs(custom_hand_ratio_pre - custom_hand_ratio_init) > 1e-12:
+                _log_info(
+                    logger,
+                    "Custom hand warmup: blending init->pre over first %d replay step(s)",
+                    len(warmup),
+                )
+                if args.custom_hand_postpone_steps > 0 and custom_hand_ratio_pre < custom_hand_ratio_init:
+                    _log_info(
+                        logger,
+                        "Custom hand postpone: delaying init->pre closing by %d replay step(s)",
+                        args.custom_hand_postpone_steps,
+                    )
+            if pause_step_effective > 0:
+                _log_info(
+                    logger,
+                    "Custom hand switch step=%d/%d (post percentage applies from this step onward)",
+                    pause_step_effective,
+                    len(replay_path),
+                )
+                if abs(custom_hand_ratio_post - custom_hand_ratio_pre) > 1e-12:
+                    _log_info(
+                        logger,
+                        "Custom hand transition smoothing: %d step(s) for pre->post ramp",
+                        args.hand_offset_transition_steps,
+                    )
+            elif abs(custom_hand_ratio_post - custom_hand_ratio_pre) > 1e-12:
+                _log_warn(
+                    logger,
+                    "Custom post hand percentage differs from pre but no valid pause/switch step is active; using pre for all replay steps.",
+                )
+            if custom_hand_clipped_count > 0:
+                _log_warn(
+                    logger,
+                    "Clamped %d custom hand ratio entries to [0,1].",
+                    custom_hand_clipped_count,
                 )
         if clipped_count > 0:
             _log_warn(logger, "Clamped %d obs joint entries outside configured joint limits.", clipped_count)
