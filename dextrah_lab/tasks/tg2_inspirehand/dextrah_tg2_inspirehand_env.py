@@ -296,7 +296,12 @@ class DextrahTG2InspirehandEnv(DirectRLEnv):
 
         # For querying 3D points on hand via local FK taskmap utils.
         # We use this to generate noisy fingertip/palm position and velocity for observations.
-        self.urdf_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/urdf/tg2_with_hands_no_legs.urdf"
+        module_path = os.path.dirname(__file__)
+        root_path = os.path.dirname(os.path.dirname(module_path))
+        self.urdf_path = os.path.join(
+            root_path,
+            "assets/tg2_inspirehand/urdf/tg2_with_hands_no_legs.urdf",
+        )
         self.hand_points_taskmap = RobotFrameOriginsTaskMap(self.urdf_path, self.cfg.hand_body_names,
                                                             self.num_envs, self.device)
 

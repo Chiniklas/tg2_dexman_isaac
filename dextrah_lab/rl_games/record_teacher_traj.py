@@ -129,8 +129,6 @@ from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
 
-import dextrah_lab.tasks.dextrah_kuka_allegro.gym_setup  # noqa: F401
-import dextrah_lab.tasks.dextrah_kuka_inspirehand.gym_setup  # noqa: F401
 import dextrah_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
 
 _ENV_HOLDER = {"env": None}

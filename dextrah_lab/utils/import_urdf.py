@@ -13,19 +13,22 @@ here. Additionally adds an include_collisions flag which can be set to false to 
 collision data structures which can be slow.
 """
 
-try:
-    import urdfpy
-except:
-    pass
-
 from collections import OrderedDict
 import math
 import numpy as np
 import os
 import xml.etree.ElementTree as ET
 
+if not hasattr(np, "float"):
+    np.float = float
+
+import urdfpy
+
 import warp as wp
-from warp.sim.model import Mesh
+try:
+    from warp.sim.model import Mesh
+except ModuleNotFoundError:
+    Mesh = wp.Mesh
 
 
 def urdf_add_collision(builder, link, collisions, density, shape_ke, shape_kd, shape_kf, shape_mu):

@@ -65,11 +65,6 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
-#import dextrah_lab.tasks.shadow_hand.gym_setup
-import dextrah_lab.tasks.dextrah_kuka_allegro.gym_setup
-import dextrah_lab.tasks.dextrah_kuka_inspirehand.gym_setup
-import dextrah_lab.tasks.dextrah_kuka_inspirehand_pc.gym_setup
-import dextrah_lab.tasks.dextrah_kuka_inspirehand_v2.gym_setup
 import dextrah_lab.tasks.tg2_inspirehand.gym_setup
 
 import time

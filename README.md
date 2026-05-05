@@ -5,26 +5,56 @@ DexSafeDagger acquires a privileged teacher policy from RL trained in Isaac Sim 
 ## Installation
 **Note**: This project will download and install additional third-party open source software projects. Review the license terms of these open source projects before use.
 
-1. [Install](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html) Isaac Sim and Isaac Lab by following the local Conda installation route.
+1. Create the `dexsafedagger` Conda environment, then [install](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html) Isaac Sim `5.0.0` and Isaac Lab `2.2.1` into that environment by following the local Conda installation route.
+
+```bash
+conda create -n dexsafedagger python=3.11 -y
+conda activate dexsafedagger
+```
 
 **Note**: After cloning the Isaac Lab repository and before installing it, check out tag `v2.2.1` (it can also work with `v2.0.2` with minor code changes):
 ```bash
-        cd <IsaacLab>
-        git checkout v2.2.1
+cd <IsaacLab>
+git checkout v2.2.1
 ```
-2. Install DEXTRAH for Isaac Lab in your new Conda environment.
+
+2. Activate the `dexsafedagger` Conda environment from Step 1, then clone this repository with Git LFS assets.
 ```bash
-        cd <DEXTRAH>
-        python -m pip install -e .
+conda activate dexsafedagger
+cd ~/projects
+git clone git@github.com:Chiniklas/tg2_dexman_isaac.git
+cd tg2_dexman_isaac
+git lfs install
+git lfs pull --include="dextrah_lab/assets/**"
 ```
+
+The simulator needs the real USD/STL files, not Git LFS pointer files. A quick check should show zero pointer files under `dextrah_lab/assets`:
+```bash
+rg -l "version https://git-lfs.github.com/spec/v1" dextrah_lab/assets | wc -l
+```
+
+3. Install DEXTRAH runtime dependencies.
+```bash
+./install_runtime_deps.sh
+```
+
+The helper script runs `python -m pip install -e .`, installs `urdfpy==0.0.22` without its stale `networkx==2.2` dependency pin, restores Isaac-compatible pins, and verifies that the TG2 URDF can be loaded. Plain `pip install -e .` installs the package metadata, but it cannot safely express this `urdfpy` workaround.
+
 4. Ensure that a sufficiently recent `GLIBCXX_` version can be found.
 ```bash
-        conda install -c conda-forge libstdcxx-ng
-        conda install -c conda-forge libgcc-ng=12 libstdcxx-ng=12
+conda install -c conda-forge libstdcxx-ng
+conda install -c conda-forge libgcc-ng=12 libstdcxx-ng=12
+```
+
+5. If you use the small checked-in test objects, make sure they are in the object-directory layout expected by the task:
+```bash
+mkdir -p dextrah_lab/assets/test_object
+cp -r dextrah_lab/assets/test_objects/USD dextrah_lab/assets/test_object/
 ```
 
 ## DexSafeDagger Teacher Training
 ```bash
+cd dextrah_lab/rl_games
 python train.py \
     --task=dextrah_tg2_inspirehand \
     --seed 42 \

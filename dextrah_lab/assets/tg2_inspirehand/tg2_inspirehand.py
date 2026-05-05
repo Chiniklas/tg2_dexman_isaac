@@ -22,12 +22,8 @@ from isaaclab.assets.articulation import ArticulationCfg
 ##
 
 module_path = os.path.dirname(__file__)
-root_path = os.path.dirname(module_path)
 # Update the USD path to point to the TG2-Inspirehand USD file
-# tg2_inspirehand_usd_path = os.path.join(root_path, "tg2_inspirehand.usd")
-# tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand.usd"
-tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand_no_leg.usd"
-# tg2_inspirehand_usd_path = "/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/tg2_inspirehand_no_leg_colored.usd"
+tg2_inspirehand_usd_path = os.path.join(module_path, "tg2_inspirehand_no_leg.usd")
 TG2_INSPIREHAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=tg2_inspirehand_usd_path,
