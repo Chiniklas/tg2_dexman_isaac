@@ -288,16 +288,15 @@ def _apply_custom_hand_ratio_to_replay_path(
     ratio_init: float,
     ratio_pre: float,
     ratio_post: float,
-    warmup_steps: int,
+    warmup_prefix_steps: int,
     switch_step_1based: int,
     transition_steps: int,
     postpone_steps: int,
 ) -> tuple[list[np.ndarray], int]:
-    """Blend hand ratio init->pre over warmup, then optionally pre->post at the switch step.
+    """Keep init during warmup, then blend init->pre during replay before pre->post switch.
 
-    When `postpone_steps > 0`, the initial init->pre closing transition is delayed by
-    that many replay steps. The later pre->post switch uses only transition smoothing
-    and is not postponed.
+    `postpone_steps` delays only the replay-phase init->pre transition. The later
+    pre->post switch uses only transition smoothing and is not postponed.
     """
     if transition_steps < 1:
         raise ValueError("--hand-offset-transition-steps must be >= 1.")
@@ -307,14 +306,19 @@ def _apply_custom_hand_ratio_to_replay_path(
         return [], 0
 
     def _base_ratio(step_1based: int) -> float:
-        if warmup_steps > 1 and 1 <= step_1based <= warmup_steps:
-            close_delay = postpone_steps if ratio_pre < ratio_init else 0
-            if step_1based <= close_delay:
-                return ratio_init
-            effective_steps = max(1, warmup_steps - close_delay)
-            if effective_steps == 1:
+        if step_1based <= warmup_prefix_steps:
+            return ratio_init
+
+        replay_step_1based = step_1based - warmup_prefix_steps
+        if replay_step_1based <= postpone_steps:
+            return ratio_init
+
+        transition_start = postpone_steps + 1
+        transition_end = postpone_steps + transition_steps
+        if replay_step_1based <= transition_end and abs(ratio_pre - ratio_init) > 1e-12:
+            if transition_steps == 1:
                 return ratio_pre
-            alpha = float(step_1based - close_delay - 1) / float(effective_steps - 1)
+            alpha = float(replay_step_1based - transition_start) / float(transition_steps - 1)
             alpha = min(max(alpha, 0.0), 1.0)
             return (1.0 - alpha) * ratio_init + alpha * ratio_pre
         return ratio_pre
@@ -563,7 +567,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--warmup-steps",
         type=int,
         default=90,
-        help="Interpolation points from init pose to first trajectory waypoint.",
+        help="Interpolation points from init pose to first trajectory waypoint (0 = disabled).",
     )
     p.add_argument("--hold-sec", type=float, default=2.0, help="Hold final waypoint for this duration.")
     p.add_argument(
@@ -664,7 +668,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--pause-at-replay-step",
         type=int,
         default=0,
-        help="Pause before publishing this replay waypoint (1-based). 0 disables.",
+        help="Pause before publishing this trajectory replay waypoint after warmup (1-based). 0 disables.",
     )
     p.add_argument(
         "--pause-at-midpoint",
@@ -766,23 +770,42 @@ def main(argv: list[str] | None = None) -> int:
         init_hold_path = [q_init.copy() for _ in range(init_hold_ticks)]
 
         q_first = traj[0]
-        warmup = _interpolate(q_init, q_first, max(0, args.warmup_steps))
-        traj_tail = [traj[i].astype(np.float64) for i in range(1, traj.shape[0])]
-        replay_raw = warmup + traj_tail
-        replay_uniform, replay_uniform_inserted = _subdivide_path(replay_raw, args.replay_substeps)
+        warmup = _interpolate(q_init, q_first, args.warmup_steps) if args.warmup_steps > 0 else []
+        actual_replay_raw = [traj[i].astype(np.float64) for i in range(traj.shape[0])]
+        replay_raw = warmup + (actual_replay_raw[1:] if warmup else actual_replay_raw)
+        warmup_uniform, warmup_uniform_inserted = _subdivide_path(warmup, args.replay_substeps)
+        actual_replay_uniform, actual_replay_uniform_inserted = _subdivide_path(
+            actual_replay_raw,
+            args.replay_substeps,
+        )
+        replay_uniform_inserted = warmup_uniform_inserted + actual_replay_uniform_inserted
+        replay_uniform = warmup_uniform + (actual_replay_uniform[1:] if warmup_uniform else actual_replay_uniform)
+        warmup_prefix_steps = len(warmup_uniform)
         if args.disable_smoothing:
             replay_path = list(replay_uniform)
             replay_inserted = 0
         else:
-            replay_path, replay_inserted = _densify_path_with_step_limit(
-                replay_uniform,
+            warmup_path, warmup_inserted = _densify_path_with_step_limit(
+                warmup_uniform,
                 max_step_rad=args.max_command_step_rad,
             )
+            actual_replay_path, actual_replay_inserted = _densify_path_with_step_limit(
+                actual_replay_uniform,
+                max_step_rad=args.max_command_step_rad,
+            )
+            replay_inserted = warmup_inserted + actual_replay_inserted
+            replay_path = warmup_path + (actual_replay_path[1:] if warmup_path else actual_replay_path)
+            warmup_prefix_steps = len(warmup_path)
 
+        actual_replay_steps = max(0, len(replay_path) - warmup_prefix_steps)
         pause_step = args.pause_at_replay_step
-        if args.pause_at_midpoint and pause_step == 0 and len(replay_path) > 0:
-            pause_step = int(math.ceil(len(replay_path) / 2.0))
-        pause_step_effective = pause_step if 1 <= pause_step <= len(replay_path) else 0
+        if args.pause_at_midpoint and pause_step == 0 and actual_replay_steps > 0:
+            pause_step = int(math.ceil(actual_replay_steps / 2.0))
+        pause_step_effective = (
+            warmup_prefix_steps + pause_step
+            if 1 <= pause_step <= actual_replay_steps
+            else 0
+        )
 
         offset_pre = (
             float(args.hand_open_offset_ratio_pre)
@@ -829,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
                 ratio_init=custom_hand_ratio_init,
                 ratio_pre=custom_hand_ratio_pre,
                 ratio_post=custom_hand_ratio_post,
-                warmup_steps=len(warmup),
+                warmup_prefix_steps=warmup_prefix_steps,
                 switch_step_1based=pause_step_effective,
                 transition_steps=args.hand_offset_transition_steps,
                 postpone_steps=args.custom_hand_postpone_steps,
@@ -928,7 +951,9 @@ def main(argv: list[str] | None = None) -> int:
             if pause_step_effective > 0:
                 _log_info(
                     logger,
-                    "Hand offset switch step=%d/%d (post applies from this step onward)",
+                    "Hand offset switch step=%d/%d actual replay (%d/%d replay path; post applies from this step onward)",
+                    pause_step,
+                    actual_replay_steps,
                     pause_step_effective,
                     len(replay_path),
                 )
@@ -964,22 +989,25 @@ def main(argv: list[str] | None = None) -> int:
                 100.0 * custom_hand_ratio_pre,
                 100.0 * custom_hand_ratio_post,
             )
-            if len(warmup) > 1 and abs(custom_hand_ratio_pre - custom_hand_ratio_init) > 1e-12:
+            if warmup_prefix_steps > 0:
                 _log_info(
                     logger,
-                    "Custom hand warmup: blending init->pre over first %d replay step(s)",
-                    len(warmup),
+                    "Custom hand warmup: holding init percentage for first %d replay-path step(s)",
+                    warmup_prefix_steps,
                 )
-                if args.custom_hand_postpone_steps > 0 and custom_hand_ratio_pre < custom_hand_ratio_init:
-                    _log_info(
-                        logger,
-                        "Custom hand postpone: delaying init->pre closing by %d replay step(s)",
-                        args.custom_hand_postpone_steps,
-                    )
+            if abs(custom_hand_ratio_pre - custom_hand_ratio_init) > 1e-12:
+                _log_info(
+                    logger,
+                    "Custom hand pre-pause: after warmup, delaying init->pre by %d replay step(s), then blending over %d step(s)",
+                    args.custom_hand_postpone_steps,
+                    args.hand_offset_transition_steps,
+                )
             if pause_step_effective > 0:
                 _log_info(
                     logger,
-                    "Custom hand switch step=%d/%d (post percentage applies from this step onward)",
+                    "Custom hand switch step=%d/%d actual replay (%d/%d replay path; post percentage applies from this step onward)",
+                    pause_step,
+                    actual_replay_steps,
                     pause_step_effective,
                     len(replay_path),
                 )
@@ -1028,18 +1056,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         _log_info(logger, "First traj waypoint=%s", np.array2string(q_first, precision=3))
         if pause_step > 0:
-            if pause_step > len(replay_path):
+            if pause_step > actual_replay_steps:
                 _log_warn(
                     logger,
-                    "Pause step %d is beyond replay length %d; pause will not trigger.",
+                    "Pause step %d is beyond actual replay length %d; pause will not trigger.",
                     pause_step,
-                    len(replay_path),
+                    actual_replay_steps,
                 )
             else:
                 _log_info(
                     logger,
-                    "Replay pause configured at step %d/%d (before publish).",
+                    "Replay pause configured at actual replay step %d/%d (replay-path step %d/%d, before publish).",
                     pause_step,
+                    actual_replay_steps,
+                    pause_step_effective,
                     len(replay_path),
                 )
         _log_info(
@@ -1100,13 +1130,16 @@ def main(argv: list[str] | None = None) -> int:
         _log_info(logger, "Execution phase: replay")
         for idx, q_cmd in enumerate(replay_path):
             step_1based = idx + 1
-            if pause_step > 0 and step_1based == pause_step:
+            if pause_step_effective > 0 and step_1based == pause_step_effective:
                 try:
-                    input(f"Paused at replay step {step_1based}/{len(replay_path)}. press enter to resume")
+                    input(
+                        f"Paused at actual replay step {pause_step}/{actual_replay_steps} "
+                        f"(path step {step_1based}/{len(replay_path)}). press enter to resume"
+                    )
                 except EOFError:
                     _log_warn(logger, "No stdin available at pause step; continuing replay.")
                 except KeyboardInterrupt:
-                    _log_warn(logger, "Execution canceled by user at pause step %d.", step_1based)
+                    _log_warn(logger, "Execution canceled by user at pause step %d.", pause_step)
                     return 1
 
             if not rclpy.ok():
