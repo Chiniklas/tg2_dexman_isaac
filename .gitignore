@@ -23,6 +23,10 @@ dextrah_lab/assets/*
 !dextrah_lab/assets/kuka_inspirehand_modified/**
 !dextrah_lab/assets/tg2_inspirehand/
 !dextrah_lab/assets/tg2_inspirehand/**
+!dextrah_lab/assets/tiangong2pro/
+!dextrah_lab/assets/tiangong2pro/**
+dextrah_lab/assets/tiangong2pro/**/__pycache__/
+dextrah_lab/assets/tiangong2pro/**/*.pyc
 reference/
 # dextrah_lab/stored_policies/
 build/

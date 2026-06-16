@@ -1,8 +1,17 @@
 # SimToolReal TG2
 
-This task follows the SimToolReal layout: task code and RL-Games agent recipes
-live under this folder, while the training and replay entrypoints live at the
-`dextrah_lab` package root.
+This folder contains the active TG2 teacher-training task for this branch.
+
+Contents:
+
+- task registration
+- task environment/config code
+- SAPO RL-Games YAML recipes
+
+The root entrypoints are:
+
+- `dextrah_lab/train_rl_games.py`
+- `dextrah_lab/play_rl_games.py`
 
 Train with the vendored SAPO RL-Games fork:
 
@@ -24,3 +33,8 @@ conda run -n dexsafedagger python dextrah_lab/play_rl_games.py \
 
 The SAPO package used by these scripts is the local copy at
 `dextrah_lab/rl_games`.
+
+Current checked-in object support:
+
+- `cube`
+- `1wdf56lx`

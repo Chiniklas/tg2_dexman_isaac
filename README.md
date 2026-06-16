@@ -1,171 +1,139 @@
-# DexSafeDagger
+# TG2 SimToolReal SAPO Branch
 
-DexSafeDagger acquires a privileged teacher policy from RL trained in Isaac Sim and Isaac Lab. We then distill the teacher policies into an RGB-based student policy in an online SafeDagger-style setting.
+This branch is an Isaac Lab training workspace centered on a SimToolReal-style
+teacher policy for the TG2 InspireHand asset.
 
-## Installation
-**Note**: This project will download and install additional third-party open source software projects. Review the license terms of these open source projects before use.
+What is in scope here:
 
-1. Create the `dexsafedagger` Conda environment, then [install](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html) Isaac Sim `5.0.0` and Isaac Lab `2.2.1` into that environment by following the local Conda installation route.
+- SAPO-style RL-Games teacher training
+- TG2 SimToolReal task implementation
+- Local vendored SAPO `rl_games`
+- Replay of trained teacher checkpoints in Isaac Sim
+
+This branch now uses the SimToolReal-style root entrypoints and TG2 task as the
+active training path, while older Dextrah assets, deployment code, plotting,
+stored checkpoints, and local reference material are still present in the tree.
+
+## Layout
+
+- `dextrah_lab/train_rl_games.py`: root training entrypoint
+- `dextrah_lab/play_rl_games.py`: root replay entrypoint
+- `dextrah_lab/tasks/simtoolreal_tg2`: TG2 task code and SAPO YAML configs
+- `dextrah_lab/rl_games`: vendored SAPO RL-Games project
+- `dextrah_lab/assets/tg2_inspirehand`: TG2 robot USD/config
+- `dextrah_lab/assets/test_object`: checked-in SimToolReal object USDs
+- `reference/simtoolreal_isaacsim`: local reference snapshot used for alignment
+
+Logs and saved params are written under:
+
+- `dextrah_lab/tasks/simtoolreal_tg2/logs`
+- `dextrah_lab/tasks/simtoolreal_tg2/outputs`
+
+## Environment
+
+This branch assumes Isaac Sim and Isaac Lab are already installed in the target
+Conda environment, typically `dexsafedagger`.
 
 ```bash
-conda create -n dexsafedagger python=3.11 -y
-conda activate dexsafedagger
+python -m pip install -e .
 ```
 
-**Note**: After cloning the Isaac Lab repository and before installing it, check out tag `v2.2.1` (it can also work with `v2.0.2` with minor code changes):
-```bash
-cd <IsaacLab>
-git checkout v2.2.1
-```
+## Training
 
-2. Activate the `dexsafedagger` Conda environment from Step 1, then clone this repository with Git LFS assets.
-```bash
-conda activate dexsafedagger
-cd ~/projects
-git clone git@github.com:Chiniklas/tg2_dexman_isaac.git
-cd tg2_dexman_isaac
-git lfs install
-git lfs pull --include="dextrah_lab/assets/**"
-```
+Train the TG2 SimToolReal task with the default SAPO config:
 
-The simulator needs the real USD/STL files, not Git LFS pointer files. A quick check should show zero pointer files under `dextrah_lab/assets`:
 ```bash
-rg -l "version https://git-lfs.github.com/spec/v1" dextrah_lab/assets | wc -l
-```
-
-3. Install DEXTRAH runtime dependencies.
-```bash
-./install_runtime_deps.sh
-```
-
-The helper script runs `python -m pip install -e .`, installs `urdfpy==0.0.22` without its stale `networkx==2.2` dependency pin, restores Isaac-compatible pins, and verifies that the TG2 URDF can be loaded. Plain `pip install -e .` installs the package metadata, but it cannot safely express this `urdfpy` workaround.
-
-4. Ensure that a sufficiently recent `GLIBCXX_` version can be found.
-```bash
-conda install -c conda-forge libstdcxx-ng
-conda install -c conda-forge libgcc-ng=12 libstdcxx-ng=12
-```
-
-5. If you use the small checked-in test objects, make sure they are in the object-directory layout expected by the task:
-```bash
-mkdir -p dextrah_lab/assets/test_object
-cp -r dextrah_lab/assets/test_objects/USD dextrah_lab/assets/test_object/
-```
-
-## SimToolReal TG2 Teacher Training
-```bash
-python dextrah_lab/train_rl_games.py \
+conda run -n dexsafedagger python dextrah_lab/train_rl_games.py \
   --task simtoolreal_tg2 \
   --agent_cfg rl_games_sapo_cfg.yaml \
-  --num_envs 1024 \
+  --num_envs 1536 \
   --headless
 ```
 
-## Replay SimToolReal TG2 Policy
+This matches the reference SAPO six-block setup:
+
+```text
+num_envs / expl_coef_block_size = 1536 / 256 = 6
+```
+
+The TG2 SAPO config already carries `expl_coef_block_size: 256`, so the short
+command above is the reference-shaped command for this branch. Using `1024`
+would only create 4 exploration groups.
+
+Pretrain-like variant:
+
 ```bash
-python dextrah_lab/play_rl_games.py \
+conda run -n dexsafedagger python dextrah_lab/train_rl_games.py \
+  --task simtoolreal_tg2_pretrain_like \
+  --agent_cfg rl_games_sapo_pretrain_like_cfg.yaml \
+  --num_envs 1536 \
+  --headless
+```
+
+Small smoke test:
+
+```bash
+conda run -n dexsafedagger python dextrah_lab/train_rl_games.py \
+  --task simtoolreal_tg2 \
+  --agent_cfg rl_games_sapo_cfg.yaml \
+  --num_envs 6 \
+  --max_iterations 1 \
+  --headless
+```
+
+Use the 6-env command only as a startup/sanity smoke test. It does not preserve
+the reference six-block SAPO exploration shape, so checkpoints from this tiny
+run should not be treated as replay-compatible training outputs.
+
+## Replay
+
+Replay a trained checkpoint:
+
+```bash
+conda run -n dexsafedagger python dextrah_lab/play_rl_games.py \
   --task simtoolreal_tg2 \
   --checkpoint dextrah_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
 ```
 
-## Camera-based Student Distillation
-**Note**: Before starting student training, download the visual texture data (`textures.zip`) and place its contents inside the `dextrah_lab/assets` directory. Download the assets from this [link](https://huggingface.co/datasets/nvidia/dextrah_textures/blob/main/textures.zip) and unzip them into the assets folder.
-
-1. Ablation 1: Vanilla DAgger
+Optional object override:
 
 ```bash
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
-  --num_envs 32 \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --unsafe_mode none \
-  --eval_every 2500 \
-  --eval_num_episodes 3 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
+conda run -n dexsafedagger python dextrah_lab/play_rl_games.py \
+  --task simtoolreal_tg2 \
+  --object 1wdf56lx \
+  --checkpoint dextrah_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
 ```
 
-2. Ablation 2: Vanilla SafeDagger
+## Tiangong2Pro MuJoCo Asset Prep
+
+The `dextrah_lab/assets/tiangong2pro` scaffold now keeps only:
+
+- `urdf/tiangong2.0_pro_with_hands.urdf`
+- `xml/tiangong2.0_pro_with_hands.xml`
+
+After `python -m pip install -e .`, you can open the standalone XML directly in
+the MuJoCo viewer by loading:
+
+`dextrah_lab/assets/tiangong2pro/xml/tiangong2.0_pro_with_hands.xml`
+
+If `mujoco` is missing in the environment, editable install now pulls it in as
+part of this branch's package dependencies.
+
+Simple local scene preview:
+
 ```bash
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --pipeline safedagger \
-  --task dextrah_tg2_inspirehand \
-  --num_envs 32 \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --unsafe_mode l2 \
-  --eval_every 2500 \
-  --eval_num_episodes 3 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
+python dextrah_lab/deployment_ros2/mujoco/scene_loader.py
 ```
 
-3. Ablation 3: SafeDagger with Predictor
-```bash
-python run_distillation_safedagger.py \
-  --pipeline warmstart \
-  --task dextrah_tg2_inspirehand \
-  --num_envs 32 \
-  --headless \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --unsafe_mode failure_predictor \
-  --failure_predictor_type critic \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
-```
+## Current Status
 
-## Replay Student Policy
-```bash
-cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
-python eval.py \
-  --task=dextrah_tg2_inspirehand \
-  --num_envs 8 \
-  --enable_cameras \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/dextrah_student_safe_dagger.pth \
-  --num_episodes 10 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects
-```
+- SimToolReal-style TG2 task is implemented and registered
+- root train/play scripts match the reference project structure
+- SAPO RL-Games is vendored locally under `dextrah_lab/rl_games`
+- default checked-in object support includes `cube` and `1wdf56lx`
+- Tiangong2Pro MuJoCo asset scaffold is checked in as one URDF plus one standalone XML
 
-Optional recording flags:
-```bash
-  --record_data --max_records_per_file 100 --create_video
-```
+Not yet validated in this restructuring pass:
 
-## Evaluation
-1. Teacher policy evaluation
-```bash
-python3 eval.py \
-  --headless \
-  --task dextrah_tg2_inspirehand \
-  --num_envs 32 \
-  --eval_episodes 10 \
-  --teacher_policy_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/teacher_eval \
-  --teacher_object_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/teacher_eval
-```
-
-2. Student policy evaluation
-```bash
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/eval_student.py \
-  --headless \
-  --enable_cameras \
-  --task dextrah_tg2_inspirehand \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-safedagger_24-05-44-09/nn/dextrah_student_safe_dagger.pth.pth \
-  --objects_dir distill_multi_objects \
-  --num_envs 32 \
-  --num_episodes 3 \
-  --file_name_head student_eval_metrics \
-  --metrics_output_json /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/eval_results/student_eval_metrics.json \
-  env.enable_adr=False \
-  env.distillation=True \
-  env.simulate_stereo=True
-```
+- a fresh full training run after the repo reshuffle
+- multi-object expansion beyond the checked-in test object set
