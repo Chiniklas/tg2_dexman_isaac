@@ -1,4 +1,4 @@
-<mujoco model="tiangong2pro_with_hands">
+<mujoco model="tiangong2pro_with_hands_floating_base">
   <compiler angle="radian" meshdir="../meshes" autolimits="true" />
   <option timestep="0.002" gravity="0 0 -9.81" />
   <default>
@@ -84,6 +84,7 @@
     <camera name="side" pos="0 -3.2 1.6" xyaxes="1 0 0 0 0.45 0.89" />
     <camera name="top" pos="0 0 3.8" xyaxes="1 0 0 0 1 0" />
     <body name="pelvis" pos="0 0 0.989">
+      <freejoint name="pelvis_free"/>
       <inertial mass="5.639" fullinertia="0.018304 0.023292 0.024244 -0.004328 6.1e-05 6e-05" pos="-0.000979 0.00068 -0.076922" />
       <geom name="pelvis_visual_0" type="mesh" mesh="pelvis" rgba="0.752941176 0.752941176 0.752941176 1" density="0" />
       <body name="hip_roll_l_link" pos="0 0.028 -0.0857">
