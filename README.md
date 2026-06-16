@@ -52,34 +52,20 @@ mkdir -p dextrah_lab/assets/test_object
 cp -r dextrah_lab/assets/test_objects/USD dextrah_lab/assets/test_object/
 ```
 
-## DexSafeDagger Teacher Training
+## SimToolReal TG2 Teacher Training
 ```bash
-cd dextrah_lab/rl_games
-python train.py \
-    --task=dextrah_tg2_inspirehand \
-    --seed 42 \
-    --num_envs 128 \
-    --headless \
-    agent.params.config.minibatch_size=256 \
-    agent.params.config.central_value_config.minibatch_size=256 \
-    agent.params.config.learning_rate=0.0001 \
-    agent.params.config.horizon_length=16 \
-    agent.params.config.mini_epochs=4 \
-    agent.params.config.multi_gpu=False \
-    agent.wandb_activate=False \
-    env.success_for_adr=0.4 \
-    env.objects_dir=test_object \
-    env.use_cuda_graph=False
+python dextrah_lab/train_rl_games.py \
+  --task simtoolreal_tg2 \
+  --agent_cfg rl_games_sapo_cfg.yaml \
+  --num_envs 1024 \
+  --headless
 ```
 
-## Replay Teacher Policy
+## Replay SimToolReal TG2 Policy
 ```bash
-python play_test.py \
-  --task dextrah_tg2_inspirehand \
-  --num_envs 8 \
-  --objects_dir test_object \
-  --max_pose_angle 90 \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-21_08-57-56/nn/dextrah_lstm.pth
+python dextrah_lab/play_rl_games.py \
+  --task simtoolreal_tg2 \
+  --checkpoint dextrah_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
 ```
 
 ## Camera-based Student Distillation

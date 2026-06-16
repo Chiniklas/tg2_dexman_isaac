@@ -1,0 +1,215 @@
+env_cfg:
+  scene.num_envs: 1536
+  sim_dt: 0.016666666666666666
+  decimation: 1
+  episode_length_s: 10.0
+  object_name: cube
+  object_mass: 0.05
+  clamp_abs_observations: 10.0
+  use_relative_control: False
+  dof_speed_scale: 1.5
+  hand_moving_average: 0.1
+  arm_moving_average: 0.1
+  reset_position_noise_x: 0.1
+  reset_position_noise_y: 0.1
+  reset_position_noise_z: 0.02
+  reset_dof_pos_noise_fingers: 0.1
+  reset_dof_pos_noise_arm: 0.1
+  reset_dof_vel_noise: 0.5
+  randomize_object_rotation: True
+  object_start_pose: null
+  goal_object_pose: null
+  debug_keypoints: False
+  debug_grasp_bounding_box: False
+  table_top_z: 0.53
+  table_reset_z_range: 0.01
+  table_object_z_offset: 0.25
+  object_base_size: 0.04
+  object_scale_noise_multiplier_range: [1.0, 1.0]
+  fixed_size_keypoint_reward: True
+  fixed_size: [0.141, 0.03025, 0.0271]
+  keypoint_scale: 1.5
+  target_volume_mins: [-0.35, -0.2, 0.6]
+  target_volume_maxs: [0.35, 0.2, 0.95]
+  target_volume_region_scale: 1.0
+  goal_sampling_type: delta
+  delta_goal_distance: 0.1
+  delta_rotation_degrees: 90.0
+  lifting_rew_scale: 20.0
+  lifting_bonus: 300.0
+  lifting_bonus_threshold: 0.15
+  keypoint_rew_scale: 200.0
+  distance_delta_rew_scale: 50.0
+  reach_goal_bonus: 1000.0
+  arm_actions_penalty_scale: 0.03
+  hand_actions_penalty_scale: 0.003
+  fall_distance: 0.24
+  fall_penalty: 0.0
+  object_lin_vel_penalty_scale: 0.0
+  object_ang_vel_penalty_scale: 0.0
+  object_z_low_reset_threshold: 0.1
+  hand_far_from_object_threshold: 1.5
+  with_table_force_sensor: False
+  table_force_threshold: 100.0
+  reset_when_dropped: True
+  success_tolerance: 0.075
+  target_success_tolerance: 0.01
+  tolerance_curriculum_increment: 0.9
+  tolerance_curriculum_interval: 3000
+  eval_success_tolerance: null
+  success_steps: 10
+  max_consecutive_successes: 50
+  force_consecutive_near_goal_steps: True
+  use_obs_delay: True
+  obs_delay_max: 3
+  use_action_delay: True
+  action_delay_max: 3
+  use_object_state_delay_noise: True
+  object_state_delay_max: 10
+  object_state_xyz_noise_std: 0.01
+  object_state_rotation_noise_degrees: 5.0
+  joint_velocity_obs_noise_std: 0.01
+  force_scale: 20.0
+  force_prob_range: [0.001, 0.1]
+  force_decay: 0.0
+  force_decay_interval: 0.08
+  force_only_when_lifted: True
+  torque_scale: 2.0
+  torque_prob_range: [0.001, 0.1]
+  torque_decay: 0.0
+  torque_decay_interval: 0.08
+  torque_only_when_lifted: True
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 10.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: coef_cond
+    mlp:
+      units: [1024, 1024, 512, 512]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: True
+      layer_norm: True
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: SimToolRealTG2LSTMAsymmetricPPO
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: True
+    normalize_input: True
+    normalize_value: True
+    normalize_advantage: True
+    value_bootstrap: False
+    reward_shaper:
+      scale_value: 0.01
+    num_actors: -1
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 1e-4
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.016
+    score_to_win: 1000000
+    max_epochs: 1000000
+    max_frames: 100000000000000
+    save_best_after: 100
+    save_frequency: 1000
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.0
+    truncate_grads: True
+    e_clip: 0.1
+    horizon_length: 16
+    minibatch_size: 98304
+    mini_epochs: 2
+    critic_coef: 4.0
+    clip_value: True
+    seq_length: 16
+    bounds_loss_coef: 0.0001
+    defer_summaries_sec: 5
+    summaries_interval_sec_min: 5
+    summaries_interval_sec_max: 300
+    good_reset_boundary: 0
+
+    # Custom SAPO / mixed-exploration knobs from the reference rl_games fork.
+    use_others_experience: lf
+    off_policy_ratio: 1.0
+    expl_type: mixed_expl_learn_param
+    expl_reward_coef_embd_size: 32
+    expl_reward_coef_scale: 0.005
+    expl_reward_type: entropy
+    expl_coef_block_size: 256
+
+    player:
+      deterministic: False
+      games_num: 100000
+      print_stats: False
+
+    central_value_config:
+      minibatch_size: 98304
+      mini_epochs: 2
+      learning_rate: 1e-4
+      kl_threshold: 0.016
+      clip_value: True
+      normalize_input: True
+      truncate_grads: True
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 1024, 512, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+    expl_reward_coef: 0.0
+
+wandb_activate: False
+wandb_group: 'rl_gpu'
+wandb_name: 'simtoolreal_tg2'
+wandb_entity: ''
+wandb_project: 'simtoolreal'
+wandb_tags: []
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
