@@ -13,15 +13,17 @@ from isaaclab.sim import PhysxCfg, SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils import configclass
 
-from dextrah_lab.assets.tg2_inspirehand.tg2_inspirehand import TG2_INSPIREHAND_CFG
+from dextrah_lab.assets.tiangong2pro.robot import (
+    TIANGONG2PRO_ACTUATED_JOINT_NAMES,
+    TIANGONG2PRO_CFG,
+    TIANGONG2PRO_MIMIC_JOINT_MAP,
+)
 from .simtoolreal_tg2_utils import TG2_INSPIREHAND_JOINT_NAMES
 
 
 DEXTRAH_LAB_DIR = Path(__file__).resolve().parents[2]
-SIMTOOLREAL_OBJECT_USD_DIR = DEXTRAH_LAB_DIR / "assets" / "test_object" / "USD"
-SIMTOOLREAL_OBJECT_SCALES = {
-    "1wdf56lx": (1.0, 1.0, 1.0),
-}
+PRIMITIVE_OBJECT_USD_PATH = DEXTRAH_LAB_DIR / "assets" / "primitives" / "USD" / "small_8_cuboid" / "small_8_cuboid.usd"
+SCENE_OBJECT_USD_DIR = DEXTRAH_LAB_DIR / "assets" / "scene_objects"
 
 
 def _object_rigid_props() -> sim_utils.RigidBodyPropertiesCfg:
@@ -39,7 +41,7 @@ def _object_rigid_props() -> sim_utils.RigidBodyPropertiesCfg:
 
 def _goal_rigid_props() -> sim_utils.RigidBodyPropertiesCfg:
     return sim_utils.RigidBodyPropertiesCfg(
-        kinematic_enabled=False,
+        kinematic_enabled=True,
         disable_gravity=True,
         enable_gyroscopic_forces=True,
         solver_position_iteration_count=8,
@@ -55,120 +57,38 @@ def _goal_collision_props() -> sim_utils.CollisionPropertiesCfg:
 
 
 def make_cube_object_cfg(mass: float) -> RigidObjectCfg:
+    if not PRIMITIVE_OBJECT_USD_PATH.exists():
+        raise FileNotFoundError(f"Missing primitive cube USD: {PRIMITIVE_OBJECT_USD_PATH}")
     return RigidObjectCfg(
         prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.04, 0.04, 0.04),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=str(PRIMITIVE_OBJECT_USD_PATH),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
             rigid_props=_object_rigid_props(),
             mass_props=sim_utils.MassPropertiesCfg(mass=mass),
             collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.35, 0.9)),
-            physics_material=RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.92, 0.90, 0.86), roughness=0.65),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.63), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
 
 def make_cube_goal_object_cfg(mass: float) -> RigidObjectCfg:
-    return RigidObjectCfg(
-        prim_path="/World/envs/env_.*/goal_object",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.04, 0.04, 0.04),
-            rigid_props=_goal_rigid_props(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=mass),
-            collision_props=_goal_collision_props(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-            physics_material=RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(-0.35, -0.06, 0.71), rot=(1.0, 0.0, 0.0, 0.0)),
-    )
-
-
-def make_simtoolreal_object_cfg(object_name: str, mass: float) -> RigidObjectCfg:
-    usd_path = SIMTOOLREAL_OBJECT_USD_DIR / object_name / f"{object_name}.usd"
-    if object_name not in SIMTOOLREAL_OBJECT_SCALES:
-        known = ", ".join(sorted(SIMTOOLREAL_OBJECT_SCALES))
-        raise ValueError(f"Unknown SimToolReal TG2 object '{object_name}'. Known objects: {known}")
-    if not usd_path.exists():
-        raise FileNotFoundError(f"Missing USD for SimToolReal TG2 object '{object_name}': {usd_path}")
-
-    return RigidObjectCfg(
-        prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=str(usd_path),
-            rigid_props=_object_rigid_props(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=mass),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.63), rot=(1.0, 0.0, 0.0, 0.0)),
-    )
-
-
-def make_simtoolreal_goal_object_cfg(object_name: str, mass: float) -> RigidObjectCfg:
-    usd_path = SIMTOOLREAL_OBJECT_USD_DIR / object_name / f"{object_name}.usd"
-    if object_name not in SIMTOOLREAL_OBJECT_SCALES:
-        known = ", ".join(sorted(SIMTOOLREAL_OBJECT_SCALES))
-        raise ValueError(f"Unknown SimToolReal TG2 object '{object_name}'. Known objects: {known}")
-    if not usd_path.exists():
-        raise FileNotFoundError(f"Missing USD for SimToolReal TG2 object '{object_name}': {usd_path}")
-
+    if not PRIMITIVE_OBJECT_USD_PATH.exists():
+        raise FileNotFoundError(f"Missing primitive cube USD: {PRIMITIVE_OBJECT_USD_PATH}")
     return RigidObjectCfg(
         prim_path="/World/envs/env_.*/goal_object",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=str(usd_path),
+            usd_path=str(PRIMITIVE_OBJECT_USD_PATH),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
             rigid_props=_goal_rigid_props(),
             mass_props=sim_utils.MassPropertiesCfg(mass=mass),
             collision_props=_goal_collision_props(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(-0.35, -0.06, 0.71), rot=(1.0, 0.0, 0.0, 0.0)),
-    )
-
-
-def make_multi_simtoolreal_object_cfg(object_names: list[str], mass: float) -> RigidObjectCfg:
-    usd_paths: list[str] = []
-    for object_name in object_names:
-        usd_path = SIMTOOLREAL_OBJECT_USD_DIR / object_name / f"{object_name}.usd"
-        if object_name not in SIMTOOLREAL_OBJECT_SCALES:
-            known = ", ".join(sorted(SIMTOOLREAL_OBJECT_SCALES))
-            raise ValueError(f"Unknown SimToolReal TG2 object '{object_name}'. Known objects: {known}")
-        if not usd_path.exists():
-            raise FileNotFoundError(f"Missing USD for SimToolReal TG2 object '{object_name}': {usd_path}")
-        usd_paths.append(str(usd_path))
-
-    return RigidObjectCfg(
-        prim_path="/World/envs/env_.*/object",
-        spawn=sim_utils.MultiUsdFileCfg(
-            usd_path=usd_paths,
-            random_choice=False,
-            rigid_props=_object_rigid_props(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=mass),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.63), rot=(1.0, 0.0, 0.0, 0.0)),
-    )
-
-
-def make_multi_simtoolreal_goal_object_cfg(object_names: list[str], mass: float) -> RigidObjectCfg:
-    usd_paths: list[str] = []
-    for object_name in object_names:
-        usd_path = SIMTOOLREAL_OBJECT_USD_DIR / object_name / f"{object_name}.usd"
-        if object_name not in SIMTOOLREAL_OBJECT_SCALES:
-            known = ", ".join(sorted(SIMTOOLREAL_OBJECT_SCALES))
-            raise ValueError(f"Unknown SimToolReal TG2 object '{object_name}'. Known objects: {known}")
-        if not usd_path.exists():
-            raise FileNotFoundError(f"Missing USD for SimToolReal TG2 object '{object_name}': {usd_path}")
-        usd_paths.append(str(usd_path))
-
-    return RigidObjectCfg(
-        prim_path="/World/envs/env_.*/goal_object",
-        spawn=sim_utils.MultiUsdFileCfg(
-            usd_path=usd_paths,
-            random_choice=False,
-            rigid_props=_goal_rigid_props(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=mass),
-            collision_props=_goal_collision_props(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.1, 0.9, 0.25),
+                roughness=0.65,
+                opacity=0.35,
+            ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(-0.35, -0.06, 0.71), rot=(1.0, 0.0, 0.0, 0.0)),
     )
@@ -182,32 +102,10 @@ def configure_cube_object(cfg: "SimToolRealTg2EnvCfg") -> None:
     cfg.scene.replicate_physics = True
 
 
-def configure_simtoolreal_object(cfg: "SimToolRealTg2EnvCfg", object_name: str) -> None:
-    cfg.object_name = object_name
-    cfg.object_cfg = make_simtoolreal_object_cfg(object_name, cfg.object_mass)
-    cfg.goal_object_cfg = make_simtoolreal_goal_object_cfg(object_name, cfg.object_mass)
-    cfg.object_scales = SIMTOOLREAL_OBJECT_SCALES[object_name]
-
-
-def configure_multi_simtoolreal_objects(cfg: "SimToolRealTg2EnvCfg", object_names: list[str]) -> None:
-    cfg.object_name = "multi_simtoolreal"
-    cfg.multi_object_names = tuple(object_names)
-    cfg.object_cfg = make_multi_simtoolreal_object_cfg(object_names, cfg.object_mass)
-    cfg.goal_object_cfg = make_multi_simtoolreal_goal_object_cfg(object_names, cfg.object_mass)
-    cfg.object_scales = SIMTOOLREAL_OBJECT_SCALES[object_names[0]]
-
-
 def apply_object_selection(cfg: "SimToolRealTg2EnvCfg") -> None:
-    if cfg.object_name == "cube":
-        configure_cube_object(cfg)
-    elif cfg.object_name == "multi_simtoolreal":
-        cfg.scene.replicate_physics = False
-        configure_multi_simtoolreal_objects(cfg, list(cfg.multi_object_names))
-    elif cfg.object_name in SIMTOOLREAL_OBJECT_SCALES:
-        configure_simtoolreal_object(cfg, cfg.object_name)
-    else:
-        known = ", ".join(["cube", "multi_simtoolreal", *sorted(SIMTOOLREAL_OBJECT_SCALES)])
-        raise ValueError(f"Unknown object_name '{cfg.object_name}'. Known values: {known}")
+    if cfg.object_name != "cube":
+        raise ValueError("simtoolreal_tg2 currently supports only the single primitive object: cube")
+    configure_cube_object(cfg)
 
 
 @configclass
@@ -241,9 +139,8 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
 
     # assets
     object_name = "cube"
-    multi_object_names = tuple(sorted(SIMTOOLREAL_OBJECT_SCALES))
-    robot_cfg = TG2_INSPIREHAND_CFG.replace(prim_path="/World/envs/env_.*/Robot").replace(
-        init_state=TG2_INSPIREHAND_CFG.init_state.replace(
+    robot_cfg = TIANGONG2PRO_CFG.replace(prim_path="/World/envs/env_.*/Robot").replace(
+        init_state=TIANGONG2PRO_CFG.init_state.replace(
             pos=(0.0, 0.0, 0.25),
             rot=(1.0, 0.0, 0.0, 0.0),
             joint_pos={
@@ -265,11 +162,13 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
                 "ring_joint_1": 0.0,
                 "thumb_joint_1": 0.1,
                 "thumb_joint_2": 0.2,
-                "thumb_joint_3": 0.4,
+                "thumb_joint_3": 0.39,
             },
         )
     )
-    actuated_joint_names = TG2_INSPIREHAND_JOINT_NAMES
+    policy_joint_names = TG2_INSPIREHAND_JOINT_NAMES
+    actuated_joint_names = TIANGONG2PRO_ACTUATED_JOINT_NAMES
+    mimic_joint_map = TIANGONG2PRO_MIMIC_JOINT_MAP
     palm_body_name = "palm"
     fingertip_body_names = [
         "index_tip",
@@ -289,15 +188,17 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
 
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/table",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.475, 0.4, 0.3),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            activate_contact_sensors=True,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.82, 0.56, 0.35)),
-            physics_material=RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=str(SCENE_OBJECT_USD_DIR / "table.usd"),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=True,
+            ),
+            scale=(1.0, 1.0, 1.0),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.38), rot=(1.0, 0.0, 0.0, 0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(-0.21 - 0.725 / 2, 0.668 - 1.16 / 2, 0.25 - 0.03 / 2),
+            rot=(1.0, 0.0, 0.0, 0.0),
+        ),
     )
     table_contact_sensor: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/table",

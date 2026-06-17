@@ -36,5 +36,4 @@ The SAPO package used by these scripts is the local copy at
 
 Current checked-in object support:
 
-- `cube`
-- `1wdf56lx`
+- `cube` (`assets/primitives/USD/small_8_cuboid/small_8_cuboid.usd`)

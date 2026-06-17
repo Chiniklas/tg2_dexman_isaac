@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import re
 
 import torch
-from pxr import PhysxSchema, UsdPhysics
+from pxr import UsdPhysics
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
@@ -16,7 +16,7 @@ from isaaclab.sensors import ContactSensor
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
-from .simtoolreal_tg2_env_cfg import SIMTOOLREAL_OBJECT_SCALES, SimToolRealTg2EnvCfg
+from .simtoolreal_tg2_env_cfg import SimToolRealTg2EnvCfg
 from .simtoolreal_tg2_utils import compute_joint_pos_targets, unscale
 
 
@@ -38,7 +38,10 @@ class SimToolRealTg2Env(DirectRLEnv):
         self._apply_object_mass()
 
         self.num_robot_dofs = self.robot.num_joints
-        self.actuated_dof_indices = [self.robot.joint_names.index(name) for name in cfg.actuated_joint_names]
+        self.policy_joint_names = list(getattr(cfg, "policy_joint_names", cfg.actuated_joint_names))
+        self.actuated_joint_names = list(cfg.actuated_joint_names)
+        self.actuated_dof_indices = [self.robot.joint_names.index(name) for name in self.policy_joint_names]
+        self.target_dof_indices = [self.robot.joint_names.index(name) for name in self.actuated_joint_names]
         self.num_actions = len(self.actuated_dof_indices)
         self.cfg.num_actions = self.num_actions
 
@@ -46,6 +49,12 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.prev_actions = torch.zeros_like(self.actions)
         self.prev_action_targets = torch.zeros_like(self.actions)
         self.dof_pos_targets = torch.zeros((self.num_envs, self.num_robot_dofs), device=self.device)
+        self._policy_joint_name_to_action_idx = {
+            name: idx for idx, name in enumerate(self.policy_joint_names)
+        }
+        self._target_joint_name_to_target_idx = {
+            name: idx for idx, name in enumerate(self.actuated_joint_names)
+        }
 
         self.palm_body_idx = self._resolve_body_index(self.cfg.palm_body_name)
         self.fingertip_body_indices = [self._resolve_body_index(name) for name in self.cfg.fingertip_body_names]
@@ -55,6 +64,8 @@ class SimToolRealTg2Env(DirectRLEnv):
         joint_pos_limits = self.robot.root_physx_view.get_dof_limits().to(self.device)
         self.robot_dof_lower_limits = joint_pos_limits[..., 0][:, self.actuated_dof_indices]
         self.robot_dof_upper_limits = joint_pos_limits[..., 1][:, self.actuated_dof_indices]
+        self.target_dof_lower_limits = joint_pos_limits[..., 0][:, self.target_dof_indices]
+        self.target_dof_upper_limits = joint_pos_limits[..., 1][:, self.target_dof_indices]
 
         self.robot_start_joint_pos = self.robot.data.default_joint_pos.clone()
         self.robot_start_joint_vel = torch.zeros_like(self.robot_start_joint_pos)
@@ -64,14 +75,7 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.object_goal_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.object_goal_rot = torch.zeros(self.num_envs, 4, device=self.device)
         self.object_goal_rot[:, 0] = 1.0
-        if getattr(self.cfg, "object_name", "") == "multi_simtoolreal":
-            per_object_scales = torch.tensor(
-                [SIMTOOLREAL_OBJECT_SCALES[name] for name in self.cfg.multi_object_names], device=self.device
-            )
-            object_ids = torch.arange(self.num_envs, device=self.device) % per_object_scales.shape[0]
-            self.object_base_scales = per_object_scales[object_ids]
-        else:
-            self.object_base_scales = torch.tensor(self.cfg.object_scales, device=self.device).repeat(self.num_envs, 1)
+        self.object_base_scales = torch.tensor(self.cfg.object_scales, device=self.device).repeat(self.num_envs, 1)
         self.object_scale_noise_multiplier = torch.ones((self.num_envs, 3), device=self.device)
         self.object_scales = self.object_base_scales * self.object_scale_noise_multiplier
         self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
@@ -110,12 +114,8 @@ class SimToolRealTg2Env(DirectRLEnv):
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         self.table = RigidObject(self.cfg.table_cfg)
-        if self.cfg.object_name == "multi_simtoolreal":
-            self.object = self._make_multi_simtoolreal_object(self.cfg.object_cfg)
-            self.goal_object = self._make_multi_simtoolreal_object(self.cfg.goal_object_cfg)
-        else:
-            self.object = RigidObject(self.cfg.object_cfg)
-            self.goal_object = RigidObject(self.cfg.goal_object_cfg)
+        self.object = RigidObject(self.cfg.object_cfg)
+        self.goal_object = RigidObject(self.cfg.goal_object_cfg)
         self.table_contact_sensor = None
         if self.cfg.with_table_force_sensor:
             self.table_contact_sensor = ContactSensor(self.cfg.table_contact_sensor)
@@ -133,56 +133,6 @@ class SimToolRealTg2Env(DirectRLEnv):
             self.scene.sensors["table_contact_sensor"] = self.table_contact_sensor
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
-    def _make_multi_simtoolreal_object(self, cfg) -> RigidObject:
-        cfg.spawn.func(
-            cfg.prim_path,
-            cfg.spawn,
-            translation=cfg.init_state.pos,
-            orientation=cfg.init_state.rot,
-        )
-        self._reroot_multi_usd_rigid_bodies(cfg.prim_path)
-        return RigidObject(cfg.replace(spawn=None))
-
-    def _reroot_multi_usd_rigid_bodies(self, prim_path: str) -> None:
-        for parent_prim in sim_utils.find_matching_prims(prim_path):
-            parent_path = parent_prim.GetPath().pathString
-            root_prims = sim_utils.get_all_matching_child_prims(
-                parent_path, predicate=lambda prim: prim.HasAPI(UsdPhysics.RigidBodyAPI)
-            )
-            if len(root_prims) != 1:
-                continue
-            root_prim = root_prims[0]
-            if root_prim.GetPath() == parent_prim.GetPath():
-                continue
-            # Apply RigidBodyAPI to parent and copy the two USD attributes.
-            child_rb = UsdPhysics.RigidBodyAPI(root_prim)
-            if not parent_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                UsdPhysics.RigidBodyAPI.Apply(parent_prim)
-            parent_rb = UsdPhysics.RigidBodyAPI(parent_prim)
-            for getter_name in ("GetRigidBodyEnabledAttr", "GetKinematicEnabledAttr"):
-                child_attr = getattr(child_rb, getter_name)()
-                if child_attr.HasValue():
-                    getattr(parent_rb, getter_name)().Set(child_attr.Get())
-            # Ensure parent also has the PhysxRigidBodyAPI and copy its attributes.
-            child_px = PhysxSchema.PhysxRigidBodyAPI(root_prim)
-            if child_px:
-                parent_px = PhysxSchema.PhysxRigidBodyAPI(parent_prim)
-                if not parent_px:
-                    parent_px = PhysxSchema.PhysxRigidBodyAPI.Apply(parent_prim)
-                for getter_name in (
-                    "GetDisableGravityAttr",
-                    "GetMaxDepenetrationVelocityAttr",
-                    "GetEnableGyroscopicForcesAttr",
-                    "GetSolverPositionIterationCountAttr",
-                    "GetSolverVelocityIterationCountAttr",
-                    "GetSleepThresholdAttr",
-                    "GetStabilizationThresholdAttr",
-                ):
-                    child_attr = getattr(child_px, getter_name)()
-                    if child_attr.HasValue():
-                        getattr(parent_px, getter_name)().Set(child_attr.Get())
-            root_prim.RemoveAPI(UsdPhysics.RigidBodyAPI)
 
     def _disable_goal_object_collisions(self) -> None:
         stage = sim_utils.get_current_stage()
@@ -233,7 +183,7 @@ class SimToolRealTg2Env(DirectRLEnv):
     def _apply_action(self) -> None:
         self._update_object_disturbances()
         self.robot.set_joint_position_target(
-            self.dof_pos_targets[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
+            self.dof_pos_targets[:, self.target_dof_indices], joint_ids=self.target_dof_indices
         )
 
     def _resolve_body_index(self, body_name: str) -> int:
@@ -448,8 +398,13 @@ class SimToolRealTg2Env(DirectRLEnv):
             (num_ids, self.num_actions),
             self.device,
         )
+        self._apply_mimic_wrapper_to_full_targets(dof_pos[:, self.actuated_dof_indices], dof_pos, env_ids=env_ids)
         self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
-        self.robot.set_joint_position_target(dof_pos[:, self.actuated_dof_indices], env_ids=env_ids, joint_ids=self.actuated_dof_indices)
+        self.robot.set_joint_position_target(
+            dof_pos[:, self.target_dof_indices],
+            env_ids=env_ids,
+            joint_ids=self.target_dof_indices,
+        )
 
         self.dof_pos_targets[env_ids] = dof_pos
         self.prev_action_targets[env_ids] = dof_pos[:, self.actuated_dof_indices]
@@ -553,7 +508,41 @@ class SimToolRealTg2Env(DirectRLEnv):
                 dt=self.step_dt,
             )
         self.prev_action_targets.copy_(targets)
-        self.dof_pos_targets[:, self.actuated_dof_indices] = targets
+        self._apply_mimic_wrapper_to_full_targets(targets, self.dof_pos_targets)
+
+    def _apply_mimic_wrapper_to_full_targets(
+        self,
+        policy_targets: torch.Tensor,
+        full_targets: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
+    ) -> None:
+        full_targets[:, self.actuated_dof_indices] = policy_targets
+        target_values = full_targets[:, self.target_dof_indices].clone()
+        target_lower_limits = self.target_dof_lower_limits
+        target_upper_limits = self.target_dof_upper_limits
+        if env_ids is not None:
+            target_lower_limits = target_lower_limits[env_ids]
+            target_upper_limits = target_upper_limits[env_ids]
+        mimic_joint_map = getattr(self.cfg, "mimic_joint_map", {})
+        resolved_target_values: dict[str, torch.Tensor] = {}
+
+        for joint_name, action_idx in self._policy_joint_name_to_action_idx.items():
+            if joint_name in self._target_joint_name_to_target_idx:
+                resolved_target_values[joint_name] = policy_targets[:, action_idx]
+
+        for joint_name, (source_name, multiplier, offset) in mimic_joint_map.items():
+            source_value = resolved_target_values.get(source_name)
+            if source_value is None and source_name in self._target_joint_name_to_target_idx:
+                source_value = target_values[:, self._target_joint_name_to_target_idx[source_name]]
+            if source_value is None:
+                raise RuntimeError(f"Cannot resolve mimic source joint '{source_name}' for '{joint_name}'.")
+            target_value = source_value * float(multiplier) + float(offset)
+            resolved_target_values[joint_name] = target_value
+            if joint_name in self._target_joint_name_to_target_idx:
+                target_values[:, self._target_joint_name_to_target_idx[joint_name]] = target_value
+
+        target_values = saturate(target_values, target_lower_limits, target_upper_limits)
+        full_targets[:, self.target_dof_indices] = target_values
 
     def _sample_log_uniform(self, min_value: float, max_value: float, shape: tuple[int, ...]) -> torch.Tensor:
         if min_value <= 0.0 or max_value <= 0.0:

@@ -4,21 +4,10 @@ from __future__ import annotations
 
 import torch
 
-TG2_INSPIREHAND_JOINT_NAMES = [
-    "shoulder_pitch_r_joint",
-    "shoulder_roll_r_joint",
-    "shoulder_yaw_r_joint",
-    "elbow_pitch_r_joint",
-    "elbow_yaw_r_joint",
-    "wrist_pitch_r_joint",
-    "wrist_roll_r_joint",
-    "index_joint_0",
-    "middle_joint_0",
-    "ring_joint_0",
-    "little_joint_0",
-    "thumb_joint_0",
-    "thumb_joint_1",
-]
+from dextrah_lab.assets.tiangong2pro.robot import TIANGONG2PRO_POLICY_JOINT_NAMES
+
+
+TG2_INSPIREHAND_JOINT_NAMES = TIANGONG2PRO_POLICY_JOINT_NAMES
 
 FINGERTIP_NAMES = ["index", "middle", "ring", "little", "thumb"]
 

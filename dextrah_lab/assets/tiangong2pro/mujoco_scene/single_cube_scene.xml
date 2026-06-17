@@ -1,0 +1,39 @@
+<mujoco model="tiangong2pro_single_cube_scene">
+  <compiler meshdir="../meshes"/>
+
+  <include file="../xml/tiangong2.0_pro_with_hands_half_body.xml"/>
+
+  <option gravity="0 0 -9.81"/>
+
+  <asset>
+    <material name="tg2_table_mat" rgba="0.55 0.43 0.32 1"/>
+    <material name="tg2_cube_mat" rgba="0.1 0.35 0.9 1"/>
+    <material name="tg2_goal_cube_mat" rgba="0.1 0.9 0.25 0.25"/>
+  </asset>
+
+  <worldbody>
+    <camera name="validation_front" pos="0 -2.25 1.10" xyaxes="1 0 0 0 0.32 0.95"/>
+
+    <body name="table" pos="0.00 0.58 0.515">
+      <geom name="table_top" type="box" size="0.58 0.3625 0.015" material="tg2_table_mat" friction="0.8 0.01 0.01" contype="1" conaffinity="1"/>
+    </body>
+
+    <body name="cube" pos="-0.22 0.50 0.56">
+      <freejoint name="cube_freejoint"/>
+      <geom name="cube_geom" type="box" size="0.02 0.02 0.02" mass="0.05" material="tg2_cube_mat" friction="0.8 0.01 0.01" contype="1" conaffinity="1"/>
+      <site name="cube_keypoint_0" type="sphere" pos="0.03 0.03 0.03" size="0.008" rgba="0.1 0.45 1.0 1"/>
+      <site name="cube_keypoint_1" type="sphere" pos="0.03 0.03 -0.03" size="0.008" rgba="0.1 0.45 1.0 1"/>
+      <site name="cube_keypoint_2" type="sphere" pos="-0.03 -0.03 0.03" size="0.008" rgba="0.1 0.45 1.0 1"/>
+      <site name="cube_keypoint_3" type="sphere" pos="-0.03 -0.03 -0.03" size="0.008" rgba="0.1 0.45 1.0 1"/>
+    </body>
+
+    <body name="goal_cube" mocap="true" pos="0.00 0.50 0.64">
+      <geom name="goal_cube_geom" type="box" size="0.02 0.02 0.02" material="tg2_goal_cube_mat" contype="0" conaffinity="0"/>
+      <site name="goal_position" type="sphere" pos="0 0 0" size="0.012" rgba="0.1 1.0 0.25 1"/>
+      <site name="goal_keypoint_0" type="sphere" pos="0.03 0.03 0.03" size="0.008" rgba="1.0 0.15 0.85 1"/>
+      <site name="goal_keypoint_1" type="sphere" pos="0.03 0.03 -0.03" size="0.008" rgba="1.0 0.15 0.85 1"/>
+      <site name="goal_keypoint_2" type="sphere" pos="-0.03 -0.03 0.03" size="0.008" rgba="1.0 0.15 0.85 1"/>
+      <site name="goal_keypoint_3" type="sphere" pos="-0.03 -0.03 -0.03" size="0.008" rgba="1.0 0.15 0.85 1"/>
+    </body>
+  </worldbody>
+</mujoco>
