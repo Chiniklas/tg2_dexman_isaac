@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 
-DEFAULT_INPUT_ROOT = Path("/home/chizhang/projects/dextrah/tg2_dexman_isaac/plotting/plots")
+DEFAULT_INPUT_ROOT = Path("/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/plotting/plots")
 DEFAULT_OUTPUT_PATH = DEFAULT_INPUT_ROOT / "object_metric_grid.png"
 
 ROW_SPECS = (

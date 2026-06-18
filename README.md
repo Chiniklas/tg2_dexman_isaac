@@ -25,15 +25,15 @@ cd ~/projects
 git clone git@github.com:Chiniklas/tg2_dexman_isaac.git
 cd tg2_dexman_isaac
 git lfs install
-git lfs pull --include="dextrah_lab/assets/**"
+git lfs pull --include="dexsafedagger_lab/assets/**"
 ```
 
-The simulator needs the real USD/STL files, not Git LFS pointer files. A quick check should show zero pointer files under `dextrah_lab/assets`:
+The simulator needs the real USD/STL files, not Git LFS pointer files. A quick check should show zero pointer files under `dexsafedagger_lab/assets`:
 ```bash
-rg -l "version https://git-lfs.github.com/spec/v1" dextrah_lab/assets | wc -l
+rg -l "version https://git-lfs.github.com/spec/v1" dexsafedagger_lab/assets | wc -l
 ```
 
-3. Install DEXTRAH runtime dependencies.
+3. Install DEXSAFEDAGGER runtime dependencies.
 ```bash
 ./install_runtime_deps.sh
 ```
@@ -48,15 +48,15 @@ conda install -c conda-forge libgcc-ng=12 libstdcxx-ng=12
 
 5. If you use the small checked-in test objects, make sure they are in the object-directory layout expected by the task:
 ```bash
-mkdir -p dextrah_lab/assets/test_object
-cp -r dextrah_lab/assets/test_objects/USD dextrah_lab/assets/test_object/
+mkdir -p dexsafedagger_lab/assets/test_object
+cp -r dexsafedagger_lab/assets/test_objects/USD dexsafedagger_lab/assets/test_object/
 ```
 
 ## DexSafeDagger Teacher Training
 ```bash
-cd dextrah_lab/rl_games
+cd dexsafedagger_lab/rl_games
 python train.py \
-    --task=dextrah_tg2_inspirehand \
+    --task=dexsafedagger_tg2_inspirehand \
     --seed 42 \
     --num_envs 128 \
     --headless \
@@ -75,21 +75,21 @@ python train.py \
 ## Replay Teacher Policy
 ```bash
 python play_test.py \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --objects_dir test_object \
   --max_pose_angle 90 \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-21_08-57-56/nn/dextrah_lstm.pth
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/2026-01-21_08-57-56/nn/dexsafedagger_lstm.pth
 ```
 
 ## Camera-based Student Distillation
-**Note**: Before starting student training, download the visual texture data (`textures.zip`) and place its contents inside the `dextrah_lab/assets` directory. Download the assets from this [link](https://huggingface.co/datasets/nvidia/dextrah_textures/blob/main/textures.zip) and unzip them into the assets folder.
+**Note**: Before starting student training, download the visual texture data (`textures.zip`) and place its contents inside the `dexsafedagger_lab/assets` directory. Download the assets from this [link](https://huggingface.co/datasets/nvidia/dexsafedagger_textures/blob/main/textures.zip) and unzip them into the assets folder.
 
 1. Ablation 1: Vanilla DAgger
 
 ```bash
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -104,9 +104,9 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
 
 2. Ablation 2: Vanilla SafeDagger
 ```bash
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
   --pipeline safedagger \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -123,7 +123,7 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
 ```bash
 python run_distillation_safedagger.py \
   --pipeline warmstart \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --headless \
   --enable_cameras \
@@ -138,12 +138,12 @@ python run_distillation_safedagger.py \
 
 ## Replay Student Policy
 ```bash
-cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
 python eval.py \
-  --task=dextrah_tg2_inspirehand \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/dextrah_student_safe_dagger.pth \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/dexsafedagger_student_safe_dagger.pth \
   --num_episodes 10 \
   env.distillation=True \
   env.simulate_stereo=True \
@@ -160,25 +160,25 @@ Optional recording flags:
 ```bash
 python3 eval.py \
   --headless \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --eval_episodes 10 \
-  --teacher_policy_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/teacher_eval \
-  --teacher_object_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/teacher_eval
+  --teacher_policy_dir /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/pretrained_ckpts/teacher_eval \
+  --teacher_object_dir /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/assets/teacher_eval
 ```
 
 2. Student policy evaluation
 ```bash
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/eval_student.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_student.py \
   --headless \
   --enable_cameras \
-  --task dextrah_tg2_inspirehand \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-safedagger_24-05-44-09/nn/dextrah_student_safe_dagger.pth.pth \
+  --task dexsafedagger_tg2_inspirehand \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-safedagger_24-05-44-09/nn/dexsafedagger_student_safe_dagger.pth.pth \
   --objects_dir distill_multi_objects \
   --num_envs 32 \
   --num_episodes 3 \
   --file_name_head student_eval_metrics \
-  --metrics_output_json /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/eval_results/student_eval_metrics.json \
+  --metrics_output_json /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_results/student_eval_metrics.json \
   env.enable_adr=False \
   env.distillation=True \
   env.simulate_stereo=True

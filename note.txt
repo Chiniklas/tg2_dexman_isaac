@@ -1,11 +1,11 @@
 ### ---- training teacher policy on single GPU ------###
 ## THIS THING WORKS.
 
-cd ~/projects/DEXTRAH/dextrah_lab/rl_games
+cd ~/projects/DEXSAFEDAGGER/dexsafedagger_lab/rl_games
 
 python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
   train.py \
-    --task=Dextrah-Kuka-Allegro \
+    --task=DexSafeDagger-Kuka-Allegro \
     --seed -1 \
     --num_envs 4 \
     agent.params.config.minibatch_size=64 \
@@ -24,11 +24,11 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
     env.use_cuda_graph=True
 
 # this also WORKS
-cd dextrah_lab/rl_games
+cd dexsafedagger_lab/rl_games
 python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
   train.py \
     --headless \
-    --task=Dextrah-Kuka-Allegro \
+    --task=DexSafeDagger-Kuka-Allegro \
     --seed -1 \
     --num_envs 1024 \
     agent.params.config.minibatch_size=4096 \
@@ -48,23 +48,23 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
 
 
 # FOR REPLAY TEACHER policy
-cd dextrah_lab/rl_games
+cd dexsafedagger_lab/rl_games
 python play_test.py \
-  --task Dextrah-Kuka-Allegro \
+  --task DexSafeDagger-Kuka-Allegro \
   --num_envs 4 \
   --objects_dir visdex_objects \
   --max_pose_angle 45 \
-  --checkpoint /home/chizhang/projects/DEXTRAH/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2025-12-04_00-32-49/nn/last_dextrah_lstm_ep_20000_rew_481.3178.pth
+  --checkpoint /home/chizhang/projects/DEXSAFEDAGGER/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/2025-12-04_00-32-49/nn/last_dexsafedagger_lstm_ep_20000_rew_481.3178.pth
 
 # for vision based distillation
-cd /home/chizhang/projects/DEXTRAH/dextrah_lab/distillation
+cd /home/chizhang/projects/DEXSAFEDAGGER/dexsafedagger_lab/distillation
 python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
   run_distillation.py \
     --headless \
-    --task=Dextrah-Kuka-Allegro \
+    --task=DexSafeDagger-Kuka-Allegro \
     --num_envs 64 env.distillation=True \
     --enable_cameras env.simulate_stereo=True \
-    --teacher /home/chizhang/projects/DEXTRAH/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2025-12-04_00-32-49/nn/last_dextrah_lstm_ep_20000_rew_481.3178.pth \
+    --teacher /home/chizhang/projects/DEXSAFEDAGGER/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/2025-12-04_00-32-49/nn/last_dexsafedagger_lstm_ep_20000_rew_481.3178.pth \
     env.img_aug_type="rgb" \
     env.aux_coeff=10. \
     env.objects_dir="visdex_objects" \
@@ -75,12 +75,12 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
     env.use_cuda_graph=True
 
 # for evaluation of student policy
-cd /home/chizhang/projects/DEXTRAH/dextrah_lab/distillation
+cd /home/chizhang/projects/DEXSAFEDAGGER/dexsafedagger_lab/distillation
 python eval.py \
-  --task=Dextrah-Kuka-Allegro \
+  --task=DexSafeDagger-Kuka-Allegro \
   --num_envs 4 \
   --enable_cameras \
-  --checkpoint /home/chizhang/projects/DEXTRAH/dextrah_lab/distillation/runs/Dextrah-Kuka-Allegro_10-23-19-15/nn/dextrah_student_100000_iters.pth \
+  --checkpoint /home/chizhang/projects/DEXSAFEDAGGER/dexsafedagger_lab/distillation/runs/DexSafeDagger-Kuka-Allegro_10-23-19-15/nn/dexsafedagger_student_100000_iters.pth \
   --num_episodes 10 \
   env.distillation=True \
   env.simulate_stereo=True \
@@ -98,7 +98,7 @@ python eval.py \
 (HYDRA_FULL_ERROR=1)
 python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
   train.py \
-    --task=Dextrah-Kuka-Inspirehand \
+    --task=DexSafeDagger-Kuka-Inspirehand \
     --seed 42 \
     --num_envs 4 \
     --headless\
@@ -116,7 +116,7 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
 # training with one object only
 python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
   train.py \
-    --task=Dextrah-Kuka-Inspirehand \
+    --task=DexSafeDagger-Kuka-Inspirehand \
     --seed 42 \
     --num_envs 256 \
     --headless\
@@ -133,17 +133,17 @@ python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
     env.use_cuda_graph=False
   
 # test trained teacher policy
-cd dextrah_lab/rl_games
+cd dexsafedagger_lab/rl_games
 python play_test.py \
-  --task Dextrah-Kuka-Inspirehand \
+  --task DexSafeDagger-Kuka-Inspirehand \
   --num_envs 8 \
   --objects_dir visdex_objects \
   --max_pose_angle 45 \
-  --checkpoint /home/chizhang/projects/DEXTRAH/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2025-12-12_11-49-37/nn/last_dextrah_lstm_ep_20000_rew_-46.002758.pth
+  --checkpoint /home/chizhang/projects/DEXSAFEDAGGER/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/2025-12-12_11-49-37/nn/last_dexsafedagger_lstm_ep_20000_rew_-46.002758.pth
 
 # for tg2 tasks 
 python train.py \
-  --task=dextrah_tg2_inspirehand \
+  --task=dexsafedagger_tg2_inspirehand \
   --seed 42 \
   --num_envs 8 \
   --headless \
@@ -160,7 +160,7 @@ python train.py \
 
 # this one works best for me
 python train.py \
-    --task=dextrah_tg2_inspirehand \
+    --task=dexsafedagger_tg2_inspirehand \
     --seed 42 \
     --num_envs 128 \
     --headless \
@@ -176,25 +176,25 @@ python train.py \
     env.use_cuda_graph=False
 
 python play_test.py \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --objects_dir test_object \
   --max_pose_angle 90 \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm/2026-01-21_08-57-56/nn/dextrah_lstm.pth
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/2026-01-21_08-57-56/nn/dexsafedagger_lstm.pth
 
 # evaluation lift success
 python eval.py \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --objects_dir test_object \
   --max_pose_angle 90 \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/multi_object_distillation/1wdf56lx/dextrah_lstm.pth \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/pretrained_ckpts/multi_object_distillation/1wdf56lx/dexsafedagger_lstm.pth \
   --eval_episodes 200 \
   --headless
 # for the plane the ever lifted metric show 64.5% success_for_adr
 
 # batch training
-MULTI_OBJECTS_DIR=/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/multi_objects/USD \
+MULTI_OBJECTS_DIR=/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/assets/multi_objects/USD \
 NUM_ENVS=128 \
 MINIBATCH_SIZE=256 \
 CV_MINIBATCH_SIZE=256 \
@@ -208,26 +208,26 @@ USE_CUDA_GRAPH=False \
 ./train_multi_objects.sh
 
 # initial trial on distillation (stereo transformer style)
-cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
 python -m torch.distributed.run --nproc_per_node=1 \
   run_distillation.py \
     --headless \
-    --task=dextrah_tg2_inspirehand \
+    --task=dexsafedagger_tg2_inspirehand \
     --num_envs 8 \
     --enable_cameras \
-    --teacher dextrah_lstm.pth \
+    --teacher dexsafedagger_lstm.pth \
     env.distillation=True \
     env.simulate_stereo=True \
     env.objects_dir=test_object_0 \
     env.enable_adr=False
 
 # safedagger variation
-cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
 python run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
-  --teacher dextrah_lstm.pth \
+  --teacher dexsafedagger_lstm.pth \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=test_object \
@@ -235,7 +235,7 @@ python run_distillation_safedagger.py \
 
 # multi_teacher distillation
 python run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -245,12 +245,12 @@ python run_distillation_safedagger.py \
   env.enable_adr=False
  
 # replay student policy (multi_object supported)
-cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
 python eval.py \
-  --task=dextrah_tg2_inspirehand \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/dextrah_student_safe_dagger.pth \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/dexsafedagger_student_safe_dagger.pth \
   --num_episodes 10 \
   env.distillation=True \
   env.simulate_stereo=True \
@@ -260,8 +260,8 @@ python eval.py \
 
 # ablation training
 1- vanilla dagger
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -274,9 +274,9 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   env.enable_adr=False
 
 # 2- vanilla safe dagger
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
   --pipeline safedagger \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -289,8 +289,8 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
   env.enable_adr=False
 
 # 3- safe dagger with ood classifier
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -311,8 +311,8 @@ python .../run_distillation_safedagger.py \
   --eval_objects_dir your_eval_objects_folder
 
 # fixed-threshold run (vanilla safedagger)
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dextrah_tg2_inspirehand \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
+  --task=dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
@@ -328,7 +328,7 @@ python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation
 # warm start only
 python run_distillation_safedagger.py \
   --pipeline warmstart \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --headless \
   --enable_cameras \
@@ -344,23 +344,23 @@ python run_distillation_safedagger.py \
 # teacher evaluation
 python3 eval.py \
   --headless \
-  --task dextrah_tg2_inspirehand \
+  --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --eval_episodes 10 \
-  --teacher_policy_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/pretrained_ckpts/teacher_eval \
-  --teacher_object_dir /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/teacher_eval
+  --teacher_policy_dir /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/pretrained_ckpts/teacher_eval \
+  --teacher_object_dir /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/assets/teacher_eval
 
 # student evaluation
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/eval_student.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_student.py \
   --headless \
   --enable_cameras \
-  --task dextrah_tg2_inspirehand \
-  --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-safedagger_24-05-44-09/nn/dextrah_student_safe_dagger.pth.pth \
+  --task dexsafedagger_tg2_inspirehand \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-safedagger_24-05-44-09/nn/dexsafedagger_student_safe_dagger.pth.pth \
   --objects_dir distill_multi_objects \
   --num_envs 32 \
   --num_episodes 3 \
   --file_name_head student_eval_metrics \
-  --metrics_output_json /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/eval_results/student_eval_metrics.json \
+  --metrics_output_json /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_results/student_eval_metrics.json \
   env.enable_adr=False \
   env.distillation=True \
   env.simulate_stereo=True

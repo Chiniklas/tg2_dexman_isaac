@@ -19,14 +19,14 @@ import numpy
 import urdfpy
 import warp as wp
 
-from dextrah_lab.utils.import_urdf import parse_urdf_annotated  # noqa: F401
+from dexsafedagger_lab.utils.import_urdf import parse_urdf_annotated  # noqa: F401
 
-urdfpy.URDF.load("dextrah_lab/assets/tg2_inspirehand/urdf/tg2_with_hands_no_legs.urdf")
+urdfpy.URDF.load("dexsafedagger_lab/assets/tg2_inspirehand/urdf/tg2_with_hands_no_legs.urdf")
 
 print(f"numpy {numpy.__version__}")
 print(f"networkx {networkx.__version__}")
 print("urdfpy ok")
 print(f"warp {wp.__version__}")
-print("dextrah_lab URDF importer ok")
+print("dexsafedagger_lab URDF importer ok")
 print("TG2 URDF load ok")
 PY

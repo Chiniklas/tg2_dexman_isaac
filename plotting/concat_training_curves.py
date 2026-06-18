@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image
 
 
-DEFAULT_INPUT_ROOT = Path("/home/chizhang/projects/dextrah/tg2_dexman_isaac/plotting/plots")
+DEFAULT_INPUT_ROOT = Path("/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/plotting/plots")
 DEFAULT_OUTPUT_PATH = DEFAULT_INPUT_ROOT / "training_curves_concat.png"
 
 IMAGE_ORDER = (
