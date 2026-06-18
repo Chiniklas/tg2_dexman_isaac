@@ -17,6 +17,10 @@ import sys
 import time
 from datetime import datetime
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import numpy as np
 import torch
 import yaml
@@ -84,8 +88,8 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import dexsafedagger_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
-from dexsafedagger_lab.distillation_new.a2c_stereo_transformer import A2CBuilder as A2CStereoTransformerBuilder
-from dexsafedagger_lab.distillation_new.eval_utils import (
+from dexsafedagger_lab.distillation.models.a2c_stereo_transformer import A2CBuilder as A2CStereoTransformerBuilder
+from dexsafedagger_lab.distillation.utils.eval_utils import (
     UNSAFE_REASON_NAMES,
     classify_out_of_reach_reasons,
     unsafe_reason_percentages_from_counts,
@@ -609,7 +613,7 @@ def main(env_cfg, agent_cfg: dict):
         parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
         agent_cfg_folder = "dexsafedagger_lab/tasks/tg2_inspirehand/agents"
         if not env.env.simulate_stereo:
-            raise ValueError("eval_student only supports stereo transformer policies for distillation_new.")
+            raise ValueError("eval_student only supports stereo transformer policies for distillation.")
         student_cfg = os.path.join(parent_path, agent_cfg_folder, "rl_games_ppo_stereo_transformer.yaml")
         with open(student_cfg, "r", encoding="utf-8") as f:
             student_cfg_yaml = yaml.safe_load(f) or {}

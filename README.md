@@ -88,12 +88,12 @@ python play_test.py \
 1. Ablation 1: Vanilla DAgger
 
 ```bash
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/scripts/run_distillation_safedagger.py \
+  --variant vanilla_dagger \
   --task=dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
-  --unsafe_mode none \
   --eval_every 2500 \
   --eval_num_episodes 3 \
   env.distillation=True \
@@ -104,13 +104,12 @@ python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab
 
 2. Ablation 2: Vanilla SafeDagger
 ```bash
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
-  --pipeline safedagger \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/scripts/run_distillation_safedagger.py \
+  --variant vanilla_safedagger \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
-  --unsafe_mode l2 \
   --eval_every 2500 \
   --eval_num_episodes 3 \
   env.distillation=True \
@@ -119,17 +118,36 @@ python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab
   env.enable_adr=False
 ```
 
-3. Ablation 3: SafeDagger with Predictor
+3. Ablation 3: DexSafeDagger
 ```bash
-python run_distillation_safedagger.py \
-  --pipeline warmstart \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/scripts/run_distillation_safedagger.py \
+  --variant dexsafedagger \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --headless \
   --enable_cameras \
   --teacher multi_object_distillation \
-  --unsafe_mode failure_predictor \
-  --failure_predictor_type critic \
+  env.distillation=True \
+  env.simulate_stereo=True \
+  env.objects_dir=distill_multi_objects \
+  env.enable_adr=False
+```
+
+4. Experimental Ablation: DexSafeDaggerUltra
+
+This is currently a brainstorming scaffold, not a runnable training method. The
+idea is to use a VLM to predict teacher intervention points from visual/context
+observations instead of relying on a fixed threshold. The code exposes the
+variant and config structure, but the VLM backend still needs to be implemented.
+
+```bash
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/scripts/run_distillation_safedagger.py \
+  --variant dexsafedaggerUltra \
+  --task dexsafedagger_tg2_inspirehand \
+  --num_envs 32 \
+  --headless \
+  --enable_cameras \
+  --teacher multi_object_distillation \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
@@ -138,12 +156,12 @@ python run_distillation_safedagger.py \
 
 ## Replay Student Policy
 ```bash
-cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
-python eval.py \
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation
+python scripts/replay.py \
   --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
-  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/dexsafedagger_student_safe_dagger.pth \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/dexsafedagger_student_safe_dagger.pth \
   --num_episodes 10 \
   env.distillation=True \
   env.simulate_stereo=True \
@@ -169,16 +187,16 @@ python3 eval.py \
 
 2. Student policy evaluation
 ```bash
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_student.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/eval/eval_student.py \
   --headless \
   --enable_cameras \
   --task dexsafedagger_tg2_inspirehand \
-  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-safedagger_24-05-44-09/nn/dexsafedagger_student_safe_dagger.pth.pth \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-safedagger_24-05-44-09/nn/dexsafedagger_student_safe_dagger.pth.pth \
   --objects_dir distill_multi_objects \
   --num_envs 32 \
   --num_episodes 3 \
   --file_name_head student_eval_metrics \
-  --metrics_output_json /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_results/student_eval_metrics.json \
+  --metrics_output_json /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/eval_results/student_eval_metrics.json \
   env.enable_adr=False \
   env.distillation=True \
   env.simulate_stereo=True

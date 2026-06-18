@@ -208,7 +208,7 @@ USE_CUDA_GRAPH=False \
 ./train_multi_objects.sh
 
 # initial trial on distillation (stereo transformer style)
-cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation
 python -m torch.distributed.run --nproc_per_node=1 \
   run_distillation.py \
     --headless \
@@ -222,8 +222,8 @@ python -m torch.distributed.run --nproc_per_node=1 \
     env.enable_adr=False
 
 # safedagger variation
-cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
-python run_distillation_safedagger.py \
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation
+python scripts/run_distillation_safedagger.py \
   --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
@@ -234,7 +234,7 @@ python run_distillation_safedagger.py \
   env.enable_adr=False
 
 # multi_teacher distillation
-python run_distillation_safedagger.py \
+python scripts/run_distillation_safedagger.py \
   --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
@@ -245,12 +245,12 @@ python run_distillation_safedagger.py \
   env.enable_adr=False
  
 # replay student policy (multi_object supported)
-cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation
 python eval.py \
   --task=dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --enable_cameras \
-  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/dexsafedagger_student_safe_dagger.pth \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/dexsafedagger_student_safe_dagger.pth \
   --num_episodes 10 \
   env.distillation=True \
   env.simulate_stereo=True \
@@ -260,7 +260,7 @@ python eval.py \
 
 # ablation training
 1- vanilla dagger
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/scripts/run_distillation_safedagger.py \
   --task=dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
@@ -274,28 +274,13 @@ python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab
   env.enable_adr=False
 
 # 2- vanilla safe dagger
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
-  --pipeline safedagger \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/scripts/run_distillation_safedagger.py \
+  --variant vanilla_safedagger \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
-  --unsafe_mode l2 \
   --eval_every 2500 \
-  --eval_num_episodes 3 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
-
-# 3- safe dagger with ood classifier
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
-  --task=dexsafedagger_tg2_inspirehand \
-  --num_envs 32 \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --unsafe_mode ood \
-  --eval_every 1000 \
   --eval_num_episodes 3 \
   env.distillation=True \
   env.simulate_stereo=True \
@@ -311,11 +296,12 @@ python .../run_distillation_safedagger.py \
   --eval_objects_dir your_eval_objects_folder
 
 # fixed-threshold run (vanilla safedagger)
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/run_distillation_safedagger.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/scripts/run_distillation_safedagger.py \
   --task=dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --enable_cameras \
   --teacher multi_object_distillation \
+  --variant vanilla_safedagger \
   --unsafe_mode l2 \
   --unsafe_l2_threshold 3.0 \
   --eval_every 2500 \
@@ -326,7 +312,7 @@ python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab
   env.enable_adr=False
 
 # warm start only
-python run_distillation_safedagger.py \
+python scripts/run_distillation_safedagger.py \
   --pipeline warmstart \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
@@ -334,7 +320,6 @@ python run_distillation_safedagger.py \
   --enable_cameras \
   --teacher multi_object_distillation \
   --unsafe_mode failure_predictor \
-  --failure_predictor_type critic \
   env.distillation=True \
   env.simulate_stereo=True \
   env.objects_dir=distill_multi_objects \
@@ -351,16 +336,16 @@ python3 eval.py \
   --teacher_object_dir /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/assets/teacher_eval
 
 # student evaluation
-python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_student.py \
+python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/eval/eval_student.py \
   --headless \
   --enable_cameras \
   --task dexsafedagger_tg2_inspirehand \
-  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-safedagger_24-05-44-09/nn/dexsafedagger_student_safe_dagger.pth.pth \
+  --checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-safedagger_24-05-44-09/nn/dexsafedagger_student_safe_dagger.pth.pth \
   --objects_dir distill_multi_objects \
   --num_envs 32 \
   --num_episodes 3 \
   --file_name_head student_eval_metrics \
-  --metrics_output_json /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/eval_results/student_eval_metrics.json \
+  --metrics_output_json /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/eval_results/student_eval_metrics.json \
   env.enable_adr=False \
   env.distillation=True \
   env.simulate_stereo=True

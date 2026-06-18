@@ -2,25 +2,24 @@
 
 This folder contains the stereo student distillation pipeline for
 `dexsafedagger_tg2_inspirehand`. The main entrypoint is
-`run_distillation_safedagger.py`, which builds an Isaac Lab environment,
+`scripts/run_distillation_safedagger.py`, which builds an Isaac Lab environment,
 loads teacher and student RL-Games configs, and runs `SafeDagger` from
-`distillation_safedagger.py`.
+`core/distillation_safedagger.py`.
 
 ## Quick Start
 
-Run a headless multi-object SafeDAgger distillation job from this folder:
+Run the paper's full DexSafeDagger variant from this folder:
 
 ```bash
-cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new
+cd /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation
 
-python run_distillation_safedagger.py \
-  --pipeline safedagger \
+python scripts/run_distillation_safedagger.py \
+  --variant dexsafedagger \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --headless \
   --enable_cameras \
   --teacher multi_object_distillation \
-  --unsafe_mode l2 \
   --eval_every 2500 \
   --eval_num_episodes 3 \
   --max_iterations 100000 \
@@ -30,14 +29,15 @@ python run_distillation_safedagger.py \
   env.enable_adr=False
 ```
 
-The helper script `run_vanilla_and_safe_dagger_headless.sh` can also run
-standard DAgger, SafeDAgger, or both:
+The helper script `run_vanilla_and_safe_dagger_headless.sh` can select any
+registered variant:
 
 ```bash
-MODE=safedagger MAX_ITERS=100000 ./run_vanilla_and_safe_dagger_headless.sh
+VARIANT=dexsafedagger MAX_ITERS=100000 ./scripts/run_vanilla_and_safe_dagger_headless.sh
 ```
 
-`MODE` can be `dagger`, `safedagger`, or `both`.
+`VARIANT` can be `vanilla_dagger`, `vanilla_safedagger`,
+`dexsafedagger`, experimental `dexsafedaggerUltra`, or `all`.
 
 ## What The Pipeline Does
 
@@ -51,35 +51,50 @@ MODE=safedagger MAX_ITERS=100000 ./run_vanilla_and_safe_dagger_headless.sh
    `--teacher multi_object_distillation` resolves to:
    `pretrained_ckpts/multi_object_distillation`.
 5. Builds the student and teacher networks through RL-Games model builders.
-6. Runs one of the configured training stages:
-   `warmstart`, `safedagger`, or `both`.
+6. Runs one of the supported variants:
+   `vanilla_dagger`, `vanilla_safedagger`, `dexsafedagger`, or the
+   experimental `dexsafedaggerUltra` scaffold.
 7. Periodically evaluates the student policy and writes TensorBoard summaries.
 8. Saves student checkpoints and run metadata under a timestamped `runs/`
    directory.
 
-## Pipeline Modes
+## Directory Layout
 
-- `--pipeline warmstart`: collects teacher-driven rollouts and performs the
-  offline bootstrap stage. The final checkpoint is saved as
-  `dexsafedagger_student_after_warmstart.pth`.
-- `--pipeline safedagger`: runs online intervention training. The student acts
-  by default, and the teacher takes over when the unsafe gate fires.
-- `--pipeline both`: runs warm start first, then continues into the online
-  SafeDAgger stage.
+- `scripts/`: training and replay entrypoints.
+- `core/`: SafeDAgger loop and warm-start orchestration.
+- `models/`: RL-Games stereo transformer and teacher network builders.
+- `safety/`: failure predictor and experimental VLM intervention scaffold.
+- `utils/`: shared losses, eval metrics, augmentations, and data recording.
+- `eval/`: standalone student evaluation.
 
-## Unsafe Modes
+## Distillation Variants
 
-`--unsafe_mode` controls when the teacher intervenes:
+`--variant` selects the paper terminology directly:
 
-- `none`: vanilla DAgger-style training without unsafe intervention gating.
-- `l2`: teacher intervenes when per-env student/teacher action disagreement
-  crosses `unsafe_l2_threshold`.
-- `ood`: enables the OOD classifier configured in the student YAML.
-- `failure_predictor`: enables the learned state-action risk predictor.
+- `vanilla_dagger`: student rollout with teacher labels. No intervention gate.
+- `vanilla_safedagger`: teacher takeover when student/teacher action
+  disagreement crosses `unsafe_l2_threshold`.
+- `dexsafedagger`: the full method from the paper. It runs warm-start first,
+  then online SafeDAgger with the OR gate combining action disagreement and the
+  learned critic-style risk predictor.
+- `dexsafedaggerUltra`: brainstorming-stage ablation scaffold. The intended
+  idea is to replace fixed-threshold intervention decisions with VLM-predicted
+  teacher intervention points from visual/context observations. This is not a
+  runnable method yet; selecting it enables `unsafe_mode=vlm_intervention`,
+  which currently raises until the VLM backend, prompting, frame extraction, and
+  temporal smoothing policy are implemented.
+
+For `dexsafedaggerUltra`, the starter structure is:
+
+- `safety/vlm_intervention.py`: future VLM intervention planner.
+- `params.distillation.vlm_intervention`: provider/model/prompt and smoothing
+  config stub.
+- `SafeDagger.check_unsafe(..., unsafe_mode="vlm_intervention")`: placeholder
+  branch where the VLM unsafe mask will replace threshold-based intervention.
 
 The default distillation settings live in the `params.distillation` section of
 `rl_games_ppo_stereo_transformer.yaml`. CLI flags override the most common
-values, including `unsafe_mode`, `eval_every`, warm-start collection steps, and
+values, including `variant`, `eval_every`, warm-start collection steps, and
 failure predictor warm-start checkpoint path.
 
 ## Checkpoints And Outputs
@@ -87,7 +102,7 @@ failure predictor warm-start checkpoint path.
 Each run creates:
 
 ```text
-dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-<pipeline>_<day-hour-min-sec>/
+dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-<variant>_<day-hour-min-sec>/
 ```
 
 Inside that folder:
@@ -128,7 +143,8 @@ The value can be a JSON/YAML file path or inline JSON.
 Example:
 
 ```bash
-python run_distillation_safedagger.py \
+python scripts/run_distillation_safedagger.py \
+  --variant dexsafedagger \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --headless \
@@ -146,8 +162,8 @@ Pass `--student` to initialize the student from an existing checkpoint. Absolute
 paths are used directly. Relative paths are resolved under `pretrained_ckpts/`.
 
 ```bash
-python run_distillation_safedagger.py \
-  --pipeline safedagger \
+python scripts/run_distillation_safedagger.py \
+  --variant vanilla_safedagger \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 32 \
   --headless \
@@ -169,10 +185,10 @@ Inline evaluation is controlled by:
 --eval_objects_dir optional_eval_objects_folder
 ```
 
-For standalone student evaluation, use `eval_student.py`:
+For standalone student evaluation, use `eval/eval_student.py`:
 
 ```bash
-python eval_student.py \
+python eval/eval_student.py \
   --headless \
   --enable_cameras \
   --task dexsafedagger_tg2_inspirehand \
@@ -186,15 +202,15 @@ python eval_student.py \
 
 ## Useful Files
 
-- `run_distillation_safedagger.py`: CLI, Isaac app launch, config assembly, run
+- `scripts/run_distillation_safedagger.py`: CLI, Isaac app launch, config assembly, run
   directory creation, final checkpoint/export.
-- `distillation_safedagger.py`: student/teacher model setup, warm start,
+- `core/distillation_safedagger.py`: student/teacher model setup, warm start,
   online intervention loop, unsafe checks, eval loop, checkpoint save/load.
-- `distill_warm_start.py`: warm-start rollout collection and offline bootstrap
+- `core/distill_warm_start.py`: warm-start rollout collection and offline bootstrap
   support.
-- `a2c_stereo_transformer.py`: stereo transformer RL-Games network builder.
-- `failure_predictor.py` and `failure_predictor_success_label.py`: learned
-  intervention/risk models.
-- `ood_classifier.py`: OOD-based intervention model.
-- `eval_student.py`: standalone student checkpoint evaluation.
-- `replay.py`: student policy replay/recording utility.
+- `models/a2c_stereo_transformer.py`: stereo transformer RL-Games network builder.
+- `safety/failure_predictor.py`: learned critic-style intervention/risk model.
+- `safety/vlm_intervention.py`: scaffold for the experimental DexSafeDaggerUltra VLM
+  intervention gate.
+- `eval/eval_student.py`: standalone student checkpoint evaluation.
+- `scripts/replay.py`: student policy replay/recording utility.

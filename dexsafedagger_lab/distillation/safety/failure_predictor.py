@@ -1,20 +1,65 @@
-"""Standalone legacy success-labeled Bellman predictor.
+"""Bellman-style failure risk critic for intervention gating.
 
-This file intentionally does not import from `failure_predictor.py`.
-It keeps the legacy public class name `FailurePredictor` used by the pipeline.
+What this module is for
+-----------------------
+This predictor estimates how likely a state-action pair is to eventually end
+in a failure event. The output is used online to decide whether to intervene
+(for example, switch from student action to teacher action).
+
+The active DexSafeDagger pipeline uses this critic-style predictor:
+    FailurePredictorCritic
+
+Core idea
+---------
+We model a safety critic F(s, a) in [0, 1], interpreted as a discounted
+eventual failure probability:
+
+    F(s, a) ~= P(failure eventually | s, a, policy rollouts)
+
+Training uses Bellman bootstrapping with twin critics and target networks:
+
+    y = f_now + gamma * (1 - d_eff) * min(F1_targ(s', a'), F2_targ(s', a'))
+
+where:
+- f_now is immediate failure signal (1 only on failure terminal transition)
+- d_eff is terminal mask (or "cannot bootstrap" mask)
+- a' is the next action observed from rollout (SARSA-style target)
+
+Data flow in training loop
+--------------------------
+1) The distillation loop calls add_step(obs, action, next_obs, done, info) once
+   per environment step.
+2) add_step converts observations to features, infers done/failure masks, and
+   writes transitions into a ring replay buffer.
+3) Every update_interval calls, train_step() samples replay minibatches and
+   updates twin critics by MSE to Bellman targets.
+4) At inference time, predict_risk()/should_intervene() use min(q1, q2) as a
+   conservative risk estimate.
+
+Why there is "open transition" state
+------------------------------------
+The replay stores (s, a, s', a_next, f_now, done). At time t we know (s_t, a_t)
+and s_{t+1}, but we only know a_{t+1} when the next step arrives. To support
+this, each env keeps one "open" transition reference. On the next call, that
+previous transition is closed by writing its a_next.
+
+Failure labeling semantics
+--------------------------
+This predictor uses terminal failure supervision inferred from info/done fields,
+plus configurable horizon back-labeling: when a failure terminal occurs, the
+most recent `horizon_steps` transitions on that environment are marked as
+risky (fail=1). Bellman bootstrapping then propagates this danger-zone signal
+further backward through replay updates.
 """
 
-from __future__ import annotations
-
 import os
-from collections import deque
 from typing import Dict, Optional
+from collections import deque
 
 import torch
 import torch.nn as nn
 
-
-class _SuccessQFunction(nn.Module):
+class _FailureQFunction(nn.Module):
     def __init__(self, obs_dim: int, act_dim: int, hidden_sizes: list[int], dropout: float):
         super().__init__()
         layers = []
@@ -32,8 +77,8 @@ class _SuccessQFunction(nn.Module):
         return self.net(torch.cat([obs, act], dim=-1)).squeeze(-1)
 
 
-class SuccessPredictorLegacy:
-    """Bellman critic that predicts success probability for intervention gating."""
+class FailurePredictorCritic:
+    """Bellman-style failure risk critic with twin Q networks."""
 
     def __init__(
         self,
@@ -55,33 +100,24 @@ class SuccessPredictorLegacy:
         self.lr = float(cfg.get("lr", 1e-3))
         self.dropout = float(cfg.get("dropout", 0.0))
         self.gamma = float(cfg.get("gamma", 0.99))
+        # Reference alignment: use fixed target-network averaging factor.
         self.polyak = 0.995
-
-        self.success_threshold = float(cfg.get("success_threshold", cfg.get("failure_threshold", 0.5)))
-        # Keep compatibility with places reading `failure_threshold`.
-        self.failure_threshold = self.success_threshold
+        self.failure_threshold = float(cfg.get("failure_threshold", 0.5))
         self.output_temperature = float(cfg.get("output_temperature", 2.0))
         if self.output_temperature <= 0.0:
             raise ValueError(f"output_temperature must be > 0, got {self.output_temperature}.")
-
-        configured_success_key = str(cfg.get("success_key", "lift_success"))
-        if configured_success_key != "lift_success":
-            raise ValueError(
-                f"SuccessPredictorLegacy only supports success_key='lift_success', got '{configured_success_key}'."
-            )
-        self.success_key = "lift_success"
-
         self.horizon_steps = int(cfg.get("horizon_steps", 10))
         if self.horizon_steps <= 0:
             self.horizon_steps = 1
-
         self.pos_weight = cfg.get("pos_weight", None)
         self.pos_fraction = cfg.get("pos_fraction", 0.1)
         if self.pos_fraction is None:
             self.pos_fraction = 0.0
         self.pos_fraction = float(self.pos_fraction)
         if not (0.0 <= self.pos_fraction <= 1.0):
-            raise ValueError(f"pos_fraction must be in [0, 1], got {self.pos_fraction}.")
+            raise ValueError(
+                f"pos_fraction must be in [0, 1], got {self.pos_fraction}."
+            )
 
         self.buffer_size = int(cfg.get("buffer_size", 100_000))
         self.batch_size = int(cfg.get("batch_size", 128))
@@ -93,6 +129,7 @@ class SuccessPredictorLegacy:
                 "Use warm_start.predictor_train_steps (offline total calls) and "
                 "failure_predictor.online_train_step_calls (online calls per interval)."
             )
+        # One train_step() call always performs one minibatch update.
         self.train_steps = 1
 
         self.return_debug_dict = bool(cfg.get("return_debug_dict", False))
@@ -122,7 +159,6 @@ class SuccessPredictorLegacy:
         self._obs2_buf = None
         self._next_act_buf = None
         self._has_next_act = None
-        # Compatibility note: this buffer stores success labels in this predictor.
         self._fail_buf = None
         self._done_buf = None
         self._token_buf = None
@@ -131,16 +167,26 @@ class SuccessPredictorLegacy:
 
         if self.rank == 0 and self.enabled:
             print(
-                "[SuccessPredictorLegacy] enabled: "
+                "FailurePredictorCritic enabled: "
                 f"buffer_size={self.buffer_size}, min_samples={self.min_samples}, "
                 f"update_interval={self.update_interval}, minibatch_updates_per_call=1, "
-                f"gamma={self.gamma}, polyak={self.polyak}, success_threshold={self.success_threshold}, "
-                f"horizon_steps={self.horizon_steps}, success_key={self.success_key}, "
-                f"pos_fraction={self.pos_fraction}, output_temperature={self.output_temperature}",
+                f"gamma={self.gamma}, polyak={self.polyak}, failure_threshold={self.failure_threshold}, "
+                f"horizon_steps={self.horizon_steps}, pos_fraction={self.pos_fraction}, "
+                f"output_temperature={self.output_temperature}",
                 flush=True,
             )
 
     def add_step(self, obs, action, next_obs=None, reward=None, done=None, info=None):
+        """Add one vectorized transition batch from rollout.
+
+        Expected call semantics:
+        - obs/action are (s_t, a_t)
+        - next_obs is s_{t+1}
+        - done/info correspond to transition outcome at t -> t+1
+
+        This function writes transitions into replay and links each previous
+        transition to the current action as SARSA next-action target.
+        """
         if not self.enabled:
             return None
 
@@ -162,7 +208,7 @@ class SuccessPredictorLegacy:
 
         num_envs = obs_feats.shape[0]
         self._ensure_initialized(obs_feats.shape[1], act.shape[1], num_envs)
-        done_mask, success_mask = self._compute_done_and_success_masks(
+        done_mask, failure_done_mask = self._compute_done_and_failure_masks(
             obs=obs, reward=reward, done=done, info=info, num_envs=num_envs
         )
 
@@ -175,14 +221,14 @@ class SuccessPredictorLegacy:
                 self._set_next_action(prev_ref, act_cpu[env_id])
                 self._open_refs[env_id] = None
 
-            success_now = 1.0 if bool(success_mask[env_id].item()) else 0.0
+            fail_now = 1.0 if bool(failure_done_mask[env_id].item()) else 0.0
             done_now = 1.0 if bool(done_mask[env_id].item()) else 0.0
             curr_ref = self._store_transition(
-                obs_cpu[env_id], act_cpu[env_id], next_cpu[env_id], success_now, done_now
+                obs_cpu[env_id], act_cpu[env_id], next_cpu[env_id], fail_now, done_now
             )
             self._recent_refs[env_id].append(curr_ref)
-            if bool(success_mask[env_id].item()):
-                self._mark_recent_success_labels(env_id)
+            if bool(failure_done_mask[env_id].item()):
+                self._mark_recent_failure_labels(env_id)
             if done_now > 0.5:
                 self._set_next_action(curr_ref, torch.zeros_like(act_cpu[env_id]))
                 self._recent_refs[env_id].clear()
@@ -195,6 +241,13 @@ class SuccessPredictorLegacy:
         return None
 
     def train_step(self):
+        """Run one or more critic gradient updates from replay.
+
+        Returns:
+        - None if disabled, uninitialized, or replay has fewer than min_samples.
+        - float loss_total by default.
+        - dict of debug stats if return_debug_dict is enabled.
+        """
         if not self.enabled or not self._initialized:
             return None
         if self._buf_count < self.min_samples:
@@ -217,16 +270,16 @@ class SuccessPredictorLegacy:
             obs2 = self._obs2_buf[idx].to(self.device)
             next_act = self._next_act_buf[idx].to(self.device)
             has_next_act = self._has_next_act[idx].to(self.device)
-            success = self._fail_buf[idx].to(self.device)
+            fail = self._fail_buf[idx].to(self.device)
             done = self._done_buf[idx].to(self.device)
-            sampled_pos_frac.append(float((success > 0.5).to(dtype=torch.float32).mean().item()))
+            sampled_pos_frac.append(float((fail > 0.5).to(dtype=torch.float32).mean().item()))
 
             d_eff = torch.maximum(done, (~has_next_act).to(dtype=torch.float32))
             with torch.no_grad():
                 q1_t_logits = self._q1_targ(obs2, next_act)
                 q2_t_logits = self._q2_targ(obs2, next_act)
-                next_success = torch.sigmoid(torch.minimum(q1_t_logits, q2_t_logits) / self.output_temperature)
-                backup = success + self.gamma * (1.0 - d_eff) * next_success
+                next_fail = torch.sigmoid(torch.minimum(q1_t_logits, q2_t_logits) / self.output_temperature)
+                backup = fail + self.gamma * (1.0 - d_eff) * next_fail
                 backup = torch.clamp(backup, 0.0, 1.0)
 
             q1_logits = self._q1(obs, act)
@@ -247,6 +300,7 @@ class SuccessPredictorLegacy:
             loss.backward()
             self._optim.step()
             self._q_update_steps += 1
+            # Reference alignment: update target networks every 2 Q updates.
             if self._q_update_steps % 2 == 0:
                 self._polyak_update()
 
@@ -275,14 +329,13 @@ class SuccessPredictorLegacy:
             "replay_pos_frac": replay_pos_frac,
         }
         if self.debug_print_interval > 0 and (self._steps % self.debug_print_interval == 0) and self.rank == 0:
-            print(f"[SuccessPredictorLegacy] {self.last_train_stats}", flush=True)
+            print(f"[FailurePredictorCritic] {self.last_train_stats}", flush=True)
 
         if self.return_debug_dict:
             return dict(self.last_train_stats)
         return self.last_train_stats["loss_total"]
 
     def predict_risk(self, obs, action):
-        """Compatibility method name. Returns predicted success probability."""
         if not self.enabled or not self._initialized:
             return None
         feats = self._flatten_features(self._extract_features(obs))
@@ -301,12 +354,13 @@ class SuccessPredictorLegacy:
             return None
         if self._buf_count < self.min_samples and not self._has_pretrained_model:
             return None
-        success_prob = self.predict_risk(obs, action)
-        if success_prob is None:
+        risk = self.predict_risk(obs, action)
+        if risk is None:
             return None
-        return success_prob < self.success_threshold
+        return risk > self.failure_threshold
 
     def save_checkpoint(self, path: str) -> bool:
+        """Persist predictor weights (warm-start artifact)."""
         if not self.enabled or not self._initialized:
             return False
         if path is None or len(str(path).strip()) == 0:
@@ -316,12 +370,11 @@ class SuccessPredictorLegacy:
         if len(ckpt_dir) > 0:
             os.makedirs(ckpt_dir, exist_ok=True)
         payload = {
-            "predictor_type": "legacy_success_critic",
+            "predictor_type": "critic",
             "obs_dim": int(self._obs_dim),
             "act_dim": int(self._act_dim),
             "hidden_sizes": list(self.hidden_sizes),
             "dropout": float(self.dropout),
-            "success_threshold": float(self.success_threshold),
             "failure_threshold": float(self.failure_threshold),
             "output_temperature": float(self.output_temperature),
             "horizon_steps": int(self.horizon_steps),
@@ -338,6 +391,8 @@ class SuccessPredictorLegacy:
             "token_counter": int(self._token_counter),
             "num_envs": int(self._num_envs) if self._num_envs is not None else None,
         }
+        # Persist the valid replay slice so online phase can start from warm-start data.
+        # This mirrors reference behavior where Q/replay is seeded before online updates.
         if self._buf_count > 0:
             n = int(self._buf_count)
             payload["replay"] = {
@@ -352,10 +407,11 @@ class SuccessPredictorLegacy:
             }
         torch.save(payload, ckpt_path)
         if self.rank == 0:
-            print(f"[SuccessPredictorLegacy] Saved warm-start checkpoint: {ckpt_path}", flush=True)
+            print(f"[FailurePredictorCritic] Saved warm-start checkpoint: {ckpt_path}", flush=True)
         return True
 
     def load_checkpoint(self, path: str) -> bool:
+        """Load predictor weights from a previous warm-start run."""
         if not self.enabled:
             return False
         if path is None or len(str(path).strip()) == 0:
@@ -366,20 +422,18 @@ class SuccessPredictorLegacy:
         payload = torch.load(ckpt_path, map_location=self.device)
         if not isinstance(payload, dict):
             raise ValueError(f"Invalid failure predictor checkpoint format: {ckpt_path}")
-
         predictor_type = str(payload.get("predictor_type", "")).lower()
-        if predictor_type not in {"legacy_success_critic", "critic", ""}:
+        if predictor_type not in {"critic", ""}:
             raise ValueError(
-                f"Checkpoint predictor_type='{predictor_type}' is incompatible with legacy success predictor."
+                f"Checkpoint predictor_type='{predictor_type}' is incompatible with critic predictor."
             )
-
         obs_dim = int(payload.get("obs_dim", 0))
         act_dim = int(payload.get("act_dim", 0))
         if obs_dim <= 0 or act_dim <= 0:
             raise ValueError(
                 f"Checkpoint missing valid dims (obs_dim={obs_dim}, act_dim={act_dim}): {ckpt_path}"
             )
-
+        # Initialize networks/buffers with a placeholder env count; resized on first add_step.
         self._ensure_initialized(obs_dim=obs_dim, act_dim=act_dim, num_envs=1)
         self._q1.load_state_dict(payload["q1"])
         self._q2.load_state_dict(payload["q2"])
@@ -390,6 +444,7 @@ class SuccessPredictorLegacy:
             try:
                 self._optim.load_state_dict(optim_state)
             except Exception:
+                # Optimizer state can be device/topology-specific; continue with fresh optimizer if needed.
                 pass
         self._steps = int(payload.get("steps", self._steps))
         self._q_update_steps = int(payload.get("q_update_steps", self._q_update_steps))
@@ -398,10 +453,6 @@ class SuccessPredictorLegacy:
         )
         self._buf_idx = int(payload.get("buf_idx", 0))
         self._token_counter = int(payload.get("token_counter", 0))
-        self.success_threshold = float(
-            payload.get("success_threshold", payload.get("failure_threshold", self.success_threshold))
-        )
-        self.failure_threshold = self.success_threshold
         self.output_temperature = float(payload.get("output_temperature", self.output_temperature))
         if self.output_temperature <= 0.0:
             raise ValueError(f"Checkpoint has invalid output_temperature={self.output_temperature}.")
@@ -427,13 +478,13 @@ class SuccessPredictorLegacy:
             self._buf_count = n
             if self._buf_idx < 0 or self._buf_idx >= self.buffer_size:
                 self._buf_idx = n % self.buffer_size
-
+        # Open transitions are episode-runtime bookkeeping; start clean after reload.
         self._open_refs = [None for _ in range(self._num_envs)]
         self._recent_refs = [deque(maxlen=self.horizon_steps) for _ in range(self._num_envs)]
         self._has_pretrained_model = True
         if self.rank == 0:
             print(
-                "[SuccessPredictorLegacy] Loaded warm-start checkpoint: "
+                "[FailurePredictorCritic] Loaded warm-start checkpoint: "
                 f"{ckpt_path} (replay_size={self._buf_count})",
                 flush=True,
             )
@@ -441,14 +492,15 @@ class SuccessPredictorLegacy:
 
     def compute_failure_label(self, obs, reward, done, info):
         num_envs = self._num_envs_from_obs(obs)
-        done_mask, success_mask = self._compute_done_and_success_masks(
+        _, failure_done = self._compute_done_and_failure_masks(
             obs=obs, reward=reward, done=done, info=info, num_envs=num_envs
         )
-        return (done_mask & (~success_mask)).to(dtype=torch.float32)
+        return failure_done.to(dtype=torch.float32)
 
     def _ensure_initialized(self, obs_dim: int, act_dim: int, num_envs: int):
         if self._initialized:
             if self._num_envs != num_envs:
+                # num_envs only controls open-transition bookkeeping; allow resize across runs.
                 self._num_envs = int(num_envs)
                 self._open_refs = [None for _ in range(self._num_envs)]
                 self._recent_refs = [deque(maxlen=self.horizon_steps) for _ in range(self._num_envs)]
@@ -457,14 +509,10 @@ class SuccessPredictorLegacy:
         self._obs_dim = int(obs_dim)
         self._act_dim = int(act_dim)
         self._num_envs = int(num_envs)
-        self._q1 = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
-        self._q2 = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
-        self._q1_targ = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(
-            self.device
-        )
-        self._q2_targ = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(
-            self.device
-        )
+        self._q1 = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
+        self._q2 = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
+        self._q1_targ = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
+        self._q2_targ = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
         self._q1_targ.load_state_dict(self._q1.state_dict())
         self._q2_targ.load_state_dict(self._q2.state_dict())
 
@@ -492,7 +540,7 @@ class SuccessPredictorLegacy:
                 p_t.data.mul_(self.polyak)
                 p_t.data.add_((1.0 - self.polyak) * p.data)
 
-    def _store_transition(self, obs, act, obs2, success, done):
+    def _store_transition(self, obs, act, obs2, fail, done):
         idx = self._buf_idx
         token = self._token_counter
         self._token_counter += 1
@@ -502,7 +550,7 @@ class SuccessPredictorLegacy:
         self._obs2_buf[idx] = obs2
         self._next_act_buf[idx] = 0.0
         self._has_next_act[idx] = False
-        self._fail_buf[idx] = float(success)
+        self._fail_buf[idx] = float(fail)
         self._done_buf[idx] = float(done)
         self._token_buf[idx] = token
 
@@ -519,28 +567,28 @@ class SuccessPredictorLegacy:
         self._next_act_buf[idx] = torch.as_tensor(next_action, dtype=torch.float32, device="cpu")
         self._has_next_act[idx] = True
 
-    def _set_success_label(self, ref, success_value: float):
+    def _set_fail_label(self, ref, fail_value: float):
         idx, token = ref
         if idx < 0 or idx >= self.buffer_size:
             return
         if int(self._token_buf[idx].item()) != int(token):
             return
-        self._fail_buf[idx] = float(success_value)
+        self._fail_buf[idx] = float(fail_value)
 
-    def _mark_recent_success_labels(self, env_id: int):
+    def _mark_recent_failure_labels(self, env_id: int):
         if self._recent_refs is None:
             return
         for ref in self._recent_refs[env_id]:
-            self._set_success_label(ref, 1.0)
+            self._set_fail_label(ref, 1.0)
 
     def _sample_batch_indices(self, batch_size: int):
         if self._buf_count <= 0:
             raise ValueError("Cannot sample replay indices: empty buffer.")
         if self.pos_fraction <= 0.0:
             return torch.randint(0, self._buf_count, (batch_size,), dtype=torch.long)
-        pos_mask = self._fail_buf[: self._buf_count] > 0.5
-        pos_idx = torch.nonzero(pos_mask, as_tuple=False).squeeze(-1)
-        neg_idx = torch.nonzero(~pos_mask, as_tuple=False).squeeze(-1)
+        fail_mask = (self._fail_buf[: self._buf_count] > 0.5)
+        pos_idx = torch.nonzero(fail_mask, as_tuple=False).squeeze(-1)
+        neg_idx = torch.nonzero(~fail_mask, as_tuple=False).squeeze(-1)
         if pos_idx.numel() == 0 or neg_idx.numel() == 0:
             return torch.randint(0, self._buf_count, (batch_size,), dtype=torch.long)
 
@@ -550,9 +598,13 @@ class SuccessPredictorLegacy:
         pos_count = min(max(pos_count, 1), batch_size)
         neg_count = batch_size - pos_count
 
-        pos_pick = pos_idx[torch.randint(0, pos_idx.numel(), (pos_count,), dtype=torch.long)]
+        pos_pick = pos_idx[
+            torch.randint(0, pos_idx.numel(), (pos_count,), dtype=torch.long)
+        ]
         if neg_count > 0:
-            neg_pick = neg_idx[torch.randint(0, neg_idx.numel(), (neg_count,), dtype=torch.long)]
+            neg_pick = neg_idx[
+                torch.randint(0, neg_idx.numel(), (neg_count,), dtype=torch.long)
+            ]
             idx = torch.cat([pos_pick, neg_pick], dim=0)
         else:
             idx = pos_pick
@@ -596,38 +648,33 @@ class SuccessPredictorLegacy:
         feats = self._flatten_features(self._extract_features(obs))
         return int(feats.shape[0])
 
-    def _to_bool_tensor_if_match(self, value, num_envs: int):
-        if value is None:
-            return None
-        t = torch.as_tensor(value, device=self.device).reshape(-1)
-        if t.numel() != num_envs:
-            return None
-        return t.to(dtype=torch.bool)
+    def _compute_done_and_failure_masks(self, obs, reward, done, info, num_envs: int):
+        """Infer per-env terminal and failure-terminal masks.
 
-    def _compute_done_and_success_masks(self, obs, reward, done, info, num_envs: int):
+        Priority for failure signal:
+        1) explicit keys in info (failure/failed/task_failed/unsafe/out_of_reach)
+        2) inverse of in_success_region if available
+        3) fallback to done_mask
+        """
         done_mask = self._to_bool_tensor(done, num_envs)
-        if not isinstance(info, dict):
-            raise TypeError(
-                "SuccessPredictorLegacy requires info to be a dict containing per-env 'lift_success'."
-            )
-        for key in ("done", "terminated"):
-            val = self._to_bool_tensor_if_match(info.get(key, None), num_envs)
-            if val is not None:
-                done_mask = done_mask | val
-        for key in ("timed_out", "time_out"):
-            val = self._to_bool_tensor_if_match(info.get(key, None), num_envs)
-            if val is not None:
-                done_mask = done_mask | val
-
-        if self.success_key not in info:
-            raise KeyError(
-                "SuccessPredictorLegacy requires info['lift_success'] for success labeling, but it was missing."
-            )
-        success_mask = self._to_bool_tensor_if_match(info.get(self.success_key, None), num_envs)
-        if success_mask is None:
-            raise ValueError(f"info['lift_success'] must be a per-env vector of length {num_envs}.")
-        return done_mask, success_mask
-
-
-class FailurePredictor(SuccessPredictorLegacy):
-    """Backward-compatible export used by `failure_predictor_type=legacy`."""
+        failure_mask = None
+        if isinstance(info, dict):
+            for key in ("failure", "failed", "task_failed", "unsafe", "out_of_reach"):
+                if key in info:
+                    failure_mask = self._to_bool_tensor(info[key], num_envs)
+                    break
+            if "done" in info:
+                done_mask = done_mask | self._to_bool_tensor(info["done"], num_envs)
+            if "terminated" in info:
+                done_mask = done_mask | self._to_bool_tensor(info["terminated"], num_envs)
+            if "timed_out" in info:
+                done_mask = done_mask | self._to_bool_tensor(info["timed_out"], num_envs)
+            if "time_out" in info:
+                done_mask = done_mask | self._to_bool_tensor(info["time_out"], num_envs)
+            if failure_mask is None and "in_success_region" in info:
+                success = self._to_bool_tensor(info["in_success_region"], num_envs)
+                failure_mask = ~success
+        if failure_mask is None:
+            failure_mask = done_mask.clone()
+        failure_done = done_mask & failure_mask
+        return done_mask, failure_done

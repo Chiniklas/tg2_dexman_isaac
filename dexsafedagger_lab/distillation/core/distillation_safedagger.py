@@ -27,20 +27,22 @@ from rl_games.common.experience import ExperienceBuffer
 from rl_games.common.a2c_common import swap_and_flatten01
 from rl_games.algos_torch.a2c_continuous import A2CAgent
 from rl_games.algos_torch.model_builder import ModelBuilder
+from rl_games.algos_torch import model_builder
 from datetime import datetime
 from tensorboardX import SummaryWriter
 import wandb
 
 from typing import Dict
 
-from failure_predictor import FailurePredictorCritic
-from failure_predictor_success_label import FailurePredictor
-from dexsafedagger_lab.distillation_new.loss_utils import (
+from dexsafedagger_lab.distillation.models.teacher_a2c_builder import TeacherA2CBuilder
+from dexsafedagger_lab.distillation.safety.failure_predictor import FailurePredictorCritic
+from dexsafedagger_lab.distillation.safety.vlm_intervention import VLMInterventionPlanner
+from dexsafedagger_lab.distillation.utils.loss_utils import (
     l2,
     weighted_l2,
 )
-from dexsafedagger_lab.distillation_new.distill_warm_start import DistillWarmStart
-from dexsafedagger_lab.distillation_new.eval_utils import (
+from dexsafedagger_lab.distillation.core.distill_warm_start import DistillWarmStart
+from dexsafedagger_lab.distillation.utils.eval_utils import (
     UNSAFE_REASON_NAMES,
     classify_out_of_reach_reasons,
 )
@@ -52,13 +54,18 @@ from dexsafedagger_lab.distillation_new.eval_utils import (
 # - failure_predictor.enabled: bool
 # - failure_predictor.obs_key: observation key used by predictor (default: student obs_type)
 # - failure_predictor.failure_threshold: intervention threshold in [0, 1]
-# - failure_predictor.type: "critic" (default) | "legacy"
 # - failure_predictor.horizon_steps: failure-within-horizon labeling window
-# - failure_predictor.gamma / failure_predictor.polyak: used by critic mode
+# - failure_predictor.gamma / failure_predictor.polyak: critic update parameters
 # - failure_predictor.unsafe_enable_after_steps: online env-step warmup before
 #   predictor output is allowed to drive unsafe decisions
 # - failure_predictor.warm_start_model_path: optional checkpoint path used to
 #   save predictor after warmstart and load predictor for non-warmstart runs
+#
+# Experimental dexsafedaggerUltra scaffold:
+# - vlm_intervention.enabled: bool
+# - vlm_intervention.provider/model/prompt_template: future VLM backend settings
+# - intended use: predict teacher intervention points from vision/context rather
+#   than relying on a fixed action-disagreement threshold
 #
 # Optional warm-start config (2-phase bootstrap):
 # - warm_start.enabled: bool
@@ -80,6 +87,18 @@ def rescale_actions(low, high, action):
     m = (high + low) / 2.0
     scaled_action = action * d + m
     return scaled_action
+
+
+def load_trusted_checkpoint(filename, map_location=None):
+    """Load local policy checkpoints saved before PyTorch's weights_only default changed."""
+    kwargs = {}
+    if map_location is not None:
+        kwargs["map_location"] = map_location
+    try:
+        return torch.load(filename, weights_only=False, **kwargs)
+    except TypeError:
+        return torch.load(filename, **kwargs)
+
 
 def adjust_state_dict_keys(checkpoint_state_dict, model_state_dict):
     adjusted_state_dict = {}
@@ -179,6 +198,7 @@ class SafeDagger:
             )
         self.student_network_params = self.load_param_dict(self.config["student"]["cfg"])["params"]
         self.teacher_network_params = self.load_param_dict(self.config["teacher"]["cfg"])["params"]
+        self._register_teacher_network_if_needed(self.teacher_network_params)
         self.student_network = self.load_networks(self.student_network_params)
         self.teacher_network = self.load_networks(self.teacher_network_params)
 
@@ -238,9 +258,11 @@ class SafeDagger:
         # get the observation type of the student and teacher
         self.student_obs_type = self.config["student"]["obs_type"]
         self.teacher_obs_type = self.config["teacher"]["obs_type"]
-        self.ood_classifier = None
         self.failure_predictor = self._build_failure_predictor(
             self.config.get("failure_predictor", {})
+        )
+        self.vlm_intervention = self._build_vlm_intervention(
+            self.config.get("vlm_intervention", {})
         )
         self.is_rnn = self.student_model.is_rnn()
         self.is_teacher_rnn = self.teacher_model.is_rnn()
@@ -384,14 +406,11 @@ class SafeDagger:
             raise ValueError(
                 "failure_predictor.online_train_step_calls must be >= 1, "
                 f"got {self.failure_predictor_online_train_step_calls}."
-            )
+        )
         fp_ws_model_path = fp_cfg.get("warm_start_model_path", None)
-        fp_kind = str(fp_cfg.get("type", "critic")).strip().lower()
-        if fp_kind not in {"critic", "legacy"}:
-            fp_kind = "critic"
         self.failure_predictor_warm_start_model_path = os.path.join(
             self.nn_dir,
-            f"fp_warmstart_{fp_kind}.pt",
+            "fp_warmstart_critic.pt",
         )
         if self.rank == 0 and isinstance(fp_ws_model_path, str) and len(str(fp_ws_model_path).strip()) > 0:
             print(
@@ -668,7 +687,7 @@ class SafeDagger:
             self.writer.close()
 
     def run_warm_start_stage(self, obs=None):
-        """Run offline warm-start bootstrap only (collect/BC/safety-fit)."""
+        """Run offline warm-start bootstrap only (collect/predictor-fit)."""
         self.student_model.train()
         if self.multi_teacher:
             for model in self.teacher_models:
@@ -1543,8 +1562,9 @@ class SafeDagger:
         info=None,
         l2_threshold=None,
         student_action=None,
+        teacher_action=None,
     ):
-        """Unsafe logic controlled by unsafe_mode: none | l2 | failure_predictor."""
+        """Unsafe logic controlled by unsafe_mode: none | l2 | failure_predictor | vlm_intervention."""
         def _compute_unsafe_l2():
             if l2_loss_per_env is None:
                 raise ValueError(
@@ -1567,11 +1587,11 @@ class SafeDagger:
         if self.unsafe_mode == "failure_predictor":
             if self.failure_predictor is None or not self.failure_predictor.enabled:
                 raise ValueError("unsafe_mode='failure_predictor' requires an enabled failure predictor.")
-            if not isinstance(self.failure_predictor, (FailurePredictor, FailurePredictorCritic)):
+            if not isinstance(self.failure_predictor, FailurePredictorCritic):
                 raise ValueError(
                     "Unsupported failure predictor class: "
                     f"{self.failure_predictor.__class__.__name__}. "
-                    "Expected FailurePredictor (legacy) or FailurePredictorCritic."
+                    "Expected FailurePredictorCritic."
                 )
 
             unsafe_l2 = _compute_unsafe_l2()
@@ -1591,9 +1611,29 @@ class SafeDagger:
                 )
             return unsafe_pred | unsafe_l2
             # return unsafe_pred & unsafe_l2
+        if self.unsafe_mode == "vlm_intervention":
+            if self.vlm_intervention is None or not self.vlm_intervention.enabled:
+                raise ValueError("unsafe_mode='vlm_intervention' requires an enabled VLM intervention planner.")
+            # DexSafeDaggerUltra should eventually replace fixed-threshold
+            # intervention with VLM-predicted intervention points. The planner
+            # raises until frame extraction, prompting, backend inference, and
+            # temporal smoothing are implemented.
+            unsafe_vlm = self.vlm_intervention.should_intervene(
+                obs=obs,
+                student_action=student_action,
+                teacher_action=teacher_action,
+                info=info,
+            )
+            unsafe_vlm = torch.as_tensor(unsafe_vlm, device=self.device, dtype=torch.bool).reshape(-1)
+            if unsafe_vlm.numel() != self.num_envs:
+                raise ValueError(
+                    f"VLM unsafe mask size mismatch: expected {self.num_envs}, got {unsafe_vlm.numel()}."
+                )
+            return unsafe_vlm
 
         raise ValueError(
-            f"Unsupported unsafe_mode '{self.unsafe_mode}'. Expected one of: none, l2, failure_predictor."
+            f"Unsupported unsafe_mode '{self.unsafe_mode}'. "
+            "Expected one of: none, l2, failure_predictor, vlm_intervention."
         )
 
     def _current_unsafe_l2_threshold(self):
@@ -1670,19 +1710,24 @@ class SafeDagger:
     def _build_failure_predictor(self, cfg):
         fp_cfg = cfg or {}
         device = str(fp_cfg.get("device", self.device))
-        fp_type = str(fp_cfg.get("type", "critic")).lower()
-        if fp_type == "legacy":
-            fp_class = FailurePredictor
-        elif fp_type == "critic":
-            fp_class = FailurePredictorCritic
-        else:
-            raise ValueError(f"Unsupported failure_predictor.type: {fp_type}")
-        return fp_class(
+        return FailurePredictorCritic(
             fp_cfg,
             device=device,
             default_obs_key="predictor_transition",
             rank=self.rank,
         )
+
+    def _build_vlm_intervention(self, cfg):
+        vlm_cfg = cfg or {}
+        if not bool(vlm_cfg.get("enabled", False)):
+            return None
+        if self.rank == 0:
+            print(
+                "[DexSafeDaggerUltra] VLM intervention scaffold enabled. "
+                "This variant is not runnable until a VLM backend is implemented.",
+                flush=True,
+            )
+        return VLMInterventionPlanner(vlm_cfg, rank=self.rank)
 
     # --- Teacher Policy and Action Selection ---
     def _resolve_teacher_checkpoint_path(self, path_spec):
@@ -2227,7 +2272,8 @@ class SafeDagger:
     # --- Config and Checkpoint I/O ---
     def set_weights(self, ckpt, policy_type, model_override=None):
         """Set the weights of the model."""
-        weights = torch_ext.load_checkpoint(ckpt)
+        print("=> loading checkpoint '{}'".format(ckpt))
+        weights = load_trusted_checkpoint(ckpt, map_location=self.device)
         if policy_type == "student":
             weights["model"] = adjust_state_dict_keys(
                 weights["model"],
@@ -2257,6 +2303,17 @@ class SafeDagger:
         """Loads the network """
         builder = ModelBuilder()
         return builder.load(params)
+
+    def _register_teacher_network_if_needed(self, params):
+        network_cfg = params.get("network", {})
+        rnn_cfg = network_cfg.get("rnn", {})
+        if (
+            network_cfg.get("name") == "actor_critic"
+            and rnn_cfg.get("before_mlp", False)
+            and rnn_cfg.get("concat_input", False)
+        ):
+            model_builder.register_network("teacher_actor_critic", TeacherA2CBuilder)
+            network_cfg["name"] = "teacher_actor_critic"
 
     def load_param_dict(self, cfg_path) -> Dict:
         with open(cfg_path, 'r') as f:

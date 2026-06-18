@@ -3,9 +3,41 @@
 import argparse
 import copy
 import json
+import pathlib
 import sys
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from isaaclab.app import AppLauncher
+
+DISTILLATION_VARIANTS = {
+    "vanilla_dagger": {
+        "pipeline": "safedagger",
+        "unsafe_mode": "none",
+        "description": "Vanilla DAgger: student rollout with teacher labels.",
+    },
+    "vanilla_safedagger": {
+        "pipeline": "safedagger",
+        "unsafe_mode": "l2",
+        "description": "Vanilla SafeDAgger: teacher takeover on action disagreement.",
+    },
+    "dexsafedagger": {
+        "pipeline": "both",
+        "unsafe_mode": "failure_predictor",
+        "description": "DexSafeDagger: warm-start plus disagreement/risk-predictor intervention.",
+    },
+    "dexsafedaggerUltra": {
+        "pipeline": "both",
+        "unsafe_mode": "vlm_intervention",
+        "description": (
+            "DexSafeDaggerUltra ablation scaffold: replace fixed-threshold intervention "
+            "with VLM-predicted intervention points."
+        ),
+        "experimental": True,
+    },
+}
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RL-Games.")
@@ -35,16 +67,21 @@ parser.add_argument(
 parser.add_argument("--student", type=str, default=None, help="Student checkpoint to use")
 parser.add_argument("--play_policy", type=bool, default=False, help="Play a distilled policy.")
 parser.add_argument(
+    "--variant",
+    type=str,
+    default="dexsafedagger",
+    choices=sorted(DISTILLATION_VARIANTS.keys()),
+    help=(
+        "Distillation variant: vanilla_dagger, vanilla_safedagger, "
+        "dexsafedagger, or experimental dexsafedaggerUltra."
+    ),
+)
+parser.add_argument(
     "--pipeline",
     type=str,
-    default="safedagger",
+    default=None,
     choices=["warmstart", "safedagger", "both"],
-    help=(
-        "Training pipeline stage to run: "
-        "warmstart = offline bootstrap only, "
-        "safedagger = teacher-intervention training only, "
-        "both = warmstart + safedagger."
-    ),
+    help=argparse.SUPPRESS,
 )
 parser.add_argument(
     "--warm_start_collect_steps",
@@ -56,7 +93,7 @@ parser.add_argument(
     "--warm_start_predictor_train_steps",
     type=int,
     default=None,
-    help="Override warm-start safety-model fit steps.",
+    help="Override warm-start failure-predictor fit steps.",
 )
 parser.add_argument("--data_aug", action="store_true", default=False, help="Whether to use data augmentation for student")
 parser.add_argument(
@@ -105,22 +142,8 @@ parser.add_argument(
     "--unsafe_mode",
     type=str,
     default=None,
-    choices=["none", "l2", "ood", "failure_predictor"],
-    help="Unsafe gating mode override.",
-)
-parser.add_argument(
-    "--ood_type",
-    type=str,
-    default=None,
-    choices=["gaussian", "pca", "mlp"],
-    help="OOD classifier type override (used when unsafe_mode=ood).",
-)
-parser.add_argument(
-    "--failure_predictor_type",
-    type=str,
-    default=None,
-    choices=["critic", "legacy"],
-    help="Failure predictor type override (used when unsafe_mode=failure_predictor).",
+    choices=["none", "l2", "failure_predictor", "vlm_intervention"],
+    help=argparse.SUPPRESS,
 )
 parser.add_argument(
     "--failure_predictor_warm_start_model_path",
@@ -149,6 +172,11 @@ args_cli, hydra_args = parser.parse_known_args()
 if args_cli.video:
     args_cli.enable_cameras = True
 
+variant_cfg = DISTILLATION_VARIANTS[args_cli.variant]
+if args_cli.pipeline is None:
+    args_cli.pipeline = variant_cfg["pipeline"]
+if args_cli.unsafe_mode is None:
+    args_cli.unsafe_mode = variant_cfg["unsafe_mode"]
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -164,8 +192,6 @@ import math
 import os
 import yaml
 from datetime import datetime
-import pathlib
-
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import IsaacAlgoObserver
 from rl_games.torch_runner import Runner
@@ -180,10 +206,10 @@ from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 
-from distillation_safedagger import SafeDagger
+from dexsafedagger_lab.distillation.core.distillation_safedagger import SafeDagger
 import dexsafedagger_lab.tasks.tg2_inspirehand.gym_setup
 
-from dexsafedagger_lab.distillation_new.a2c_stereo_transformer import (
+from dexsafedagger_lab.distillation.models.a2c_stereo_transformer import (
     A2CBuilder as A2CStereoTransformerBuilder,
 )
 
@@ -247,7 +273,7 @@ def _save_final_eval_json(
     output_path: pathlib.Path,
     *,
     task: str,
-    pipeline: str,
+    distillation_variant: str,
     final_checkpoint: str,
     final_eval_episodes: int,
     eval_max_steps,
@@ -257,7 +283,7 @@ def _save_final_eval_json(
     payload = {
         "mode": "runtime_final_eval",
         "task": task,
-        "pipeline": pipeline,
+        "distillation_variant": distillation_variant,
         "final_checkpoint": final_checkpoint,
         "final_eval_episodes": int(final_eval_episodes),
         "eval_max_steps": int(eval_max_steps) if eval_max_steps is not None else None,
@@ -311,11 +337,12 @@ def main(env_cfg, agent_cfg: dict):
                     flush=True,
                 )
 
-        parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
+        distillation_dir = pathlib.Path(__file__).resolve().parents[1]
+        parent_path = str(REPO_ROOT)
         agent_cfg_folder = "dexsafedagger_lab/tasks/tg2_inspirehand/agents"
 
         if not ov_env.simulate_stereo:
-            raise ValueError("distillation_new only supports stereo transformer policies.")
+            raise ValueError("distillation only supports stereo transformer policies.")
         student_cfg = os.path.join(
             parent_path,
             agent_cfg_folder,
@@ -345,10 +372,10 @@ def main(env_cfg, agent_cfg: dict):
                 student_ckpt = os.path.join(parent_path, "pretrained_ckpts", student_ckpt)
         teacher_object_map = _load_teacher_object_map(args_cli.teacher_object_map)
 
-        train_dir = "runs"
-        pipeline_tag = str(args_cli.pipeline).lower()
+        train_dir = str(distillation_dir / "runs")
+        variant_tag = str(args_cli.variant).lower()
         experiment_name = (
-            f"dexsafedagger-tg2-inspirehand-{pipeline_tag}"
+            f"dexsafedagger-tg2-inspirehand-{variant_tag}"
             + datetime.now().strftime("_%d-%H-%M-%S")
         )
         experiment_dir = os.path.join(train_dir, experiment_name)
@@ -390,7 +417,8 @@ def main(env_cfg, agent_cfg: dict):
         "switch_back_min_teacher_steps": distill_cfg.get("switch_back_min_teacher_steps", 10),
         "failure_predictor": {
             "enabled": False,
-            "obs_key": "ood_policy_embed",
+            "type": "critic",
+            "obs_key": "predictor_transition",
             "hidden_sizes": [256, 128],
             "lr": 1e-3,
             "dropout": 0.0,
@@ -402,23 +430,26 @@ def main(env_cfg, agent_cfg: dict):
             "unsafe_enable_after_steps": 0,
             "horizon_steps": 10,
             "failure_threshold": 0.5,
-            "success_threshold": 0.5,
             "output_temperature": 2.0,
-            "success_key": "lift_success",
             "include_current_step": False,
             "pos_weight": None,
             "pos_fraction": 0.1,
             "device": "cpu",
             "warm_start_model_path": None,
         },
-        "ood": {
+        "vlm_intervention": {
             "enabled": False,
-            "type": "gaussian", # gaussian # pca # mlp
-            "obs_key": "ood_policy_embed",
-            "min_samples": 10_000,
-            "update_interval": 500,
-            "threshold_quantile": 0.80,
-            "diag_eps": 1e-4,
+            # Brainstorm scaffold for dexsafedaggerUltra:
+            # - acquire stereo/RGB frames from the env at candidate intervention points
+            # - summarize proprio/action context alongside the image prompt
+            # - ask a VLM for an intervention risk score or binary teacher-takeover decision
+            # - smooth/cache decisions to avoid per-step API calls and unstable switching
+            "provider": None,
+            "model": None,
+            "prompt_template": "Should the teacher intervene now? Return a risk score in [0, 1].",
+            "decision_threshold": None,
+            "temporal_window": 1,
+            "scaffold_only": True,
         },
         "warm_start": (
             dict(distill_cfg.get("warm_start", {}))
@@ -434,12 +465,8 @@ def main(env_cfg, agent_cfg: dict):
     }
         if isinstance(distill_cfg.get("failure_predictor", None), dict):
             dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])
-        if isinstance(distill_cfg.get("ood", None), dict):
-            dagger_config["ood"].update(distill_cfg["ood"])
-        if args_cli.ood_type is not None:
-            dagger_config["ood"]["type"] = args_cli.ood_type
-        if args_cli.failure_predictor_type is not None:
-            dagger_config["failure_predictor"]["type"] = args_cli.failure_predictor_type
+        if isinstance(distill_cfg.get("vlm_intervention", None), dict):
+            dagger_config["vlm_intervention"].update(distill_cfg["vlm_intervention"])
         if args_cli.failure_predictor_warm_start_model_path is not None:
             dagger_config["failure_predictor"]["warm_start_model_path"] = (
                 args_cli.failure_predictor_warm_start_model_path
@@ -447,15 +474,15 @@ def main(env_cfg, agent_cfg: dict):
         if args_cli.unsafe_mode is not None:
             dagger_config["unsafe_mode"] = args_cli.unsafe_mode
         mode = dagger_config["unsafe_mode"]
-        if mode == "ood":
-            dagger_config["ood"]["enabled"] = True
-            dagger_config["failure_predictor"]["enabled"] = False
-        elif mode == "failure_predictor":
+        if mode == "failure_predictor":
             dagger_config["failure_predictor"]["enabled"] = True
-            dagger_config["ood"]["enabled"] = False
-        elif mode in {"none", "l2"}:
-            dagger_config["ood"]["enabled"] = False
+            dagger_config["vlm_intervention"]["enabled"] = False
+        elif mode == "vlm_intervention":
             dagger_config["failure_predictor"]["enabled"] = False
+            dagger_config["vlm_intervention"]["enabled"] = True
+        elif mode in {"none", "l2"}:
+            dagger_config["failure_predictor"]["enabled"] = False
+            dagger_config["vlm_intervention"]["enabled"] = False
         if args_cli.switch_back_min_teacher_steps is not None:
             dagger_config["switch_back_min_teacher_steps"] = int(args_cli.switch_back_min_teacher_steps)
         if args_cli.eval_lift_hold_s is not None:
@@ -471,6 +498,10 @@ def main(env_cfg, agent_cfg: dict):
         "entrypoint": os.path.abspath(__file__),
         "cwd": os.getcwd(),
         "task": args_cli.task,
+        "distillation_variant": args_cli.variant,
+        "variant_description": DISTILLATION_VARIANTS[args_cli.variant]["description"],
+        "resolved_pipeline": args_cli.pipeline,
+        "resolved_unsafe_mode": args_cli.unsafe_mode,
         "experiment_dir": os.path.abspath(experiment_dir),
         "student_cfg_path": student_cfg,
         "teacher_cfg_path": teacher_cfg,
@@ -507,7 +538,7 @@ def main(env_cfg, agent_cfg: dict):
         if getattr(dagger, "rank", 0) == 0:
             dagger.save(final_ckpt)
             print(
-                f"[INFO] Pipeline '{args_cli.pipeline}' finished at iter {reached_iters} / {dagger.num_iters}.",
+                f"[INFO] Variant '{args_cli.variant}' finished at iter {reached_iters} / {dagger.num_iters}.",
                 flush=True,
             )
             last_eval_snapshot = getattr(dagger, "last_eval_snapshot", None)
@@ -540,7 +571,7 @@ def main(env_cfg, agent_cfg: dict):
                 _save_final_eval_json(
                     final_eval_json_path,
                     task=str(args_cli.task),
-                    pipeline=str(args_cli.pipeline),
+                    distillation_variant=str(args_cli.variant),
                     final_checkpoint=str(final_ckpt),
                     final_eval_episodes=int(last_eval_snapshot.get("eval_num_episodes", 0)),
                     eval_max_steps=last_eval_snapshot.get("eval_max_steps", None),

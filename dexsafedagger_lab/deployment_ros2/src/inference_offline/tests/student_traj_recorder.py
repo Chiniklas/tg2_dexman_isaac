@@ -2,17 +2,17 @@
 """Replay a student policy and record trajectories.
 
 This script is intentionally standalone. It does not import helper classes from
-`distillation_new/replay.py` or `distillation_new/data_recorder.py`.
+`distillation/scripts/replay.py` or `distillation/utils/data_recorder.py`.
 
 # default student checkpoint:
-/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-both_26-10-53-04/nn/dexsafedagger_student_safe_dagger.pth.pth
+/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-both_26-10-53-04/nn/dexsafedagger_student_safe_dagger.pth.pth
 
 # default object dir:
 /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/assets/distill_multi_objects
 
 # command:
 python /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/deployment_tg2_inspirehand/ws/src/inference_offline/tests/student_traj_recorder.py   
---checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-both_26-10-53-04/nn/dexsafedagger_student_safe_dagger.pth.pth   
+--checkpoint /home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-both_26-10-53-04/nn/dexsafedagger_student_safe_dagger.pth.pth   
 --task dexsafedagger_tg2_inspirehand   
 --num_envs 4   
 --enable_cameras   
@@ -124,11 +124,11 @@ def adjust_state_dict_keys(checkpoint_state_dict: dict[str, Any], model_state_di
 def register_stereo_transformer_builder() -> None:
     """Register rl_games network builder required by stereo transformer config."""
     try:
-        from dexsafedagger_lab.distillation_new.a2c_stereo_transformer import (
+        from dexsafedagger_lab.distillation.models.a2c_stereo_transformer import (
             A2CBuilder as A2CStereoTransformerBuilder,
         )
     except ImportError:
-        from dexsafedagger_lab.distillation.a2c_stereo_transformer import (  # type: ignore
+        from dexsafedagger_lab.distillation.models.a2c_stereo_transformer import (  # type: ignore
             A2CBuilder as A2CStereoTransformerBuilder,
         )
     model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)

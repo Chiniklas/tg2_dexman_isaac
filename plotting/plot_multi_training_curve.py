@@ -65,15 +65,15 @@ TAG_PLOT_OVERRIDES = {
 RUN_SPECS = [
     (
         "Vanilla Dagger",
-        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-safedagger_02-11-56-50",
+        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-safedagger_02-11-56-50",
     ),
     (
         "SafeDagger With Disagreement",
-        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-safedagger_26-15-44-54",
+        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-safedagger_26-15-44-54",
     ),
     (
         "SafeDagger With Disagreement And Predictor",
-        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation_new/runs/dexsafedagger-tg2-inspirehand-both_26-10-53-04",
+        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-both_26-10-53-04",
     ),
 ]
 

@@ -120,36 +120,24 @@ params:
       unsafe_enable_after_steps: 2000 # default 2000 # online warmup before predictor drives unsafe gating
       horizon_steps: 1 # default 8 
       failure_threshold: 0.25
-      success_threshold: 0.2
       output_temperature: 4.0
       include_current_step: false
       pos_weight: null # 2.0 for failure label
       pos_fraction: null # 0.1 for failure label
       device: cuda
       warm_start_model_path: null
-    ood:
+    vlm_intervention:
       enabled: false
-      type: gaussian
-      obs_key: ood_policy_embed # defines which obs does the classifier see
-      buffer_size: 100000
-      min_samples: 5000
-      update_interval: 1000
-      threshold_quantile: 0.99
-      diag_eps: 1e-4
-      hidden_sizes: [256, 128]
-      lr: 0.001
-      weight_decay: 1.0e-6
-      batch_size: 1024
-      train_steps: 100
-      noise_std: 0.1
-      threshold_samples: 50000
-      dropout_prob: 0.1
-      device: cpu
+      provider: null
+      model: null
+      prompt_template: "Should the teacher intervene now? Return a risk score in [0, 1]."
+      decision_threshold: null
+      temporal_window: 1
+      scaffold_only: true # dexsafedaggerUltra brainstorming hook; no VLM backend is wired yet.
     warm_start:
       enabled: true
       collect_steps: 600
       predictor_train_steps: 8000 # default 10000
-      ood_force_refit: true
       save_collected_data: true
       save_steps: 600
       save_envs: 32

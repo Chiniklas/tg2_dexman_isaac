@@ -119,7 +119,7 @@ from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 import dexsafedagger_lab.tasks.dexsafedagger_kuka_allegro.gym_setup
 import dexsafedagger_lab.tasks.dexsafedagger_kuka_inspirehand.gym_setup
 import dexsafedagger_lab.tasks.tg2_inspirehand.gym_setup
-from dexsafedagger_lab.distillation_new.eval_utils import (
+from dexsafedagger_lab.distillation.utils.eval_utils import (
     UNSAFE_REASON_NAMES,
     classify_out_of_reach_reasons,
     unsafe_reason_percentages_from_counts,

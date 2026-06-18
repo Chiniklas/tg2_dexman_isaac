@@ -42,11 +42,11 @@ def adjust_state_dict_keys(checkpoint_state_dict: dict, model_state_dict: dict) 
 def register_stereo_transformer_builder() -> None:
     """Register network builder used by rl_games_ppo_stereo_transformer.yaml."""
     try:
-        from dexsafedagger_lab.distillation_new.a2c_stereo_transformer import (
+        from dexsafedagger_lab.distillation.models.a2c_stereo_transformer import (
             A2CBuilder as A2CStereoTransformerBuilder,
         )
     except ImportError:
-        from dexsafedagger_lab.distillation.a2c_stereo_transformer import (  # type: ignore
+        from dexsafedagger_lab.distillation.models.a2c_stereo_transformer import (  # type: ignore
             A2CBuilder as A2CStereoTransformerBuilder,
         )
 

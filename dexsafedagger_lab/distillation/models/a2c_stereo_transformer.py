@@ -11,7 +11,7 @@ from rl_games.common.layers.recurrent import GRUWithDones, LSTMWithDones
 from rl_games.common.layers.value import TwoHotEncodedValue, DefaultValue
 from rl_games.algos_torch.running_mean_std import RunningMeanStd
 
-from dexsafedagger_lab.distillation_new.stereo_encoder import StereoEncoder
+from dexsafedagger_lab.distillation.models.stereo_encoder import StereoEncoder
 
 
 def _create_initializer(func, **kwargs):

@@ -29,6 +29,14 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import GaussianNoiseCfg, NoiseModelWithAdditiveBiasCfg
 
+
+def _first_existing_dir(*paths: str) -> str:
+    for path in paths:
+        if os.path.isdir(path):
+            return path
+    return paths[0]
+
+
 @configclass
 class EventCfg:
     """Configuration for randomization."""
@@ -239,14 +247,17 @@ class DexSafeDaggerTG2InspirehandEnvCfg(DirectRLEnvCfg):
     root_path = os.path.dirname(os.path.dirname(module_path))
     scene_objects_usd_path = os.path.join(root_path, "assets/scene_objects/")
 
-    table_texture_dir = os.path.join(
-        root_path, "assets", "curated_table_textures"
+    table_texture_dir = _first_existing_dir(
+        os.path.join(root_path, "assets", "curated_table_textures"),
+        os.path.join(root_path, "assets", "textures", "curated_table_textures"),
     )
-    dome_light_dir = os.path.join(
-        root_path, "assets", "dome_light_textures"
+    dome_light_dir = _first_existing_dir(
+        os.path.join(root_path, "assets", "dome_light_textures"),
+        os.path.join(root_path, "assets", "textures", "dome_light_textures"),
     )
-    metropolis_asset_dir = os.path.join(
-        root_path, "assets", "object_textures"
+    metropolis_asset_dir = _first_existing_dir(
+        os.path.join(root_path, "assets", "object_textures"),
+        os.path.join(root_path, "assets", "textures", "object_textures"),
     )
 
     # table
