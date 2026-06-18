@@ -101,7 +101,7 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.keypoint_offsets = self._make_keypoint_offsets()
         self.grasp_bounding_box_offsets = self._make_grasp_bounding_box_offsets()
         self.fixed_size_keypoint_offsets = self._make_keypoint_offsets(self.cfg.fixed_size)
-        debug_draw_enabled = self.cfg.debug_keypoints or self.cfg.debug_grasp_bounding_box
+        debug_draw_enabled = self.cfg.debug_keypoints or self.cfg.debug_grasp_bounding_box or self.cfg.debug_fingertips
         self.keypoint_debug_draw = self._make_keypoint_debug_draw() if debug_draw_enabled else None
         self._all_env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
         self._init_delay_noise_queues()
@@ -120,8 +120,7 @@ class SimToolRealTg2Env(DirectRLEnv):
         if self.cfg.with_table_force_sensor:
             self.table_contact_sensor = ContactSensor(self.cfg.table_contact_sensor)
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        if self.scene.cfg.replicate_physics:
-            self.scene.clone_environments(copy_from_source=False)
+        self.scene.clone_environments(copy_from_source=not self.scene.cfg.replicate_physics)
         if not self.scene.cfg.replicate_physics or self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=["/World/ground"])
         self._disable_goal_object_collisions()
@@ -354,18 +353,25 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.table.write_root_state_to_sim(table_state, env_ids)
 
         object_state = self.object.data.default_root_state[env_ids].clone()
+        object_spawn_center = torch.tensor(
+            self.cfg.object_spawn_center,
+            device=self.device,
+            dtype=object_state.dtype,
+        )
+        object_xy_range = float(self.cfg.object_spawn_xy_range)
+        object_z_range = float(self.cfg.object_spawn_z_range)
         xy_noise = torch.stack(
             (
-                sample_uniform(-self.cfg.reset_position_noise_x, self.cfg.reset_position_noise_x, (num_ids,), self.device),
-                sample_uniform(-self.cfg.reset_position_noise_y, self.cfg.reset_position_noise_y, (num_ids,), self.device),
+                sample_uniform(-object_xy_range, object_xy_range, (num_ids,), self.device),
+                sample_uniform(-object_xy_range, object_xy_range, (num_ids,), self.device),
             ),
             dim=-1,
         )
-        z_noise = sample_uniform(-self.cfg.reset_position_noise_z, self.cfg.reset_position_noise_z, (num_ids,), self.device)
-        object_state[:, 0] = xy_noise[:, 0]
-        object_state[:, 1] = xy_noise[:, 1]
-        object_drop_height = table_reset_z + self.cfg.table_object_z_offset
-        object_state[:, 2] = object_drop_height + z_noise
+        z_noise = sample_uniform(-object_z_range, object_z_range, (num_ids,), self.device)
+        object_state[:, 0] = object_spawn_center[0] + xy_noise[:, 0]
+        object_state[:, 1] = object_spawn_center[1] + xy_noise[:, 1]
+        object_state[:, 2] = object_spawn_center[2] + z_noise
+        object_drop_height = object_state[:, 2].clone()
         object_state[:, 0:3] += self.scene.env_origins[env_ids]
         object_state[:, 3:7] = self._sample_object_quat(num_ids)
         if self.cfg.object_start_pose is not None:
@@ -791,50 +797,20 @@ class SimToolRealTg2Env(DirectRLEnv):
         num_ids = env_ids.shape[0]
         goal_state = self.goal_object.data.default_root_state[env_ids].clone()
 
-        mins, maxs = self._target_volume_bounds()
-
-        if (not is_first_goal) and self.cfg.goal_sampling_type == "delta":
-            current_goal_pos = self.object_goal_pos[env_ids]
-            current_goal_rot = self.object_goal_rot[env_ids]
-            goal_pos = current_goal_pos + sample_uniform(
-                -self.cfg.delta_goal_distance,
-                self.cfg.delta_goal_distance,
-                (num_ids, 3),
-                self.device,
-            )
-            goal_pos = torch.clamp(goal_pos, mins, maxs)
-            goal_rot = self._sample_delta_quat(current_goal_rot, self.cfg.delta_rotation_degrees)
-        elif (not is_first_goal) and self.cfg.goal_sampling_type == "coin_flip":
-            current_goal_pos = self.object_goal_pos[env_ids]
-            current_goal_rot = self.object_goal_rot[env_ids]
-            coin_flips = sample_uniform(0.0, 1.0, (num_ids, 1), self.device)
-            translation_goal_pos = current_goal_pos + sample_uniform(
-                -self.cfg.delta_goal_distance,
-                self.cfg.delta_goal_distance,
-                (num_ids, 3),
-                self.device,
-            )
-            translation_goal_pos = torch.clamp(translation_goal_pos, mins, maxs)
-            rotation_goal_rot = self._sample_delta_quat(current_goal_rot, self.cfg.delta_rotation_degrees)
-            goal_pos = torch.where(coin_flips < 0.5, translation_goal_pos, current_goal_pos)
-            goal_rot = torch.where(coin_flips < 0.5, current_goal_rot, rotation_goal_rot)
+        if self.cfg.goal_object_pose is not None:
+            goal_object_pose = torch.tensor(self.cfg.goal_object_pose, device=self.device, dtype=goal_state.dtype)
+            goal_pos = goal_object_pose[0:3].expand(num_ids, 3)
+            goal_rot = goal_object_pose[[6, 3, 4, 5]].expand(num_ids, 4)
         else:
-            goal_pos = sample_uniform(0.0, 1.0, (num_ids, 3), self.device) * (maxs - mins) + mins
-            goal_rot = self._sample_random_quat(num_ids)
-            min_z = self.object_drop_height[env_ids, None] - 0.05 + self.cfg.lifting_bonus_threshold
-            goal_pos[:, 2:3] = torch.max(min_z, goal_pos[:, 2:3])
+            lift_min, lift_max = sorted(float(value) for value in self.cfg.goal_height_above_object_range)
+            goal_pos = self.object_init_pos[env_ids].clone()
+            goal_pos[:, 2] += sample_uniform(lift_min, lift_max, (num_ids,), self.device)
+            goal_rot = self.object.data.root_quat_w[env_ids].clone()
 
         self.object_goal_pos[env_ids] = goal_pos
         self.object_goal_rot[env_ids] = goal_rot
-        if self.cfg.goal_object_pose is not None:
-            goal_object_pose = torch.tensor(self.cfg.goal_object_pose, device=self.device, dtype=goal_state.dtype)
-            self.object_goal_pos[env_ids] = goal_object_pose[0:3]
-            self.object_goal_rot[env_ids] = goal_object_pose[[6, 3, 4, 5]]
         goal_state[:, 0:3] = goal_pos + self.scene.env_origins[env_ids]
         goal_state[:, 3:7] = goal_rot
-        if self.cfg.goal_object_pose is not None:
-            goal_state[:, 0:3] = self.object_goal_pos[env_ids] + self.scene.env_origins[env_ids]
-            goal_state[:, 3:7] = self.object_goal_rot[env_ids]
         goal_state[:, 7:13] = 0.0
         self.goal_object.write_root_state_to_sim(goal_state, env_ids)
 
@@ -965,8 +941,18 @@ class SimToolRealTg2Env(DirectRLEnv):
 
             self.keypoint_debug_draw.draw_points(
                 object_points + goal_points,
-                [(0.1, 0.45, 1.0, 1.0)] * len(object_points) + [(1.0, 0.15, 0.85, 1.0)] * len(goal_points),
+                [(0.1, 0.45, 1.0, 1.0)] * len(object_points) + [(0.1, 1.0, 0.25, 1.0)] * len(goal_points),
                 [point_size] * (len(object_points) + len(goal_points)),
+            )
+
+        if self.cfg.debug_fingertips:
+            fingertip_pos_w = self.fingertip_pos + self.scene.env_origins[:, None, :]
+            fingertip_points = [tuple(point) for point in fingertip_pos_w.reshape(-1, 3).detach().cpu().tolist()]
+            point_size = max(1.0, float(self.cfg.debug_fingertip_radius) * 1000.0)
+            self.keypoint_debug_draw.draw_points(
+                fingertip_points,
+                [(1.0, 0.85, 0.1, 1.0)] * len(fingertip_points),
+                [point_size] * len(fingertip_points),
             )
 
         if self.cfg.debug_grasp_bounding_box:
@@ -1000,7 +986,7 @@ class SimToolRealTg2Env(DirectRLEnv):
         goal_points = [tuple(point) for point in goal_corners_w.reshape(-1, 3).detach().cpu().tolist()]
         self.keypoint_debug_draw.draw_points(
             object_points + goal_points,
-            [(0.1, 0.45, 1.0, 1.0)] * len(object_points) + [(1.0, 0.15, 0.85, 1.0)] * len(goal_points),
+            [(0.1, 0.45, 1.0, 1.0)] * len(object_points) + [(0.1, 1.0, 0.25, 1.0)] * len(goal_points),
             [point_size] * (len(object_points) + len(goal_points)),
         )
 
@@ -1011,7 +997,7 @@ class SimToolRealTg2Env(DirectRLEnv):
         line_colors = []
         for corners, color in (
             (object_corners_w, (0.1, 0.45, 1.0, 1.0)),
-            (goal_corners_w, (1.0, 0.15, 0.85, 1.0)),
+            (goal_corners_w, (0.1, 1.0, 0.25, 1.0)),
         ):
             corners_cpu = corners.detach().cpu()
             for env_idx in range(corners_cpu.shape[0]):

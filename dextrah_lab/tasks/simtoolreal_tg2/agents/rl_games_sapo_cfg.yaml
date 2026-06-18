@@ -1,28 +1,35 @@
 env_cfg:
   scene.num_envs: 1536
+  scene.env_spacing: 2.0
+  scene.replicate_physics: False
   sim_dt: 0.016666666666666666
   decimation: 1
   episode_length_s: 10.0
-  object_name: cube
+  object_name: claw_hammer
   object_mass: 0.05
   clamp_abs_observations: 10.0
   use_relative_control: False
   dof_speed_scale: 1.5
   hand_moving_average: 0.1
   arm_moving_average: 0.1
-  reset_position_noise_x: 0.1
-  reset_position_noise_y: 0.1
-  reset_position_noise_z: 0.02
-  reset_dof_pos_noise_fingers: 0.1
-  reset_dof_pos_noise_arm: 0.1
-  reset_dof_vel_noise: 0.5
-  randomize_object_rotation: True
+  reset_position_noise_x: 0.0
+  reset_position_noise_y: 0.0
+  reset_position_noise_z: 0.0
+  reset_dof_pos_noise_fingers: 0.0
+  reset_dof_pos_noise_arm: 0.0
+  reset_dof_vel_noise: 0.0
+  randomize_object_rotation: False
+  object_spawn_center: [0.0, 0.50, 0.56]
+  object_spawn_xy_range: 0.05
+  object_spawn_z_range: 0.0
   object_start_pose: null
+  goal_height_above_object_range: [0.25, 0.35]
   goal_object_pose: null
   debug_keypoints: False
   debug_grasp_bounding_box: False
+  debug_fingertips: False
   table_top_z: 0.53
-  table_reset_z_range: 0.01
+  table_reset_z_range: 0.0
   table_object_z_offset: 0.25
   object_base_size: 0.04
   object_scale_noise_multiplier_range: [1.0, 1.0]

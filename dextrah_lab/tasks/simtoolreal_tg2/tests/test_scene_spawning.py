@@ -5,9 +5,6 @@ python dextrah_lab/tasks/simtoolreal_tg2/tests/test_scene_spawning.py --num-envs
 
 Headless smoke check:
 python dextrah_lab/tasks/simtoolreal_tg2/tests/test_scene_spawning.py --headless --num-envs 1 --steps 2
-
-Task default layout instead of the MuJoCo-matching validation layout:
-python dextrah_lab/tasks/simtoolreal_tg2/tests/test_scene_spawning.py --num-envs 1 --task-default-layout
 """
 
 from __future__ import annotations
@@ -27,7 +24,7 @@ def _make_env_cfg(
     device: str | None,
     debug_keypoints: bool,
     debug_grasp_bounding_box: bool,
-    validation_layout: bool,
+    debug_fingertips: bool,
 ):
     """Build SimToolRealTg2EnvCfg after Kit/SimulationApp has started."""
     from dextrah_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env_cfg import SimToolRealTg2EnvCfg
@@ -37,42 +34,9 @@ def _make_env_cfg(
     cfg.sim.device = device or os.environ.get("SIMTOOLREAL_TG2_TEST_DEVICE", "cuda:0")
     cfg.debug_keypoints = debug_keypoints
     cfg.debug_grasp_bounding_box = debug_grasp_bounding_box
-
-    if validation_layout:
-        _apply_mujoco_matching_layout(cfg)
+    cfg.debug_fingertips = debug_fingertips
 
     return cfg
-
-
-def _apply_mujoco_matching_layout(cfg) -> None:
-    """Use the same table/object/goal layout as the MuJoCo validation scene."""
-    import isaaclab.sim as sim_utils
-    from isaaclab.assets import RigidObjectCfg
-    from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
-
-    cfg.table_cfg = RigidObjectCfg(
-        prim_path="/World/envs/env_.*/table",
-        spawn=sim_utils.CuboidCfg(
-            size=(1.16, 0.725, 0.03),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
-            physics_material=RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.55, 0.43, 0.32)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.58, 0.515), rot=(1.0, 0.0, 0.0, 0.0)),
-    )
-    cfg.object_start_pose = (-0.22, 0.50, 0.56, 0.0, 0.0, 0.0, 1.0)
-    cfg.goal_object_pose = (0.0, 0.50, 0.64, 0.0, 0.0, 0.0, 1.0)
-    cfg.table_top_z = 0.53
-    cfg.table_reset_z_range = 0.0
-    cfg.reset_position_noise_x = 0.0
-    cfg.reset_position_noise_y = 0.0
-    cfg.reset_position_noise_z = 0.0
-    cfg.reset_dof_pos_noise_fingers = 0.0
-    cfg.reset_dof_pos_noise_arm = 0.0
-    cfg.reset_dof_vel_noise = 0.0
-    cfg.randomize_object_rotation = False
-    cfg.object_scale_noise_multiplier_range = (1.0, 1.0)
 
 
 def _spawn_env(cfg):
@@ -121,8 +85,11 @@ def _print_scene_summary(env, cfg, obs) -> None:
     print(f"  goal spawn: {_spawn_label(cfg.goal_object_cfg.spawn)}", flush=True)
     print(f"  robot init pose: {cfg.robot_cfg.init_state.pos} {cfg.robot_cfg.init_state.rot}", flush=True)
     print(f"  table init pose: {cfg.table_cfg.init_state.pos} {cfg.table_cfg.init_state.rot}", flush=True)
-    print(f"  object start pose: {cfg.object_start_pose or cfg.object_cfg.init_state.pos}", flush=True)
-    print(f"  goal pose: {cfg.goal_object_pose or cfg.goal_object_cfg.init_state.pos}", flush=True)
+    print(
+        f"  object spawn center/range: {cfg.object_spawn_center} +/-{cfg.object_spawn_xy_range}m",
+        flush=True,
+    )
+    print(f"  goal height range: {cfg.goal_height_above_object_range}", flush=True)
     print(f"  robot root: {_tensor_row(robot.data.root_pos_w)}", flush=True)
     print(f"  table root: {_tensor_row(table.data.root_pos_w)}", flush=True)
     print(f"  object root: {_tensor_row(obj.data.root_pos_w)}", flush=True)
@@ -189,7 +156,7 @@ def _run_with_app(args_cli) -> None:
             device=getattr(args_cli, "device", None),
             debug_keypoints=args_cli.debug_keypoints,
             debug_grasp_bounding_box=args_cli.debug_grasp_bounding_box,
-            validation_layout=not args_cli.task_default_layout,
+            debug_fingertips=args_cli.debug_fingertips,
         )
         print("Env cfg built. Spawning simtoolreal_tg2 env...", flush=True)
         env = _spawn_env(cfg)
@@ -222,7 +189,7 @@ def test_simtoolreal_tg2_scene_spawns_from_env_config():
             device=os.environ.get("SIMTOOLREAL_TG2_TEST_DEVICE", "cuda:0"),
             debug_keypoints=False,
             debug_grasp_bounding_box=False,
-            validation_layout=True,
+            debug_fingertips=False,
         )
         env = _spawn_env(cfg)
         _run_headless(env, steps=1, print_every=0)
@@ -241,7 +208,7 @@ def main() -> None:
     parser.add_argument("--print-every", type=int, default=120, help="Print step summary every N steps; 0 disables.")
     parser.add_argument("--debug-keypoints", action="store_true", help="Draw object/goal keypoints.")
     parser.add_argument("--debug-grasp-bounding-box", action="store_true", help="Draw object/goal grasp bounding boxes.")
-    parser.add_argument("--task-default-layout", action="store_true", help="Use SimToolRealTg2EnvCfg poses without visual-test overrides.")
+    parser.add_argument("--debug-fingertips", action="store_true", help="Draw fingertip debug points.")
     AppLauncher.add_app_launcher_args(parser)
     args_cli = parser.parse_args()
 

@@ -16,17 +16,32 @@ The root entrypoints are:
 Train with the vendored SAPO RL-Games fork:
 
 ```bash
-conda run -n dexsafedagger python dextrah_lab/train_rl_games.py \
+python dextrah_lab/train_rl_games.py \
   --task simtoolreal_tg2 \
   --agent_cfg rl_games_sapo_cfg.yaml \
-  --num_envs 1024 \
+  --num_envs 1536 \
   --headless
+```
+
+Small visual smoke test:
+
+```bash
+python dextrah_lab/train_rl_games.py \
+  --task simtoolreal_tg2 \
+  --agent_cfg rl_games_sapo_cfg.yaml \
+  --num_envs 6 \
+  --max_iterations 1 \
+  --visualize_keypoints \
+  --visualize_fingertips \
+  agent.params.config.expl_coef_block_size=6 \
+  agent.params.config.minibatch_size=96 \
+  agent.params.config.central_value_config.minibatch_size=96
 ```
 
 Replay a checkpoint:
 
 ```bash
-conda run -n dexsafedagger python dextrah_lab/play_rl_games.py \
+python dextrah_lab/play_rl_games.py \
   --task simtoolreal_tg2 \
   --checkpoint dextrah_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
 ```
@@ -36,4 +51,5 @@ The SAPO package used by these scripts is the local copy at
 
 Current checked-in object support:
 
-- `cube` (`assets/primitives/USD/small_8_cuboid/small_8_cuboid.usd`)
+- default: `claw_hammer` (`assets/dextoolbench_usd/claw_hammer/claw_hammer.usd`)
+- optional: `cube` (`assets/primitives/USD/small_8_cuboid/small_8_cuboid.usd`)

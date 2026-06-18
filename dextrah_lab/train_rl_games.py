@@ -51,6 +51,14 @@ parser.add_argument(
     default=False,
     help="Draw grasp bounding box debug geometry.",
 )
+parser.add_argument(
+    "--visualize_fingertips",
+    "--visualize-fingertips",
+    dest="visualize_fingertips",
+    action="store_true",
+    default=False,
+    help="Draw fingertip debug points in the Isaac viewer.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.video:
@@ -214,6 +222,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.debug_keypoints = True
     if args_cli.visualize_grasp_bounding_box and hasattr(env_cfg, "debug_grasp_bounding_box"):
         env_cfg.debug_grasp_bounding_box = True
+    if args_cli.visualize_fingertips and hasattr(env_cfg, "debug_fingertips"):
+        env_cfg.debug_fingertips = True
     _apply_object_selection(env_cfg)
 
     agent_cfg["params"]["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["params"]["seed"]

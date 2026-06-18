@@ -1,0 +1,41 @@
+<mujoco model="tiangong2pro_claw_hammer_scene">
+  <compiler meshdir="../meshes" texturedir="../textures"/>
+
+  <include file="../xml/tiangong2.0_pro_with_hands_half_body.xml"/>
+
+  <option gravity="0 0 -9.81"/>
+
+  <asset>
+    <mesh name="claw_hammer_mesh" file="dextoolbench/claw_hammer.obj"/>
+    <texture name="claw_hammer_texture" type="2d" file="dextoolbench/claw_hammer_material_0.png"/>
+    <material name="claw_hammer_mat" texture="claw_hammer_texture" rgba="1 1 1 1"/>
+    <material name="tg2_table_mat" rgba="0.55 0.43 0.32 1"/>
+    <material name="goal_hammer_mat" rgba="0.1 0.9 0.25 0.28"/>
+  </asset>
+
+  <worldbody>
+    <camera name="validation_front" pos="0 -2.25 1.10" xyaxes="1 0 0 0 0.32 0.95"/>
+
+    <body name="table" pos="0.00 0.58 0.515">
+      <geom name="table_top" type="box" size="0.58 0.3625 0.015" material="tg2_table_mat" friction="0.8 0.01 0.01" contype="1" conaffinity="1"/>
+    </body>
+
+    <body name="claw_hammer" pos="0.00 0.50 0.56">
+      <freejoint name="claw_hammer_freejoint"/>
+      <geom name="hammer_mesh_geom" type="mesh" mesh="claw_hammer_mesh" mass="0.050" material="claw_hammer_mat" friction="0.8 0.01 0.01" contype="1" conaffinity="1"/>
+      <site name="hammer_keypoint_0" type="sphere" pos="0.075 0.016875 0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
+      <site name="hammer_keypoint_1" type="sphere" pos="0.075 0.016875 -0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
+      <site name="hammer_keypoint_2" type="sphere" pos="-0.075 -0.016875 0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
+      <site name="hammer_keypoint_3" type="sphere" pos="-0.075 -0.016875 -0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
+    </body>
+
+    <body name="goal_claw_hammer" mocap="true" pos="0.00 0.50 0.86">
+      <geom name="goal_hammer_mesh_geom" type="mesh" mesh="claw_hammer_mesh" material="goal_hammer_mat" contype="0" conaffinity="0"/>
+      <site name="goal_position" type="sphere" pos="0 0 0" size="0.012" rgba="0.1 1.0 0.25 1"/>
+      <site name="goal_keypoint_0" type="sphere" pos="0.075 0.016875 0.01125" size="0.008" rgba="0.1 1.0 0.25 1"/>
+      <site name="goal_keypoint_1" type="sphere" pos="0.075 0.016875 -0.01125" size="0.008" rgba="0.1 1.0 0.25 1"/>
+      <site name="goal_keypoint_2" type="sphere" pos="-0.075 -0.016875 0.01125" size="0.008" rgba="0.1 1.0 0.25 1"/>
+      <site name="goal_keypoint_3" type="sphere" pos="-0.075 -0.016875 -0.01125" size="0.008" rgba="0.1 1.0 0.25 1"/>
+    </body>
+  </worldbody>
+</mujoco>

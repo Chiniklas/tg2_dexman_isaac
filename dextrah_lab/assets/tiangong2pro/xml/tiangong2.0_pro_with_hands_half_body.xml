@@ -57,7 +57,7 @@
     <camera name="front" pos="2.8 -1.8 1.8" xyaxes="0.54 0.84 0 -0.32 0.21 0.92"/>
     <camera name="side" pos="0 -3.2 1.6" xyaxes="1 0 0 0 0.45 0.89"/>
     <camera name="top" pos="0 0 3.8" xyaxes="1 0 0 0 1 0"/>
-    <body name="model_root" pos="0 0 0.75" quat="0.70710678 0 0 0.70710678">
+    <body name="model_root" pos="0 0 0.53" quat="0.70710678 0 0 0.70710678">
       <!-- Static upper body / head / left arm geoms -->
       <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="pelvis"/>
       <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="waist_yaw_link"/>
