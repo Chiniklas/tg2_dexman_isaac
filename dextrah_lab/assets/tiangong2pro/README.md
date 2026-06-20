@@ -9,7 +9,14 @@ Current layout:
 - `meshes/`: symlink to the ROS2 package mesh directory
 - `urdf/`: a single copied URDF asset for this bundle
 - `xml/`: a standalone MuJoCo XML for display/import
-- `usd/`: reserved for Isaac/Omniverse USD exports
+- `usd/`: Isaac/Omniverse USD exports
+
+The active Isaac Lab robot config uses the fixed-head USD reimport:
+
+- `usd/tiangong2.0_pro_with_hands_half_body_fixed_head/tiangong2.0_pro_with_hands_half_body_fixed_head.usd`
+
+That USD is generated from `urdf/tiangong2.0_pro_with_hands_half_body_fixed_head.urdf`
+with self-collision enabled to match the KUKA-SHARPA reference task more closely.
 
 Nothing in the original ROS2 package is deleted or moved.
 

@@ -13,8 +13,8 @@ MODULE_PATH = os.path.dirname(__file__)
 TIANGONG2PRO_HALF_BODY_USD_PATH = os.path.join(
     MODULE_PATH,
     "usd",
-    "tiangong2.0_pro_with_hands_half_body",
-    "tiangong2.0_pro_with_hands_half_body.usd",
+    "tiangong2.0_pro_with_hands_half_body_fixed_head",
+    "tiangong2.0_pro_with_hands_half_body_fixed_head.usd",
 )
 
 TIANGONG2PRO_ARM_JOINT_NAMES = [
@@ -189,7 +189,7 @@ TIANGONG2PRO_CFG = ArticulationCfg(
             max_depenetration_velocity=30.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False,
+            enabled_self_collisions=True,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=2,
             sleep_threshold=0.005,

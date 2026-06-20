@@ -26,6 +26,9 @@ Important implementation notes
   `env.pkl` and `agent.yaml` when available.
 - SAPO-style run directories use the `0_<timestamp>` naming convention.
 - The task-local YAML configs live in `dextrah_lab/tasks/simtoolreal_tg2/agents`.
+- The Tiangong2Pro Isaac Lab asset config points at the fixed-head USD reimport
+  with self-collision enabled, matching the KUKA-SHARPA reference task more
+  closely while keeping the TG2 policy action space at 13.
 
 Next things to verify
 

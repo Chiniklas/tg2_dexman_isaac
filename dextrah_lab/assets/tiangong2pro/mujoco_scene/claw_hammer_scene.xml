@@ -3,7 +3,9 @@
 
   <include file="../xml/tiangong2.0_pro_with_hands_half_body.xml"/>
 
-  <option gravity="0 0 -9.81"/>
+  <option gravity="0 0 -9.81" timestep="0.001" integrator="implicit" solver="Newton" iterations="80" ls_iterations="20">
+    <flag limit="enable"/>
+  </option>
 
   <asset>
     <mesh name="claw_hammer_mesh" file="dextoolbench/claw_hammer.obj"/>
@@ -14,15 +16,15 @@
   </asset>
 
   <worldbody>
-    <camera name="validation_front" pos="0 -2.25 1.10" xyaxes="1 0 0 0 0.32 0.95"/>
+    <camera name="validation_front" pos="0 2.25 1.10" xyaxes="-1 0 0 0 -0.32 0.95"/>
 
     <body name="table" pos="0.00 0.58 0.515">
-      <geom name="table_top" type="box" size="0.58 0.3625 0.015" material="tg2_table_mat" friction="0.8 0.01 0.01" contype="1" conaffinity="1"/>
+      <geom name="table_top" type="box" size="0.58 0.3625 0.015" material="tg2_table_mat" friction="0.8 0.01 0.01" solref="0.002 1" solimp="0.99 0.995 0.001" margin="0.001" condim="4" priority="2" contype="1" conaffinity="1"/>
     </body>
 
     <body name="claw_hammer" pos="0.00 0.50 0.56">
       <freejoint name="claw_hammer_freejoint"/>
-      <geom name="hammer_mesh_geom" type="mesh" mesh="claw_hammer_mesh" mass="0.050" material="claw_hammer_mat" friction="0.8 0.01 0.01" contype="1" conaffinity="1"/>
+      <geom name="hammer_mesh_geom" type="mesh" mesh="claw_hammer_mesh" mass="0.050" material="claw_hammer_mat" friction="0.8 0.01 0.01" solref="0.002 1" solimp="0.99 0.995 0.001" margin="0.001" condim="4" priority="2" contype="1" conaffinity="1"/>
       <site name="hammer_keypoint_0" type="sphere" pos="0.075 0.016875 0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
       <site name="hammer_keypoint_1" type="sphere" pos="0.075 0.016875 -0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
       <site name="hammer_keypoint_2" type="sphere" pos="-0.075 -0.016875 0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>

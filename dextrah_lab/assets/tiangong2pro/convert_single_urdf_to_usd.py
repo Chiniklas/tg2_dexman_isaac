@@ -65,6 +65,11 @@ parser.add_argument(
     action="store_true",
     help="Strip URDF mimic tags before import so follower finger joints become normal controllable DOFs.",
 )
+parser.add_argument(
+    "--self-collision",
+    action="store_true",
+    help="Enable self-collision in the imported articulation USD.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -296,7 +301,7 @@ def main() -> None:
             joint_drive=None,
             collision_from_visuals=False,
             collider_type="convex_decomposition",
-            self_collision=False,
+            self_collision=args_cli.self_collision,
             replace_cylinders_with_capsules=True,
         )
 

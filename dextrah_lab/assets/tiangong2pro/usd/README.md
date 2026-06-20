@@ -1,5 +1,12 @@
-# USD Placeholder
+# Tiangong2Pro USD Exports
 
-No USD assets are present yet in the source ROS2 package.
+This folder contains Isaac/Omniverse USD exports derived from the Tiangong2Pro
+URDF assets.
 
-Use this folder for future Isaac Sim / Omniverse USD exports derived from the URDF.
+The active Isaac Lab task uses:
+
+- `tiangong2.0_pro_with_hands_half_body_fixed_head/tiangong2.0_pro_with_hands_half_body_fixed_head.usd`
+
+It is generated from the fixed-head URDF with self-collision enabled. The older
+`tiangong2.0_pro_with_hands_half_body` export is kept only as the previous
+movable-head import.

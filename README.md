@@ -139,7 +139,7 @@ python dextrah_lab/deployment_ros2/mujoco/test_single_object_policy_replay.py --
 Component references used by the current TG2 SimToolReal task:
 
 - Scene creation, parallel environment layout, and TG2 table-facing visual setup take reference from `dextrah_lab/tasks/tg2_inspirehand`.
-- Robot asset/config conventions take reference from `reference/simtoolreal_isaacsim/simtoolreal_lab/tasks/simtoolreal_sharpa` and its `KUKA_SHARPA_CFG`; TG2 keeps the legacy `tg2_inspirehand` global self-collision-off setting and relies on the converted asset's URDF joint limits.
+- Robot asset/config conventions take reference from `reference/simtoolreal_isaacsim/simtoolreal_lab/tasks/simtoolreal_sharpa` and its `KUKA_SHARPA_CFG`; TG2 now uses a fixed-head USD reimport with robot self-collision enabled while relying on the converted asset's URDF joint limits.
 - Reward terms, keypoint reward structure, goal/object state bookkeeping, and table contact force handling take reference from `simtoolreal_sharpa`.
 - SAPO RL-Games training config, asymmetric observation setup, runner wiring, and block-size constraints take reference from the `simtoolreal_sharpa` agent configs.
 - Object and goal object spawning, visual debug overlays, and goal-object collision disabling follow the SimToolReal task pattern, with TG2-specific reachability defaults for object spawn center and vertical goal height.
@@ -156,7 +156,7 @@ currently applied as config changes.
 - If grasping is unstable, inspect actuator gains before changing RL settings. The TG2 asset currently uses SHARPA-like stiffness/damping, which may not be dynamically matched to this robot.
 - Keep early reset randomization narrow until the policy can reliably reach, touch, close around, and lift the active object. A possible first easy setting is `object_spawn_xy_range: 0.03` and `goal_height_above_object_range: [0.20, 0.30]`.
 - Use fingertip and keypoint debug visualization to check whether the reward geometry actually encourages TG2 fingertips toward useful grasp locations.
-- Keep global robot self-collision off for this phase, matching the legacy TG2 asset; do not use self-collision realism as the first lever for solving grasp learning.
+- Self-collision is enabled to match the reference SHARPA task more closely. If grasp learning becomes unstable, inspect collision pairs and asset contact geometry before changing SAPO/PPO hyperparameters.
 
 ## TODO
 
@@ -167,7 +167,7 @@ Reference behavior gaps to resolve against
 2. Restore reference reset randomization for object xy/z pose, object rotation, robot DOF position, robot DOF velocity, and table height.
 3. Replace the current TG2 reachability-only `object_spawn_center`, `object_spawn_xy_range`, and vertical `goal_height_above_object_range` path with reference-equivalent behavior, or keep it behind an explicit curriculum/easy-mode flag.
 4. Restore pretrain-like object scale randomization: SHARPA pretrain-like uses `object_scale_noise_multiplier_range: [0.9, 1.1]`.
-5. Resolve TG2 asset self-collision parity. SHARPA enables robot self-collision; TG2 currently keeps global self-collision off because the converted asset vibrates/interferes.
+5. Validate TG2 asset self-collision parity. SHARPA enables robot self-collision; TG2 now matches that setting with a fixed-head USD reimport.
 6. Port SHARPA regression tests for table-force smoothing, DexToolBench object loading, keypoint geometry, and fixed-size keypoint reward behavior.
 7. Add full multi-DexToolBench support only after the single `claw_hammer` path is stable.
 

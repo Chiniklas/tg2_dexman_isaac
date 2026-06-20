@@ -11,6 +11,7 @@ import copy
 import math
 import sys
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +90,10 @@ GOAL_KEYPOINT_SITE_NAMES = [f"goal_keypoint_{idx}" for idx in range(4)]
 DEFAULT_OBJECT_SCALES = (2.5, 0.5625, 0.375)
 OBS_SIZE = 92
 ACTION_SIZE = 13
+DEFAULT_VIEWER_LOOKAT = (0.0, 0.55, 0.78)
+DEFAULT_VIEWER_DISTANCE = 1.75
+DEFAULT_VIEWER_AZIMUTH = -90.0
+DEFAULT_VIEWER_ELEVATION = -18.0
 
 
 class _DummyRlGamesEnv:
@@ -133,6 +138,93 @@ def _yaml_load(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def _ensure_gym_module():
+    try:
+        import gymnasium as gym
+
+        sys.modules.setdefault("gym", gym)
+        return gym
+    except ModuleNotFoundError:
+        pass
+
+    try:
+        import gym
+
+        return gym
+    except ModuleNotFoundError:
+        pass
+
+    import numpy as np
+
+    class Box:
+        def __init__(self, low, high, shape=None, dtype=np.float32):
+            self.dtype = dtype
+            if shape is None:
+                shape = np.shape(low) if np.shape(low) else np.shape(high)
+            self.shape = tuple(shape)
+            self.low = np.full(self.shape, low, dtype=dtype)
+            self.high = np.full(self.shape, high, dtype=dtype)
+
+    class Discrete:
+        def __init__(self, n):
+            self.n = int(n)
+            self.shape = ()
+
+    class Tuple:
+        def __init__(self, spaces):
+            self.spaces = tuple(spaces)
+            self.shape = tuple(space.shape for space in self.spaces)
+
+    class Dict:
+        def __init__(self, spaces):
+            self.spaces = dict(spaces)
+
+    class Env:
+        pass
+
+    class Wrapper(Env):
+        def __init__(self, env=None):
+            self.env = env
+
+    class RewardWrapper(Wrapper):
+        pass
+
+    class ObservationWrapper(Wrapper):
+        pass
+
+    class ActionWrapper(Wrapper):
+        pass
+
+    def _register(*args, **kwargs):
+        return None
+
+    spaces = types.ModuleType("gym.spaces")
+    spaces.Box = Box
+    spaces.Discrete = Discrete
+    spaces.Tuple = Tuple
+    spaces.Dict = Dict
+    spaces.dict = types.SimpleNamespace(Dict=Dict)
+
+    wrappers = types.ModuleType("gym.wrappers")
+    wrappers.FlattenObservation = Wrapper
+    wrappers.FilterObservation = Wrapper
+
+    gym = types.ModuleType("gym")
+    gym.spaces = spaces
+    gym.envs = types.SimpleNamespace(register=_register)
+    gym.Env = Env
+    gym.Wrapper = Wrapper
+    gym.RewardWrapper = RewardWrapper
+    gym.ObservationWrapper = ObservationWrapper
+    gym.ActionWrapper = ActionWrapper
+    gym.make = lambda *args, **kwargs: None
+    gym.wrappers = wrappers
+    sys.modules["gym"] = gym
+    sys.modules["gym.spaces"] = spaces
+    sys.modules["gym.wrappers"] = wrappers
+    return gym
+
+
 def _checkpoint_params_dir(checkpoint_path: Path) -> Path | None:
     for parent in checkpoint_path.resolve().parents:
         params_dir = parent / "params"
@@ -169,7 +261,7 @@ def _checkpoint_coef_id_count(checkpoint_path: Path, device: str) -> int | None:
 
 
 def _make_policy_player(checkpoint_path: Path, device: str):
-    import gym
+    gym = _ensure_gym_module()
     import torch
     from rl_games.algos_torch import torch_ext
     from rl_games.common.player import BasePlayer
@@ -492,13 +584,30 @@ def _step_headless(mujoco, model, data, steps: int, policy: MujocoPolicyAdapter 
         mujoco.mj_step(model, data)
 
 
-def _step_viewer_until_closed(mujoco, model, data, policy: MujocoPolicyAdapter | None, print_policy_every: int) -> int:
+def _configure_viewer_camera(mujoco, viewer) -> None:
+    viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    viewer.cam.lookat[:] = DEFAULT_VIEWER_LOOKAT
+    viewer.cam.distance = DEFAULT_VIEWER_DISTANCE
+    viewer.cam.azimuth = DEFAULT_VIEWER_AZIMUTH
+    viewer.cam.elevation = DEFAULT_VIEWER_ELEVATION
+
+
+def _step_viewer_until_closed(
+    mujoco,
+    model,
+    data,
+    policy: MujocoPolicyAdapter | None,
+    print_policy_every: int,
+    set_viewer_camera: bool,
+) -> int:
     viewer_mod = _maybe_import_viewer()
     if viewer_mod is None:
         raise ModuleNotFoundError("mujoco.viewer is required for visualization. Use --headless for a smoke check.")
 
     total_steps = 0
     with viewer_mod.launch_passive(model, data) as viewer:
+        if set_viewer_camera:
+            _configure_viewer_camera(mujoco, viewer)
         try:
             while viewer.is_running():
                 action_range = None
@@ -549,6 +658,11 @@ def main() -> None:
         default=300,
         help="Viewer-mode interval for printing policy action min/max. Use 0 to disable.",
     )
+    parser.add_argument(
+        "--no-set-viewer-camera",
+        action="store_true",
+        help="Use MuJoCo's default free camera instead of the front-facing TG2 replay camera.",
+    )
     args = parser.parse_args()
 
     scene_xml = args.scene_xml.expanduser().resolve()
@@ -576,7 +690,14 @@ def main() -> None:
         _step_headless(mujoco, model, data, args.steps, policy)
         total_steps = args.steps
     else:
-        total_steps = _step_viewer_until_closed(mujoco, model, data, policy, args.print_policy_every)
+        total_steps = _step_viewer_until_closed(
+            mujoco,
+            model,
+            data,
+            policy,
+            args.print_policy_every,
+            set_viewer_camera=not args.no_set_viewer_camera,
+        )
 
     print(f"Stepped {total_steps} MuJoCo steps.")
     print(f"  time:      {data.time:.4f}")
