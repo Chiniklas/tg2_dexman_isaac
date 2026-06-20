@@ -2,6 +2,9 @@
 __pycache__
 *.pyc
 *.swp
+.env
+.env.*
+!.env.example
 logs
 *.npy
 .thumbs/

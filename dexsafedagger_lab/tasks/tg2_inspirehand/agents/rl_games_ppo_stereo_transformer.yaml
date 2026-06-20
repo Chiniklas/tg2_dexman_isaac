@@ -126,19 +126,28 @@ params:
       pos_fraction: null # 0.1 for failure label
       device: cuda
       warm_start_model_path: null
-    vlm_intervention:
+    vlm_threshold_advisor:
       enabled: false
-      provider: null
+      mode: shadow
+      base_url: null
       model: null
-      prompt_template: "Should the teacher intervene now? Return a risk score in [0, 1]."
-      decision_threshold: null
-      temporal_window: 1
-      scaffold_only: true # dexsafedaggerUltra brainstorming hook; no VLM backend is wired yet.
+      api_key_env: null
+      update_interval_steps: 1000
+      warmup_steps: 0
+      min_samples: 128
+      smoothing: 0.1
+      l2_min_scale: 0.5
+      l2_max_scale: 1.5
+      risk_min_scale: 0.5
+      risk_max_scale: 1.5
+      max_tokens: 1024
+      timeout: 90.0
     warm_start:
       enabled: true
       collect_steps: 600
       predictor_train_steps: 8000 # default 10000
       save_collected_data: true
+      match_predictor_buffer_size: true
       save_steps: 600
       save_envs: 32
       save_images: false

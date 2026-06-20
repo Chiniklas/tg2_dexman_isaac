@@ -26,6 +26,13 @@ class DistillWarmStart:
             return
         self.a.writer.add_scalar(tag, float(value), int(step))
 
+    def _print_summary(self, title, rows, *, prefix="[WarmStart]"):
+        if self.a.rank != 0:
+            return
+        print(f"{prefix} {title}", flush=True)
+        for key, value in rows:
+            print(f"{prefix}   {key:<28} {value}", flush=True)
+
     def _snapshot_warm_obs(self, obs, env_indices):
         obs_snapshot = {}
         capture_keys = [
@@ -75,24 +82,28 @@ class DistillWarmStart:
             os.makedirs(save_dir, exist_ok=True)
         torch.save(payload, self.a.warm_start_save_path)
         positive_pct = 100.0 * positive_count / max(1, total_count)
-        print(
-            f"[WarmStart] Saved collected rollout snapshots to {self.a.warm_start_save_path} "
-            f"(samples={len(samples_to_save)}, "
-            f"positive_label_key={positive_label_key}, "
-            f"positive_label_pct={positive_pct:.2f}% [{positive_count}/{total_count}]).",
-            flush=True,
+        self._print_summary(
+            "Snapshot dataset saved",
+            [
+                ("steps", len(samples_to_save)),
+                ("env_step_samples", total_count),
+                ("positive_label_key", positive_label_key),
+                ("positive_labels", f"{positive_count}/{total_count} ({positive_pct:.2f}%)"),
+                ("path", self.a.warm_start_save_path),
+            ],
         )
 
     def _warm_start_collect(self, obs):
         collected_samples = []
         all_env_ids = torch.arange(self.a.num_envs, dtype=torch.long, device=self.a.device)
+        episode_ids = torch.zeros(self.a.num_envs, dtype=torch.long, device=self.a.device)
         if self.a.rank == 0:
             print(
                 f"[WarmStart] Collecting bootstrap data for {self.a.warm_start_collect_steps} steps.",
                 flush=True,
             )
         collect_start_t = time.time()
-        progress_interval = max(1, min(200, self.a.warm_start_collect_steps // 20))
+        progress_interval = max(1, self.a.warm_start_collect_steps // 10)
 
         with torch.no_grad():
             for step in range(self.a.warm_start_collect_steps):
@@ -103,6 +114,7 @@ class DistillWarmStart:
                     {
                         "step": int(step),
                         "obs": obs_snapshot,
+                        "episode_id": episode_ids.detach().to("cpu", dtype=torch.long),
                         "teacher_mus": teacher_out["mus"].detach().to("cpu"),
                         "teacher_sigmas": teacher_out["sigmas"].detach().to("cpu"),
                         "teacher_actions": teacher_actions.to("cpu"),
@@ -130,6 +142,8 @@ class DistillWarmStart:
                             s[:, done_idx, ...] *= 0.0
                 if self.a.is_rnn and len(done_idx) > 0 and hasattr(self.a, "student_hidden_states"):
                     self.a._zero_rnn_states(self.a.student_hidden_states, done_idx)
+                if len(done_idx) > 0:
+                    episode_ids[done_idx.flatten()] += 1
                 if self.a.rank == 0 and (
                     (step + 1) % progress_interval == 0
                     or (step + 1) == self.a.warm_start_collect_steps
@@ -143,9 +157,11 @@ class DistillWarmStart:
                     )
 
         if self.a.rank == 0:
+            elapsed = time.time() - collect_start_t
+            env_steps = self.a.warm_start_collect_steps * self.a.num_envs
             print(
-                f"[WarmStart] Collected {self.a.warm_start_collect_steps} rollout steps; "
-                f"prepared {len(collected_samples)} full snapshots.",
+                f"[WarmStart] Collection complete: steps={self.a.warm_start_collect_steps}, "
+                f"envs={self.a.num_envs}, env_step_samples={env_steps}, elapsed={elapsed:.1f}s",
                 flush=True,
             )
         return obs, collected_samples
@@ -214,19 +230,6 @@ class DistillWarmStart:
             metrics["pred_pos_mean"] = pred_pos_mean
         if pred_neg_mean is not None:
             metrics["pred_neg_mean"] = pred_neg_mean
-
-        label_name = "failure"
-        if self.a.rank == 0:
-            msg = (
-                "[WarmStart] Predictor overfit test "
-                f"(label={label_name}, n={sample_count}/{buf_count}): "
-                f"mse={mse:.6f}, mae={mae:.6f}, acc@0.5={acc:.4f}, pos_frac={pos_frac:.4f}"
-            )
-            if pred_pos_mean is not None:
-                msg += f", pred_pos_mean={pred_pos_mean:.4f}"
-            if pred_neg_mean is not None:
-                msg += f", pred_neg_mean={pred_neg_mean:.4f}"
-            print(msg, flush=True)
 
         self._tb_add_scalar("warmstart/predictor_overfit/mse", mse, 0)
         self._tb_add_scalar("warmstart/predictor_overfit/mae", mae, 0)
@@ -317,19 +320,42 @@ class DistillWarmStart:
         predictor_overfit_metrics = self._run_predictor_overfit_test()
 
         if self.a.rank == 0:
-            if len(predictor_losses) > 0:
-                print(
-                    f"[WarmStart] Predictor pretrain done. mean_loss={sum(predictor_losses) / len(predictor_losses):.6f}",
-                    flush=True,
-                )
-            elif self.a.failure_predictor is not None and self.a.failure_predictor.enabled:
-                print("[WarmStart] Predictor pretrain skipped or not enough samples yet.", flush=True)
+            fp = getattr(self.a, "failure_predictor", None)
+            replay_count = int(getattr(fp, "_buf_count", 0)) if fp is not None else 0
+            train_status = "disabled"
+            if predictor_fit_enabled:
+                train_status = "trained" if len(predictor_losses) > 0 else "skipped_not_enough_samples"
+            mean_loss = (
+                f"{sum(predictor_losses) / len(predictor_losses):.6f}"
+                if len(predictor_losses) > 0
+                else "n/a"
+            )
+            rows = [
+                ("status", train_status),
+                ("replay_samples", replay_count),
+                ("requested_updates", int(self.a.warm_start_predictor_train_steps)),
+                ("effective_updates", predictor_updates),
+                ("mean_loss", mean_loss),
+            ]
             if predictor_overfit_metrics is not None:
-                print(
-                    "[WarmStart] Predictor overfit metrics: "
-                    f"{predictor_overfit_metrics}",
-                    flush=True,
+                rows.extend(
+                    [
+                        (
+                            "overfit_samples",
+                            f"{predictor_overfit_metrics.get('sample_count', 0)}/"
+                            f"{predictor_overfit_metrics.get('buffer_count', 0)}",
+                        ),
+                        ("overfit_mse", f"{predictor_overfit_metrics.get('mse', 0.0):.6f}"),
+                        ("overfit_mae", f"{predictor_overfit_metrics.get('mae', 0.0):.6f}"),
+                        ("overfit_acc@0.5", f"{predictor_overfit_metrics.get('acc_at_0_5', 0.0):.4f}"),
+                        ("label_pos_frac", f"{predictor_overfit_metrics.get('label_pos_frac', 0.0):.4f}"),
+                    ]
                 )
+                if "pred_pos_mean" in predictor_overfit_metrics:
+                    rows.append(("pred_pos_mean", f"{predictor_overfit_metrics['pred_pos_mean']:.4f}"))
+                if "pred_neg_mean" in predictor_overfit_metrics:
+                    rows.append(("pred_neg_mean", f"{predictor_overfit_metrics['pred_neg_mean']:.4f}"))
+            self._print_summary("Predictor fitting summary", rows)
         if predictor_fit_enabled and len(predictor_losses) > 0:
             self._tb_add_scalar(
                 "warmstart/predictor/loss_mean",

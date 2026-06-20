@@ -36,7 +36,7 @@ from typing import Dict
 
 from dexsafedagger_lab.distillation.models.teacher_a2c_builder import TeacherA2CBuilder
 from dexsafedagger_lab.distillation.safety.failure_predictor import FailurePredictorCritic
-from dexsafedagger_lab.distillation.safety.vlm_intervention import VLMInterventionPlanner
+from dexsafedagger_lab.distillation.safety.vlm_threshold_advisor import VLMThresholdAdvisor
 from dexsafedagger_lab.distillation.utils.loss_utils import (
     l2,
     weighted_l2,
@@ -61,11 +61,10 @@ from dexsafedagger_lab.distillation.utils.eval_utils import (
 # - failure_predictor.warm_start_model_path: optional checkpoint path used to
 #   save predictor after warmstart and load predictor for non-warmstart runs
 #
-# Experimental dexsafedaggerUltra scaffold:
-# - vlm_intervention.enabled: bool
-# - vlm_intervention.provider/model/prompt_template: future VLM backend settings
-# - intended use: predict teacher intervention points from vision/context rather
-#   than relying on a fixed action-disagreement threshold
+# Optional VLM threshold advisor:
+# - vlm_threshold_advisor.enabled: ask a VLM to recommend l2/risk thresholds
+# - vlm_threshold_advisor.mode: "shadow" logs recommendations, "active" applies
+#   clamped/smoothed threshold updates while keeping existing arbitration logic
 #
 # Optional warm-start config (2-phase bootstrap):
 # - warm_start.enabled: bool
@@ -74,9 +73,6 @@ from dexsafedagger_lab.distillation.utils.eval_utils import (
 # - warm_start.save_collected_data: whether to persist warm-start rollout snapshots to disk
 # - warm_start.save_path: output file for saved warm-start data
 #   (default: <run_dir>/bc_dataset/*.pt)
-#   NOTE: implementation is intentionally simplified/fail-fast:
-#   always saves full warm-start steps across all env slots, with images disabled.
-#
 # Optional intervention switching config:
 # - switch_back_min_teacher_steps: minimum consecutive teacher-control steps after
 #   an unsafe trigger before allowing switch-back checks (default: 10)
@@ -261,9 +257,7 @@ class SafeDagger:
         self.failure_predictor = self._build_failure_predictor(
             self.config.get("failure_predictor", {})
         )
-        self.vlm_intervention = self._build_vlm_intervention(
-            self.config.get("vlm_intervention", {})
-        )
+        self.vlm_threshold_advisor = None
         self.is_rnn = self.student_model.is_rnn()
         self.is_teacher_rnn = self.teacher_model.is_rnn()
         if self.is_rnn:
@@ -391,6 +385,9 @@ class SafeDagger:
                     flush=True,
                 )
         fp_cfg = self.config.get("failure_predictor", {}) or {}
+        self.failure_predictor_base_threshold = float(
+            getattr(self.failure_predictor, "failure_threshold", fp_cfg.get("failure_threshold", 0.5))
+        )
         self.failure_predictor_unsafe_enable_after_steps = int(
             fp_cfg.get("unsafe_enable_after_steps", 0)
         )
@@ -424,6 +421,9 @@ class SafeDagger:
                 f"{self.failure_predictor_warm_start_model_path}",
                 flush=True,
             )
+        self.vlm_threshold_advisor = self._build_vlm_threshold_advisor(
+            self.config.get("vlm_threshold_advisor", {})
+        )
         warm_cfg = self.config.get("warm_start", {}) or {}
         self.warm_start_enabled = bool(warm_cfg.get("enabled", False))
         self.warm_start_collect_steps = int(warm_cfg.get("collect_steps", 0))
@@ -438,7 +438,10 @@ class SafeDagger:
             warm_cfg.get("predictor_overfit_chunk_size", 1024)
         )
         self.warm_start_save_collected_data = bool(warm_cfg.get("save_collected_data", False))
-        # Keep warm-start collection simple: always use full steps/envs and never save images.
+        self.warm_start_match_predictor_buffer_size = bool(
+            warm_cfg.get("match_predictor_buffer_size", True)
+        )
+        # Warm start is predictor-only. VLM stays in the online threshold-advisor path.
         self.warm_start_save_images = False
         save_path_cfg = warm_cfg.get("save_path", None)
         self.warm_start_save_path = None
@@ -449,7 +452,12 @@ class SafeDagger:
             self.warm_start_save_path = save_path_resolved
         if self.warm_start_collect_steps < 0:
             self.warm_start_collect_steps = 0
-        if self.warm_start_enabled and self.failure_predictor is not None and self.failure_predictor.enabled:
+        if (
+            self.warm_start_enabled
+            and self.warm_start_match_predictor_buffer_size
+            and self.failure_predictor is not None
+            and self.failure_predictor.enabled
+        ):
             fp_buffer_size = int(getattr(self.failure_predictor, "buffer_size", 0))
             if fp_buffer_size > 0:
                 target_collect_steps = int(math.ceil(fp_buffer_size / max(1, self.num_envs)))
@@ -486,6 +494,7 @@ class SafeDagger:
                 f"predictor_overfit_max_samples={self.warm_start_predictor_overfit_max_samples}, "
                 f"predictor_overfit_chunk_size={self.warm_start_predictor_overfit_chunk_size}, "
                 f"save_collected_data={self.warm_start_save_collected_data}, "
+                f"match_predictor_buffer_size={self.warm_start_match_predictor_buffer_size}, "
                 f"save_steps={self.warm_start_save_steps}, "
                 f"save_envs={self.warm_start_save_envs}, "
                 f"save_images={self.warm_start_save_images}, "
@@ -678,6 +687,95 @@ class SafeDagger:
         self.writer.add_scalar("failure_predictor/output_min", float(pred.min().item()), self.frame)
         self.writer.add_scalar("failure_predictor/output_mean", float(pred.mean().item()), self.frame)
         self.writer.add_scalar("failure_predictor/output_p50", float(p50.item()), self.frame)
+
+    def _tensor_stats(self, values):
+        tensor = torch.as_tensor(values, device=self.device, dtype=torch.float32).reshape(-1)
+        if tensor.numel() == 0:
+            return {}
+        q = torch.quantile(tensor, torch.tensor([0.1, 0.5, 0.9], device=self.device))
+        return {
+            "mean": float(tensor.mean().item()),
+            "min": float(tensor.min().item()),
+            "max": float(tensor.max().item()),
+            "p10": float(q[0].item()),
+            "p50": float(q[1].item()),
+            "p90": float(q[2].item()),
+        }
+
+    def _build_vlm_threshold_advisor_stats(self, *, l2_loss_per_env, obs, student_action, beta):
+        l2_stats = self._tensor_stats(l2_loss_per_env)
+        risk_stats = None
+        current_risk_threshold = self.failure_predictor_base_threshold
+        if self.failure_predictor is not None and self.failure_predictor.enabled:
+            current_risk_threshold = float(self.failure_predictor.failure_threshold)
+            risk = self.failure_predictor.predict_risk(obs, student_action)
+            if risk is not None:
+                risk_stats = self._tensor_stats(risk)
+        unsafe_episode_rate = None
+        unsafe_reason_prop = {}
+        if self.game_unsafe_terminated.current_size > 0:
+            unsafe_episode_rate = float(np.asarray(self.game_unsafe_terminated.get_mean()).reshape(-1)[0])
+            unsafe_reason_prop = {
+                name: float(np.asarray(self.game_unsafe_reason[name].get_mean()).reshape(-1)[0])
+                for name in self.unsafe_reason_names
+            }
+        return {
+            "step": int(getattr(self, "_online_step_counter", 0)),
+            "frame": int(getattr(self, "frame", 0)),
+            "sample_count": int(torch.as_tensor(l2_loss_per_env).numel()),
+            "intervention_rate": float(beta),
+            "l2_threshold": float(self._current_unsafe_l2_threshold()),
+            "risk_threshold": float(current_risk_threshold),
+            "l2": l2_stats,
+            "risk": risk_stats,
+            "unsafe_episode_rate": unsafe_episode_rate,
+            "unsafe_reason_prop": unsafe_reason_prop,
+        }
+
+    def _maybe_update_vlm_thresholds(self, *, l2_loss_per_env, obs, student_action, beta):
+        advisor = self.vlm_threshold_advisor
+        if advisor is None or not advisor.enabled:
+            return
+        stats = self._build_vlm_threshold_advisor_stats(
+            l2_loss_per_env=l2_loss_per_env,
+            obs=obs,
+            student_action=student_action,
+            beta=beta,
+        )
+        record = advisor.maybe_update(
+            step=int(getattr(self, "_online_step_counter", 0)),
+            stats=stats,
+        )
+        if record is None:
+            return
+        applied = record.get("applied", {})
+        if advisor.mode == "active" and self.failure_predictor is not None and self.failure_predictor.enabled:
+            self.failure_predictor.failure_threshold = float(applied["risk_threshold"])
+        if self.rank == 0 and hasattr(self, "writer") and self.writer is not None:
+            self.writer.add_scalar(
+                "vlm_threshold_advisor/l2_threshold",
+                float(advisor.current_l2_threshold),
+                self.frame,
+            )
+            self.writer.add_scalar(
+                "vlm_threshold_advisor/risk_threshold",
+                float(advisor.current_risk_threshold),
+                self.frame,
+            )
+            self.writer.add_scalar(
+                "vlm_threshold_advisor/confidence",
+                float(advisor.state.last_confidence),
+                self.frame,
+            )
+        if self.rank == 0:
+            print(
+                "[VLMThresholdAdvisor] recommendation "
+                f"mode={advisor.mode} "
+                f"l2={advisor.current_l2_threshold:.4f} "
+                f"risk={advisor.current_risk_threshold:.4f} "
+                f"reason={advisor.state.last_reason[:180]}",
+                flush=True,
+            )
 
     def _finalize_loggers(self):
         if self.rank == 0 and self.use_wandb:
@@ -895,6 +993,12 @@ class SafeDagger:
                 else:
                     self.unsafe = unsafe_raw
                 beta = float(self.unsafe.float().mean().item())
+                self._maybe_update_vlm_thresholds(
+                    l2_loss_per_env=l2_loss_per_env,
+                    obs=obs,
+                    student_action=actions_student["actions"],
+                    beta=beta,
+                )
             # pos = torch.tensor([
             #     [self.ov_env.cfg.x_center+self.ov_env.cfg.x_width/2, self.ov_env.cfg.y_center+self.ov_env.cfg.y_width/2, 0.5],
             #     [self.ov_env.cfg.x_center-self.ov_env.cfg.x_width/2, self.ov_env.cfg.y_center-self.ov_env.cfg.y_width/2, 0.5],
@@ -1564,7 +1668,7 @@ class SafeDagger:
         student_action=None,
         teacher_action=None,
     ):
-        """Unsafe logic controlled by unsafe_mode: none | l2 | failure_predictor | vlm_intervention."""
+        """Unsafe logic controlled by unsafe_mode: none | l2 | failure_predictor."""
         def _compute_unsafe_l2():
             if l2_loss_per_env is None:
                 raise ValueError(
@@ -1611,32 +1715,15 @@ class SafeDagger:
                 )
             return unsafe_pred | unsafe_l2
             # return unsafe_pred & unsafe_l2
-        if self.unsafe_mode == "vlm_intervention":
-            if self.vlm_intervention is None or not self.vlm_intervention.enabled:
-                raise ValueError("unsafe_mode='vlm_intervention' requires an enabled VLM intervention planner.")
-            # DexSafeDaggerUltra should eventually replace fixed-threshold
-            # intervention with VLM-predicted intervention points. The planner
-            # raises until frame extraction, prompting, backend inference, and
-            # temporal smoothing are implemented.
-            unsafe_vlm = self.vlm_intervention.should_intervene(
-                obs=obs,
-                student_action=student_action,
-                teacher_action=teacher_action,
-                info=info,
-            )
-            unsafe_vlm = torch.as_tensor(unsafe_vlm, device=self.device, dtype=torch.bool).reshape(-1)
-            if unsafe_vlm.numel() != self.num_envs:
-                raise ValueError(
-                    f"VLM unsafe mask size mismatch: expected {self.num_envs}, got {unsafe_vlm.numel()}."
-                )
-            return unsafe_vlm
-
         raise ValueError(
             f"Unsupported unsafe_mode '{self.unsafe_mode}'. "
-            "Expected one of: none, l2, failure_predictor, vlm_intervention."
+            "Expected one of: none, l2, failure_predictor."
         )
 
     def _current_unsafe_l2_threshold(self):
+        advisor = getattr(self, "vlm_threshold_advisor", None)
+        if advisor is not None and advisor.enabled and advisor.mode == "active":
+            return float(advisor.current_l2_threshold)
         return self.unsafe_l2_threshold
 
     def _compute_lift_success_mask(self, out_of_reach=None, timed_out=None, ov_env=None):
@@ -1717,17 +1804,26 @@ class SafeDagger:
             rank=self.rank,
         )
 
-    def _build_vlm_intervention(self, cfg):
-        vlm_cfg = cfg or {}
-        if not bool(vlm_cfg.get("enabled", False)):
+    def _build_vlm_threshold_advisor(self, cfg):
+        advisor_cfg = cfg or {}
+        if not bool(advisor_cfg.get("enabled", False)):
             return None
+        advisor = VLMThresholdAdvisor(
+            advisor_cfg,
+            base_l2_threshold=self.unsafe_l2_threshold,
+            base_risk_threshold=self.failure_predictor_base_threshold,
+            run_dir=os.path.dirname(self.nn_dir),
+            rank=self.rank,
+        )
         if self.rank == 0:
             print(
-                "[DexSafeDaggerUltra] VLM intervention scaffold enabled. "
-                "This variant is not runnable until a VLM backend is implemented.",
+                "[VLMThresholdAdvisor] enabled: "
+                f"mode={advisor.mode}, "
+                f"base_l2_threshold={advisor.base_l2_threshold}, "
+                f"base_risk_threshold={advisor.base_risk_threshold}",
                 flush=True,
             )
-        return VLMInterventionPlanner(vlm_cfg, rank=self.rank)
+        return advisor
 
     # --- Teacher Policy and Action Selection ---
     def _resolve_teacher_checkpoint_path(self, path_spec):

@@ -30,10 +30,9 @@ DISTILLATION_VARIANTS = {
     },
     "dexsafedaggerUltra": {
         "pipeline": "both",
-        "unsafe_mode": "vlm_intervention",
+        "unsafe_mode": "failure_predictor",
         "description": (
-            "DexSafeDaggerUltra ablation scaffold: replace fixed-threshold intervention "
-            "with VLM-predicted intervention points."
+            "DexSafeDaggerUltra ablation: DexSafeDagger with the optional VLM threshold advisor."
         ),
         "experimental": True,
     },
@@ -73,7 +72,7 @@ parser.add_argument(
     choices=sorted(DISTILLATION_VARIANTS.keys()),
     help=(
         "Distillation variant: vanilla_dagger, vanilla_safedagger, "
-        "dexsafedagger, or experimental dexsafedaggerUltra."
+        "dexsafedagger, or experimental dexsafedaggerUltra advisor ablation."
     ),
 )
 parser.add_argument(
@@ -94,6 +93,15 @@ parser.add_argument(
     type=int,
     default=None,
     help="Override warm-start failure-predictor fit steps.",
+)
+parser.add_argument(
+    "--warm_start_no_match_predictor_buffer_size",
+    action="store_true",
+    default=False,
+    help=(
+        "Do not increase warm-start collect_steps to fill the failure predictor replay buffer. "
+        "Useful for small smoke runs."
+    ),
 )
 parser.add_argument("--data_aug", action="store_true", default=False, help="Whether to use data augmentation for student")
 parser.add_argument(
@@ -142,7 +150,7 @@ parser.add_argument(
     "--unsafe_mode",
     type=str,
     default=None,
-    choices=["none", "l2", "failure_predictor", "vlm_intervention"],
+    choices=["none", "l2", "failure_predictor"],
     help=argparse.SUPPRESS,
 )
 parser.add_argument(
@@ -163,6 +171,24 @@ parser.add_argument(
         "Set 0 to disable hold."
     ),
 )
+parser.add_argument(
+    "--vlm_threshold_advisor",
+    action="store_true",
+    default=False,
+    help="Enable VLM threshold advisor for L2/risk thresholds.",
+)
+parser.add_argument(
+    "--vlm_threshold_advisor_mode",
+    choices=["shadow", "active"],
+    default=None,
+    help="VLM threshold advisor mode: shadow logs recommendations; active applies them.",
+)
+parser.add_argument("--vlm_threshold_update_interval_steps", type=int, default=None)
+parser.add_argument("--vlm_threshold_warmup_steps", type=int, default=None)
+parser.add_argument("--vlm_threshold_model", type=str, default=None)
+parser.add_argument("--vlm_threshold_base_url", type=str, default=None)
+parser.add_argument("--vlm_threshold_api_key_env", type=str, default=None)
+parser.add_argument("--vlm_threshold_max_tokens", type=int, default=None)
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -437,19 +463,29 @@ def main(env_cfg, agent_cfg: dict):
             "device": "cpu",
             "warm_start_model_path": None,
         },
-        "vlm_intervention": {
-            "enabled": False,
-            # Brainstorm scaffold for dexsafedaggerUltra:
-            # - acquire stereo/RGB frames from the env at candidate intervention points
-            # - summarize proprio/action context alongside the image prompt
-            # - ask a VLM for an intervention risk score or binary teacher-takeover decision
-            # - smooth/cache decisions to avoid per-step API calls and unstable switching
-            "provider": None,
-            "model": None,
-            "prompt_template": "Should the teacher intervene now? Return a risk score in [0, 1].",
-            "decision_threshold": None,
-            "temporal_window": 1,
-            "scaffold_only": True,
+        "vlm_threshold_advisor": {
+            **{
+                "enabled": False,
+                "mode": "shadow",  # shadow logs recommendations; active applies clamped/smoothed thresholds
+                "base_url": None,
+                "model": None,
+                "api_key_env": None,
+                "update_interval_steps": 1000,
+                "warmup_steps": 0,
+                "min_samples": 128,
+                "smoothing": 0.1,
+                "l2_min_scale": 0.5,
+                "l2_max_scale": 1.5,
+                "risk_min_scale": 0.5,
+                "risk_max_scale": 1.5,
+                "max_tokens": 1024,
+                "timeout": 90.0,
+            },
+            **(
+                dict(distill_cfg.get("vlm_threshold_advisor", {}))
+                if isinstance(distill_cfg.get("vlm_threshold_advisor", None), dict)
+                else {}
+            ),
         },
         "warm_start": (
             dict(distill_cfg.get("warm_start", {}))
@@ -465,8 +501,26 @@ def main(env_cfg, agent_cfg: dict):
     }
         if isinstance(distill_cfg.get("failure_predictor", None), dict):
             dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])
-        if isinstance(distill_cfg.get("vlm_intervention", None), dict):
-            dagger_config["vlm_intervention"].update(distill_cfg["vlm_intervention"])
+        if args_cli.vlm_threshold_advisor:
+            dagger_config["vlm_threshold_advisor"]["enabled"] = True
+        if args_cli.variant == "dexsafedaggerUltra":
+            dagger_config["vlm_threshold_advisor"]["enabled"] = True
+        if args_cli.vlm_threshold_advisor_mode is not None:
+            dagger_config["vlm_threshold_advisor"]["mode"] = args_cli.vlm_threshold_advisor_mode
+        if args_cli.vlm_threshold_update_interval_steps is not None:
+            dagger_config["vlm_threshold_advisor"]["update_interval_steps"] = (
+                args_cli.vlm_threshold_update_interval_steps
+            )
+        if args_cli.vlm_threshold_warmup_steps is not None:
+            dagger_config["vlm_threshold_advisor"]["warmup_steps"] = args_cli.vlm_threshold_warmup_steps
+        if args_cli.vlm_threshold_model is not None:
+            dagger_config["vlm_threshold_advisor"]["model"] = args_cli.vlm_threshold_model
+        if args_cli.vlm_threshold_base_url is not None:
+            dagger_config["vlm_threshold_advisor"]["base_url"] = args_cli.vlm_threshold_base_url
+        if args_cli.vlm_threshold_api_key_env is not None:
+            dagger_config["vlm_threshold_advisor"]["api_key_env"] = args_cli.vlm_threshold_api_key_env
+        if args_cli.vlm_threshold_max_tokens is not None:
+            dagger_config["vlm_threshold_advisor"]["max_tokens"] = args_cli.vlm_threshold_max_tokens
         if args_cli.failure_predictor_warm_start_model_path is not None:
             dagger_config["failure_predictor"]["warm_start_model_path"] = (
                 args_cli.failure_predictor_warm_start_model_path
@@ -476,13 +530,8 @@ def main(env_cfg, agent_cfg: dict):
         mode = dagger_config["unsafe_mode"]
         if mode == "failure_predictor":
             dagger_config["failure_predictor"]["enabled"] = True
-            dagger_config["vlm_intervention"]["enabled"] = False
-        elif mode == "vlm_intervention":
-            dagger_config["failure_predictor"]["enabled"] = False
-            dagger_config["vlm_intervention"]["enabled"] = True
         elif mode in {"none", "l2"}:
             dagger_config["failure_predictor"]["enabled"] = False
-            dagger_config["vlm_intervention"]["enabled"] = False
         if args_cli.switch_back_min_teacher_steps is not None:
             dagger_config["switch_back_min_teacher_steps"] = int(args_cli.switch_back_min_teacher_steps)
         if args_cli.eval_lift_hold_s is not None:
@@ -491,6 +540,8 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["warm_start"]["collect_steps"] = int(args_cli.warm_start_collect_steps)
         if args_cli.warm_start_predictor_train_steps is not None:
             dagger_config["warm_start"]["predictor_train_steps"] = int(args_cli.warm_start_predictor_train_steps)
+        if args_cli.warm_start_no_match_predictor_buffer_size:
+            dagger_config["warm_start"]["match_predictor_buffer_size"] = False
 
     # Save run metadata/config snapshots in the same style as rl_games train logs.
         run_meta = {

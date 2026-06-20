@@ -53,7 +53,7 @@ VARIANT=dexsafedagger MAX_ITERS=100000 ./scripts/run_vanilla_and_safe_dagger_hea
 5. Builds the student and teacher networks through RL-Games model builders.
 6. Runs one of the supported variants:
    `vanilla_dagger`, `vanilla_safedagger`, `dexsafedagger`, or the
-   experimental `dexsafedaggerUltra` scaffold.
+   experimental `dexsafedaggerUltra` threshold-advisor ablation.
 7. Periodically evaluates the student policy and writes TensorBoard summaries.
 8. Saves student checkpoints and run metadata under a timestamped `runs/`
    directory.
@@ -63,7 +63,7 @@ VARIANT=dexsafedagger MAX_ITERS=100000 ./scripts/run_vanilla_and_safe_dagger_hea
 - `scripts/`: training and replay entrypoints.
 - `core/`: SafeDAgger loop and warm-start orchestration.
 - `models/`: RL-Games stereo transformer and teacher network builders.
-- `safety/`: failure predictor and experimental VLM intervention scaffold.
+- `safety/`: failure predictor and optional VLM threshold advisor.
 - `utils/`: shared losses, eval metrics, augmentations, and data recording.
 - `eval/`: standalone student evaluation.
 
@@ -77,20 +77,11 @@ VARIANT=dexsafedagger MAX_ITERS=100000 ./scripts/run_vanilla_and_safe_dagger_hea
 - `dexsafedagger`: the full method from the paper. It runs warm-start first,
   then online SafeDAgger with the OR gate combining action disagreement and the
   learned critic-style risk predictor.
-- `dexsafedaggerUltra`: brainstorming-stage ablation scaffold. The intended
-  idea is to replace fixed-threshold intervention decisions with VLM-predicted
-  teacher intervention points from visual/context observations. This is not a
-  runnable method yet; selecting it enables `unsafe_mode=vlm_intervention`,
-  which currently raises until the VLM backend, prompting, frame extraction, and
-  temporal smoothing policy are implemented.
-
-For `dexsafedaggerUltra`, the starter structure is:
-
-- `safety/vlm_intervention.py`: future VLM intervention planner.
-- `params.distillation.vlm_intervention`: provider/model/prompt and smoothing
-  config stub.
-- `SafeDagger.check_unsafe(..., unsafe_mode="vlm_intervention")`: placeholder
-  branch where the VLM unsafe mask will replace threshold-based intervention.
+- `dexsafedaggerUltra`: the VLM-advisor ablation. It keeps the same
+  `failure_predictor` arbitration as DexSafeDagger and only enables the VLM
+  threshold advisor. The VLM recommends smoothed/clamped values for
+  `unsafe_l2_threshold` and the predictor risk threshold; it does not replace
+  the OR gate or directly decide teacher takeover.
 
 The default distillation settings live in the `params.distillation` section of
 `rl_games_ppo_stereo_transformer.yaml`. CLI flags override the most common
@@ -204,13 +195,16 @@ python eval/eval_student.py \
 
 - `scripts/run_distillation_safedagger.py`: CLI, Isaac app launch, config assembly, run
   directory creation, final checkpoint/export.
+- `scripts/run_warmstart_predictor.sh`: warm-start data collection plus failure
+  predictor fitting only; no VLM export or VLM API calls.
 - `core/distillation_safedagger.py`: student/teacher model setup, warm start,
   online intervention loop, unsafe checks, eval loop, checkpoint save/load.
 - `core/distill_warm_start.py`: warm-start rollout collection and offline bootstrap
   support.
 - `models/a2c_stereo_transformer.py`: stereo transformer RL-Games network builder.
 - `safety/failure_predictor.py`: learned critic-style intervention/risk model.
-- `safety/vlm_intervention.py`: scaffold for the experimental DexSafeDaggerUltra VLM
-  intervention gate.
+- `safety/vlm_threshold_advisor.py`: optional VLM advisor that recommends
+  smoothed/clamped L2 and predictor-risk thresholds while leaving existing
+  arbitration logic in place.
 - `eval/eval_student.py`: standalone student checkpoint evaluation.
 - `scripts/replay.py`: student policy replay/recording utility.
