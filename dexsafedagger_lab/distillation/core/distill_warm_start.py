@@ -12,6 +12,8 @@ import time
 
 import torch
 
+from dexsafedagger_lab.distillation.utils.loss_utils import weighted_l2
+
 
 class DistillWarmStart:
     """Implements a 2-phase warm start: collect dataset, then fit the failure predictor."""
@@ -46,6 +48,83 @@ class DistillWarmStart:
             tensor = obs[key].detach().index_select(0, env_indices).to("cpu")
             obs_snapshot[key] = tensor
         return obs_snapshot
+
+    def _vlm_advisor_enabled(self):
+        advisor = getattr(self.a, "vlm_threshold_advisor", None)
+        return advisor is not None and bool(getattr(advisor, "enabled", False))
+
+    def _warm_start_l2_per_env(self, obs, teacher_out):
+        if not self._vlm_advisor_enabled():
+            return None
+        student_out = self.a.get_actions(obs, "student")
+        weights = 1 / teacher_out["sigmas"][0]
+        weights = weights ** 2
+        return weighted_l2(student_out["mus"], teacher_out["mus"], weights)
+
+    def _seed_vlm_visual_buffer_from_warm_start(self, *, obs, l2_loss_per_env, out_of_reach, step):
+        advisor = getattr(self.a, "vlm_threshold_advisor", None)
+        if advisor is None or not advisor.enabled or not getattr(advisor, "visual_buffer_enabled", True):
+            return
+        if l2_loss_per_env is None or not isinstance(obs, dict):
+            return
+
+        image_key = getattr(advisor, "visual_image_key", "img_left")
+        image_batch = obs.get(image_key)
+        if image_batch is None and image_key != "img_left":
+            image_batch = obs.get("img_left")
+            image_key = "img_left"
+        if image_batch is None:
+            image_batch = obs.get("rgb")
+            image_key = "rgb"
+        if image_batch is None or not torch.is_tensor(image_batch) or image_batch.ndim != 4:
+            return
+
+        unsafe_flat = torch.as_tensor(out_of_reach, device=self.a.device, dtype=torch.bool).reshape(-1)
+        unsafe_ids = unsafe_flat.nonzero(as_tuple=False).flatten()
+        if unsafe_ids.numel() == 0:
+            return
+
+        l2_flat = torch.as_tensor(l2_loss_per_env, device=self.a.device, dtype=torch.float32).reshape(-1)
+        max_new = max(1, int(getattr(advisor, "visual_captures_per_step", 2)))
+        if unsafe_ids.numel() > max_new:
+            unsafe_l2 = l2_flat[unsafe_ids]
+            order = torch.argsort(unsafe_l2, descending=True)[:max_new]
+            unsafe_ids = unsafe_ids[order]
+
+        for env_id_t in unsafe_ids:
+            env_id = int(env_id_t.item())
+            if env_id >= int(image_batch.shape[0]):
+                continue
+            data_url = self.a._vlm_image_to_data_url(image_batch[env_id], advisor)
+            if data_url is None:
+                continue
+            sample = {
+                "image_data_url": data_url,
+                "image_key": image_key,
+                "source": "warmstart_unsafe",
+                "step": int(step),
+                "frame": int(getattr(self.a, "frame", 0)),
+                "env_id": env_id,
+                "teacher_student_l2": (
+                    float(l2_flat[env_id].item()) if env_id < l2_flat.numel() else None
+                ),
+                "predictor_risk": None,
+                "unsafe": True,
+                "l2_threshold": float(self.a._current_unsafe_l2_threshold()),
+                "risk_threshold": (
+                    float(self.a.failure_predictor.failure_threshold)
+                    if self.a.failure_predictor is not None and self.a.failure_predictor.enabled
+                    else None
+                ),
+                "stage": "warmstart",
+            }
+            if hasattr(self.a, "_vlm_object_metadata"):
+                sample.update(self.a._vlm_object_metadata(env_id))
+            self.a._vlm_visual_buffer.append(sample)
+
+        max_size = int(getattr(advisor, "visual_buffer_size", 64))
+        if len(self.a._vlm_visual_buffer) > max_size:
+            self.a._vlm_visual_buffer = self.a._vlm_visual_buffer[-max_size:]
 
     def _save_collected_data(self, collected_samples):
         if self.a.rank != 0:
@@ -107,8 +186,10 @@ class DistillWarmStart:
 
         with torch.no_grad():
             for step in range(self.a.warm_start_collect_steps):
+                pre_step_obs = obs
                 teacher_out = self.a.get_actions(obs, "teacher")
                 teacher_actions = teacher_out["actions"].detach()
+                l2_loss_per_env = self._warm_start_l2_per_env(obs, teacher_out)
                 obs_snapshot = self._snapshot_warm_obs(obs, all_env_ids)
                 collected_samples.append(
                     {
@@ -131,6 +212,12 @@ class DistillWarmStart:
                 sample["out_of_reach"] = out_of_reach.detach().to("cpu")
                 sample["timed_out"] = timed_out.detach().to("cpu")
                 sample["lift_success"] = lift_success.detach().to("cpu")
+                self._seed_vlm_visual_buffer_from_warm_start(
+                    obs=pre_step_obs,
+                    l2_loss_per_env=l2_loss_per_env,
+                    out_of_reach=out_of_reach,
+                    step=step,
+                )
 
                 done_idx = (out_of_reach | timed_out).nonzero(as_tuple=False)
                 if self.a.is_teacher_rnn and len(done_idx) > 0:
@@ -164,6 +251,12 @@ class DistillWarmStart:
                 f"envs={self.a.num_envs}, env_step_samples={env_steps}, elapsed={elapsed:.1f}s",
                 flush=True,
             )
+            if self._vlm_advisor_enabled():
+                print(
+                    "[WarmStart] VLM visual buffer seeded: "
+                    f"{len(getattr(self.a, '_vlm_visual_buffer', []))} samples.",
+                    flush=True,
+                )
         return obs, collected_samples
 
     def _run_predictor_overfit_test(self):

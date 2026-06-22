@@ -23,6 +23,7 @@ COMMON_ARGS=(
 
 run_variant() {
   local variant="$1"
+  shift
   echo "Running ${variant} in headless mode..."
   python "$SCRIPT" \
     "${COMMON_ARGS[@]}" \

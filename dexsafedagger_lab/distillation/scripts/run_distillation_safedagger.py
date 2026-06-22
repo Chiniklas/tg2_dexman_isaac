@@ -185,6 +185,7 @@ parser.add_argument(
 )
 parser.add_argument("--vlm_threshold_update_interval_steps", type=int, default=None)
 parser.add_argument("--vlm_threshold_warmup_steps", type=int, default=None)
+parser.add_argument("--vlm_threshold_min_samples", type=int, default=None)
 parser.add_argument("--vlm_threshold_model", type=str, default=None)
 parser.add_argument("--vlm_threshold_base_url", type=str, default=None)
 parser.add_argument("--vlm_threshold_api_key_env", type=str, default=None)
@@ -470,9 +471,9 @@ def main(env_cfg, agent_cfg: dict):
                 "base_url": None,
                 "model": None,
                 "api_key_env": None,
-                "update_interval_steps": 1000,
-                "warmup_steps": 0,
-                "min_samples": 128,
+                "update_interval_steps": 10000,
+                "warmup_steps": 2000,
+                "min_samples": 1,
                 "smoothing": 0.1,
                 "l2_min_scale": 0.5,
                 "l2_max_scale": 1.5,
@@ -480,6 +481,17 @@ def main(env_cfg, agent_cfg: dict):
                 "risk_max_scale": 1.5,
                 "max_tokens": 1024,
                 "timeout": 90.0,
+                "visual_buffer_enabled": True,
+                "visual_buffer_size": 64,
+                "visual_capture_interval_steps": 20,
+                "visual_captures_per_step": 2,
+                "visual_samples_per_update": 8,
+                "visual_image_key": "img_left",
+                "visual_max_edge": 256,
+                "visual_jpeg_quality": 70,
+                "visual_detail": "low",
+                "report_enabled": True,
+                "report_dir": None,
             },
             **(
                 dict(distill_cfg.get("vlm_threshold_advisor", {}))
@@ -513,6 +525,8 @@ def main(env_cfg, agent_cfg: dict):
             )
         if args_cli.vlm_threshold_warmup_steps is not None:
             dagger_config["vlm_threshold_advisor"]["warmup_steps"] = args_cli.vlm_threshold_warmup_steps
+        if args_cli.vlm_threshold_min_samples is not None:
+            dagger_config["vlm_threshold_advisor"]["min_samples"] = args_cli.vlm_threshold_min_samples
         if args_cli.vlm_threshold_model is not None:
             dagger_config["vlm_threshold_advisor"]["model"] = args_cli.vlm_threshold_model
         if args_cli.vlm_threshold_base_url is not None:
@@ -528,7 +542,8 @@ def main(env_cfg, agent_cfg: dict):
         if args_cli.unsafe_mode is not None:
             dagger_config["unsafe_mode"] = args_cli.unsafe_mode
         mode = dagger_config["unsafe_mode"]
-        if mode == "failure_predictor":
+        vlm_advisor_enabled = bool(dagger_config["vlm_threshold_advisor"].get("enabled", False))
+        if mode == "failure_predictor" or vlm_advisor_enabled:
             dagger_config["failure_predictor"]["enabled"] = True
         elif mode in {"none", "l2"}:
             dagger_config["failure_predictor"]["enabled"] = False

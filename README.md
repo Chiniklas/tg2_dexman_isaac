@@ -74,7 +74,7 @@ python train.py \
 
 ## Replay Teacher Policy
 ```bash
-python play_test.py \
+python play.py \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --objects_dir test_object \

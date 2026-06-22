@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Smoke-test an OpenAI-compatible chat/VLM API from the terminal.
 
-Default settings target DeepSeek's OpenAI-compatible API:
+Default settings target OpenAI GPT-5.5:
 
-    export DEEPSEEK_API_KEY="sk-..."
+    export OPENAI_API_KEY="sk-..."
     python dexsafedagger_lab/distillation/tests/test_vlm_api.py
 
-You can also put DEEPSEEK_API_KEY=sk-... in a local .env file at the repo root.
+You can also put OPENAI_API_KEY=sk-... in a local .env file at the repo root.
 
 For an image-capable VLM endpoint/model, pass an image and override the model or
 base URL if needed:
@@ -31,8 +31,8 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_SYSTEM_PROMPT = (
     "You are a concise vision-language safety assistant for robot manipulation."
 )
@@ -43,16 +43,21 @@ DEFAULT_USER_PROMPT = (
 ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
+def is_placeholder_api_key(value: str | None) -> bool:
+    cleaned = (value or "").strip().strip("'\"").lower()
+    return cleaned in {"your_api_key", "your_key_here", "sk-...", "your_key*here"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Call a DeepSeek/OpenAI-compatible chat or VLM API and print the answer.",
+        description="Call an OpenAI-compatible chat or VLM API and print the answer.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--base-url", default=os.getenv("VLM_BASE_URL", DEFAULT_BASE_URL))
     parser.add_argument("--model", default=os.getenv("VLM_MODEL", DEFAULT_MODEL))
     parser.add_argument(
         "--api-key-env",
-        default=os.getenv("VLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
+        default=os.getenv("VLM_API_KEY_ENV", "OPENAI_API_KEY"),
         help="Environment variable containing the API key.",
     )
     parser.add_argument("--prompt", default=DEFAULT_USER_PROMPT)
@@ -63,13 +68,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional local image path or http(s) image URL for VLM testing.",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument(
         "--thinking",
         choices=["default", "enabled", "disabled"],
         default="disabled",
-        help="DeepSeek thinking mode. Most VLM smoke tests should keep this disabled.",
+        help="Provider-specific thinking mode; only sent for non-OpenAI-compatible DeepSeek runs.",
     )
     parser.add_argument(
         "--raw",
@@ -92,7 +97,7 @@ def load_env_file(path: Path = ENV_FILE) -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip("'\"")
-        if key and key not in os.environ:
+        if key and (key not in os.environ or is_placeholder_api_key(os.environ.get(key))):
             os.environ[key] = value
 
 
@@ -144,7 +149,8 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         payload["temperature"] = args.temperature
         payload["max_tokens"] = args.max_tokens
 
-    if args.thinking != "default":
+    is_deepseek = "deepseek" in args.base_url.lower()
+    if is_deepseek and args.thinking != "default":
         payload["thinking"] = {"type": args.thinking}
 
     return payload
@@ -177,9 +183,8 @@ def post_chat_completion(
         message = f"HTTP {exc.code} from {url}\n{body}"
         if exc.code not in {401, 403}:
             message += (
-                "\n\nIf you passed --image to DeepSeek's public API, the selected model may "
-                "not support image inputs. Use an image-capable OpenAI-compatible VLM "
-                "endpoint/model via --base-url and --model."
+                "\n\nIf you passed --image, make sure the selected endpoint/model supports "
+                "image inputs."
             )
         raise RuntimeError(message) from exc
     except urllib.error.URLError as exc:
@@ -216,7 +221,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    if api_key.lower() in {"your_api_key", "your_key_here", "sk-..."}:
+    if is_placeholder_api_key(api_key):
         print(
             f"The value in {args.api_key_env} still looks like a placeholder.\n\n"
             f"Edit {ENV_FILE} so it contains your real API key:\n\n"

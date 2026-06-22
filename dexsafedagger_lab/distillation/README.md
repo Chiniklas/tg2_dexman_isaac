@@ -82,6 +82,17 @@ VARIANT=dexsafedagger MAX_ITERS=100000 ./scripts/run_vanilla_and_safe_dagger_hea
   threshold advisor. The VLM recommends smoothed/clamped values for
   `unsafe_l2_threshold` and the predictor risk threshold; it does not replace
   the OR gate or directly decide teacher takeover.
+  Whenever the VLM advisor is enabled, the failure predictor is enabled by
+  default so predictor-risk statistics are included in advisor inputs.
+
+The VLM advisor maintains a moderate runtime visual buffer by default: up to 64
+downscaled frames, capturing 2 representative frames every 20 online steps and
+attaching at most 6 images to each advisor request. Samples are selected from
+high teacher-student disagreement, high predictor risk, and unsafe-triggered
+states, while the VLM still only returns threshold recommendations.
+During warm-start, VLM-enabled runs also seed this buffer with compact images
+from unsafe warm-start terminal states, so the first online advisor call can
+see prior unsafe visual examples instead of starting from an empty buffer.
 
 The default distillation settings live in the `params.distillation` section of
 `rl_games_ppo_stereo_transformer.yaml`. CLI flags override the most common

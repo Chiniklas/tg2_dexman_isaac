@@ -1,6 +1,8 @@
 import torch
 from torch.cuda.amp import autocast, GradScaler
 import torchvision.utils as vutils
+import base64
+import io
 import yaml
 import os
 import copy
@@ -258,6 +260,8 @@ class SafeDagger:
             self.config.get("failure_predictor", {})
         )
         self.vlm_threshold_advisor = None
+        self._vlm_visual_buffer = []
+        self._vlm_visual_warned = False
         self.is_rnn = self.student_model.is_rnn()
         self.is_teacher_rnn = self.teacher_model.is_rnn()
         if self.is_rnn:
@@ -702,6 +706,241 @@ class SafeDagger:
             "p90": float(q[2].item()),
         }
 
+    def _vlm_image_to_data_url(self, image_tensor, advisor):
+        try:
+            from PIL import Image
+        except ImportError:
+            if self.rank == 0 and not self._vlm_visual_warned:
+                print("[VLMThresholdAdvisor] Pillow is unavailable; visual samples are disabled.", flush=True)
+                self._vlm_visual_warned = True
+            return None
+
+        img = image_tensor.detach().to("cpu")
+        if img.ndim != 3:
+            return None
+        if img.shape[0] in (1, 3, 4):
+            img = img[:3].permute(1, 2, 0)
+        elif img.shape[-1] in (1, 3, 4):
+            img = img[..., :3]
+        else:
+            return None
+
+        if img.dtype != torch.uint8:
+            img = torch.nan_to_num(img.to(dtype=torch.float32), nan=0.0, posinf=1.0, neginf=0.0)
+            if float(img.max().item()) <= 1.5:
+                img = img * 255.0
+            img = img.clamp(0, 255).to(dtype=torch.uint8)
+
+        arr = img.numpy()
+        if arr.shape[-1] == 1:
+            arr = arr[..., 0]
+        pil_img = Image.fromarray(arr)
+        max_edge = int(getattr(advisor, "visual_max_edge", 256))
+        pil_img.thumbnail((max_edge, max_edge))
+        buf = io.BytesIO()
+        pil_img.convert("RGB").save(
+            buf,
+            format="JPEG",
+            quality=int(getattr(advisor, "visual_jpeg_quality", 70)),
+            optimize=True,
+        )
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+
+    def _vlm_object_metadata(self, env_id):
+        env_id = int(env_id)
+        object_id = 0
+        if hasattr(self, "env_object_idx"):
+            object_idx = torch.as_tensor(self.env_object_idx, device=self.device).reshape(-1)
+            if env_id < object_idx.numel():
+                object_id = int(object_idx[env_id].item())
+        object_names = list(getattr(self, "metric_object_names", ("object_0",)))
+        if not object_names:
+            object_names = ["object_0"]
+        object_id = max(0, min(object_id, len(object_names) - 1))
+        envs_for_object = None
+        if hasattr(self, "env_object_idx"):
+            object_idx = torch.as_tensor(self.env_object_idx, device=self.device).reshape(-1)
+            if object_idx.numel() > 0:
+                envs_for_object = int((object_idx == object_id).sum().item())
+        return {
+            "object_id": object_id,
+            "object_name": str(object_names[object_id]),
+            "object_env_count": envs_for_object,
+        }
+
+    def _select_vlm_capture_indices(self, *, l2_values, risk_values=None, unsafe_values=None, limit=2):
+        candidates = []
+
+        def add_index(idx, source):
+            idx = int(idx)
+            if idx < 0 or idx >= int(l2_values.numel()):
+                return
+            if idx not in [item[0] for item in candidates]:
+                candidates.append((idx, source))
+
+        l2_flat = torch.as_tensor(l2_values, device=self.device, dtype=torch.float32).reshape(-1)
+        if l2_flat.numel() > 0:
+            add_index(int(torch.argmax(l2_flat).item()), "high_l2")
+
+        if risk_values is not None:
+            risk_flat = torch.as_tensor(risk_values, device=self.device, dtype=torch.float32).reshape(-1)
+            if risk_flat.numel() == l2_flat.numel() and risk_flat.numel() > 0:
+                add_index(int(torch.argmax(risk_flat).item()), "high_risk")
+
+        if unsafe_values is not None:
+            unsafe_flat = torch.as_tensor(unsafe_values, device=self.device, dtype=torch.bool).reshape(-1)
+            if unsafe_flat.numel() == l2_flat.numel():
+                for idx in unsafe_flat.nonzero(as_tuple=False).flatten().tolist():
+                    add_index(idx, "unsafe_triggered")
+                    if len(candidates) >= limit:
+                        break
+
+        if l2_flat.numel() > 0 and len(candidates) < limit:
+            top_l2 = torch.topk(l2_flat, k=min(limit, l2_flat.numel())).indices.tolist()
+            for idx in top_l2:
+                add_index(idx, "high_l2")
+                if len(candidates) >= limit:
+                    break
+
+        return candidates[:limit]
+
+    def _maybe_capture_vlm_visuals(self, *, obs, l2_loss_per_env, risk_values=None):
+        advisor = self.vlm_threshold_advisor
+        if advisor is None or not advisor.enabled or not getattr(advisor, "visual_buffer_enabled", True):
+            return
+        step = int(getattr(self, "_online_step_counter", 0))
+        interval = int(getattr(advisor, "visual_capture_interval_steps", 20))
+        if step % max(1, interval) != 0:
+            return
+        if not isinstance(obs, dict):
+            return
+
+        image_key = getattr(advisor, "visual_image_key", "img_left")
+        image_batch = obs.get(image_key)
+        if image_batch is None and image_key != "img_left":
+            image_batch = obs.get("img_left")
+            image_key = "img_left"
+        if image_batch is None:
+            image_batch = obs.get("rgb")
+            image_key = "rgb"
+        if image_batch is None or not torch.is_tensor(image_batch) or image_batch.ndim != 4:
+            return
+
+        limit = int(getattr(advisor, "visual_captures_per_step", 2))
+        indices = self._select_vlm_capture_indices(
+            l2_values=l2_loss_per_env,
+            risk_values=risk_values,
+            unsafe_values=getattr(self, "unsafe", None),
+            limit=limit,
+        )
+        l2_flat = torch.as_tensor(l2_loss_per_env, device=self.device, dtype=torch.float32).reshape(-1)
+        risk_flat = (
+            torch.as_tensor(risk_values, device=self.device, dtype=torch.float32).reshape(-1)
+            if risk_values is not None
+            else None
+        )
+        unsafe_flat = (
+            torch.as_tensor(getattr(self, "unsafe", None), device=self.device, dtype=torch.bool).reshape(-1)
+            if getattr(self, "unsafe", None) is not None
+            else None
+        )
+
+        for env_id, source in indices:
+            if env_id >= int(image_batch.shape[0]):
+                continue
+            data_url = self._vlm_image_to_data_url(image_batch[env_id], advisor)
+            if data_url is None:
+                continue
+            sample = {
+                "image_data_url": data_url,
+                "image_key": image_key,
+                "source": source,
+                "step": step,
+                "frame": int(getattr(self, "frame", 0)),
+                "env_id": int(env_id),
+                "teacher_student_l2": float(l2_flat[env_id].item()) if env_id < l2_flat.numel() else None,
+                "predictor_risk": (
+                    float(risk_flat[env_id].item())
+                    if risk_flat is not None and env_id < risk_flat.numel()
+                    else None
+                ),
+                "unsafe": (
+                    bool(unsafe_flat[env_id].item())
+                    if unsafe_flat is not None and env_id < unsafe_flat.numel()
+                    else None
+                ),
+                "l2_threshold": float(self._current_unsafe_l2_threshold()),
+                "risk_threshold": (
+                    float(self.failure_predictor.failure_threshold)
+                    if self.failure_predictor is not None and self.failure_predictor.enabled
+                    else None
+                ),
+            }
+            sample.update(self._vlm_object_metadata(env_id))
+            self._vlm_visual_buffer.append(sample)
+
+        max_size = int(getattr(advisor, "visual_buffer_size", 64))
+        if len(self._vlm_visual_buffer) > max_size:
+            self._vlm_visual_buffer = self._vlm_visual_buffer[-max_size:]
+
+    def _sample_vlm_visual_buffer(self):
+        advisor = self.vlm_threshold_advisor
+        if advisor is None or not getattr(advisor, "visual_buffer_enabled", True):
+            return []
+        if not self._vlm_visual_buffer:
+            return []
+        max_samples = int(getattr(advisor, "visual_samples_per_update", 6))
+        if max_samples <= 0:
+            return []
+        latest = list(reversed(self._vlm_visual_buffer))
+        object_names = list(getattr(self, "metric_object_names", ()))
+        if object_names:
+            selected = []
+            selected_ids = set()
+            per_object_target = max(1, max_samples // max(1, len(object_names)))
+            for object_name in object_names:
+                added_for_object = 0
+                for sample in latest:
+                    if id(sample) in selected_ids:
+                        continue
+                    if sample.get("object_name") != object_name:
+                        continue
+                    selected.append(sample)
+                    selected_ids.add(id(sample))
+                    added_for_object += 1
+                    if len(selected) >= max_samples:
+                        return selected
+                    if added_for_object >= per_object_target:
+                        break
+            for sample in latest:
+                if id(sample) in selected_ids:
+                    continue
+                selected.append(sample)
+                selected_ids.add(id(sample))
+                if len(selected) >= max_samples:
+                    return selected
+            if selected:
+                return selected
+
+        selected = []
+        used_sources = set()
+        for sample in latest:
+            source = sample.get("source", "")
+            if source in used_sources:
+                continue
+            selected.append(sample)
+            used_sources.add(source)
+            if len(selected) >= max_samples:
+                return selected
+        for sample in latest:
+            if sample in selected:
+                continue
+            selected.append(sample)
+            if len(selected) >= max_samples:
+                break
+        return selected
+
     def _build_vlm_threshold_advisor_stats(self, *, l2_loss_per_env, obs, student_action, beta):
         l2_stats = self._tensor_stats(l2_loss_per_env)
         risk_stats = None
@@ -719,7 +958,7 @@ class SafeDagger:
                 name: float(np.asarray(self.game_unsafe_reason[name].get_mean()).reshape(-1)[0])
                 for name in self.unsafe_reason_names
             }
-        return {
+        stats = {
             "step": int(getattr(self, "_online_step_counter", 0)),
             "frame": int(getattr(self, "frame", 0)),
             "sample_count": int(torch.as_tensor(l2_loss_per_env).numel()),
@@ -731,10 +970,33 @@ class SafeDagger:
             "unsafe_episode_rate": unsafe_episode_rate,
             "unsafe_reason_prop": unsafe_reason_prop,
         }
+        visual_samples = self._sample_vlm_visual_buffer()
+        if visual_samples:
+            stats["visual_samples"] = visual_samples
+            stats["visual_buffer_size"] = len(self._vlm_visual_buffer)
+            stats["visual_samples_attached"] = len(visual_samples)
+        return stats
 
     def _maybe_update_vlm_thresholds(self, *, l2_loss_per_env, obs, student_action, beta):
         advisor = self.vlm_threshold_advisor
         if advisor is None or not advisor.enabled:
+            return
+        step = int(getattr(self, "_online_step_counter", 0))
+        sample_count = int(torch.as_tensor(l2_loss_per_env).numel())
+        risk_values = None
+        capture_due = (
+            getattr(advisor, "visual_buffer_enabled", True)
+            and step % max(1, int(getattr(advisor, "visual_capture_interval_steps", 20))) == 0
+        )
+        if capture_due and self.failure_predictor is not None and self.failure_predictor.enabled:
+            risk_values = self.failure_predictor.predict_risk(obs, student_action)
+        if capture_due:
+            self._maybe_capture_vlm_visuals(
+                obs=obs,
+                l2_loss_per_env=l2_loss_per_env,
+                risk_values=risk_values,
+            )
+        if not advisor.should_update(step, sample_count):
             return
         stats = self._build_vlm_threshold_advisor_stats(
             l2_loss_per_env=l2_loss_per_env,
@@ -743,7 +1005,7 @@ class SafeDagger:
             beta=beta,
         )
         record = advisor.maybe_update(
-            step=int(getattr(self, "_online_step_counter", 0)),
+            step=step,
             stats=stats,
         )
         if record is None:
@@ -1019,6 +1281,7 @@ class SafeDagger:
                     mu_loss,
                     sigma_loss,
                     current_l2_threshold,
+                    int(l2_loss_per_env.numel()),
                 )
 
             log_counter += 1
@@ -1391,6 +1654,14 @@ class SafeDagger:
                     flush=True,
                 )
             return False
+        if not os.path.isfile(path):
+            if self.rank == 0:
+                print(
+                    "[Pipeline] Failure predictor warm-start checkpoint not found; "
+                    "starting predictor from scratch.",
+                    flush=True,
+                )
+            return False
         return bool(self.failure_predictor.load_checkpoint(path))
 
     def distill(self):
@@ -1410,6 +1681,7 @@ class SafeDagger:
         mu_loss=None,
         sigma_loss=None,
         unsafe_l2_threshold=None,
+        advisor_sample_count=None,
     ):
         if imitation_loss is None:
             imitation_loss = total_loss if aux_loss is None else total_loss - self.aux_coeff * sum(aux_loss)
@@ -1588,6 +1860,31 @@ class SafeDagger:
                 print("L2 Loss Mean: ", l2_loss_mean)
             if unsafe_l2_threshold is not None:
                 print("Unsafe L2 Threshold: ", float(unsafe_l2_threshold))
+            advisor = getattr(self, "vlm_threshold_advisor", None)
+            if advisor is not None and advisor.enabled:
+                advisor_sample_count = int(advisor_sample_count or 0)
+                advisor_status = advisor.status(
+                    step=int(getattr(self, "_online_step_counter", 0)),
+                    sample_count=advisor_sample_count,
+                )
+                risk_threshold = advisor_status["risk_threshold"]
+                print(
+                    "VLM Threshold Advisor: "
+                    f"mode={advisor_status['mode']}, "
+                    f"ready={advisor_status['ready']}, "
+                    f"step={advisor_status['step']}, "
+                    f"next_update_step={advisor_status['next_update_step']}, "
+                    f"samples={advisor_status['sample_count']}/{advisor_status['min_samples']}, "
+                    f"visual_buffer={len(getattr(self, '_vlm_visual_buffer', []))}, "
+                    f"attempts={advisor_status['attempt_count']}, "
+                    f"failures={advisor_status['failure_count']}, "
+                    f"recommendations={advisor_status['recommendation_count']}, "
+                    f"l2_threshold={advisor_status['l2_threshold']:.4f}, "
+                    f"risk_threshold={risk_threshold:.4f}, "
+                    f"confidence={advisor_status['last_confidence']:.3f}"
+                )
+                if advisor_status.get("last_error"):
+                    print(f"\tvlm_last_error: {str(advisor_status['last_error'])[:240]}")
             if self.game_rewards.current_size > 0:
                 print("\tMean Rewards: ", mean_rewards)
                 print("\tMean Length: ", mean_lengths)
@@ -1820,7 +2117,8 @@ class SafeDagger:
                 "[VLMThresholdAdvisor] enabled: "
                 f"mode={advisor.mode}, "
                 f"base_l2_threshold={advisor.base_l2_threshold}, "
-                f"base_risk_threshold={advisor.base_risk_threshold}",
+                f"base_risk_threshold={advisor.base_risk_threshold}, "
+                f"env_file={advisor.env_file_loaded or 'none'}",
                 flush=True,
             )
         return advisor
@@ -1990,6 +2288,24 @@ class SafeDagger:
             else:
                 s[:, indices, ...] = 0
 
+    def _safe_action_sigmas(self, sigmas, *, policy_type: str):
+        safe_sigmas = torch.nan_to_num(sigmas, nan=1e-6, posinf=1.0, neginf=1.0).abs().clamp(min=1e-6)
+        if not hasattr(self, "_warned_bad_action_sigmas"):
+            self._warned_bad_action_sigmas = set()
+        if (
+            self.rank == 0
+            and policy_type not in self._warned_bad_action_sigmas
+            and torch.any(safe_sigmas != sigmas)
+        ):
+            self._warned_bad_action_sigmas.add(policy_type)
+            bad_count = int((safe_sigmas != sigmas).sum().item())
+            print(
+                f"[WARN] {policy_type} policy emitted invalid Normal std values; "
+                f"sanitized {bad_count} sigma entries for action sampling.",
+                flush=True,
+            )
+        return safe_sigmas
+
     def _get_actions_multi_teacher(self, obs):
         mus = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         sigmas = torch.zeros_like(mus)
@@ -2087,7 +2403,11 @@ class SafeDagger:
                     self.teacher_hidden_states = res_dict["rnn_states"]
                 mus = res_dict["mus"]
                 sigmas = res_dict["sigmas"]
-        distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
+        distr = torch.distributions.Normal(
+            mus,
+            self._safe_action_sigmas(sigmas, policy_type=policy_type),
+            validate_args=False,
+        )
         selected_action = distr.sample()
         # Keep batch dimension for single-env runs (num_envs=1).
         if selected_action.ndim == 1:
@@ -2130,7 +2450,11 @@ class SafeDagger:
                 hidden_states = [s for s in res_dict["rnn_states"][0]]
             else:
                 hidden_states = [s for s in res_dict["rnn_states"]]
-        distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
+        distr = torch.distributions.Normal(
+            mus,
+            self._safe_action_sigmas(sigmas, policy_type="student_eval"),
+            validate_args=False,
+        )
         selected_action = distr.sample()
         # Keep batch dimension for single-env evaluation.
         if selected_action.ndim == 1:
