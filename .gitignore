@@ -43,3 +43,6 @@ build/
 install/
 log/
 visdex_objects/
+
+# Independent paper repository with its own Git remote.
+/paper/RAL_dexsafedagger/
