@@ -7,10 +7,12 @@ import argparse
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+import yaml
 
 
 DEFAULT_INPUT_ROOT = Path("/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/plotting/plots")
 DEFAULT_OUTPUT_PATH = DEFAULT_INPUT_ROOT / "object_metric_grid.png"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
 ROW_SPECS = (
     ("unsafe_episode_rate", "Unsafe Episode Rate"),
@@ -19,13 +21,6 @@ ROW_SPECS = (
     ("palm_flipped", "Palm Flipped"),
     ("hand_too_far", "Hand Too Far"),
 )
-
-OBJECT_ALIASES = {
-    "windcart": "1m0lvpzs",
-    # "boot": "2kp2e9k7",
-    # "toolbox": "2oiqpnts",
-    "cow": "z73ltdbb",
-}
 
 BACKGROUND = (255, 255, 255)
 TEXT_COLOR = (32, 32, 32)
@@ -39,6 +34,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Concatenate per-object plot PNGs into a single array image.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="YAML file containing the objects to include in the final grid.",
     )
     parser.add_argument(
         "--input",
@@ -63,18 +64,48 @@ def _discover_object_dirs(input_root: Path) -> list[Path]:
     return object_dirs
 
 
-def _resolve_object_dirs(input_root: Path) -> list[Path]:
+def _load_object_ids(config_path: Path) -> list[str]:
+    config_path = config_path.expanduser().resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Plot config does not exist: {config_path}")
+    with config_path.open("r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream) or {}
+
+    section = config.get("failure_reason_decomposition", {}) or {}
+    raw_objects = section.get("objects", [])
+    if not isinstance(raw_objects, list):
+        raise ValueError(
+            f"'failure_reason_decomposition.objects' must be a list in: {config_path}"
+        )
+
+    object_ids = []
+    for index, raw_object in enumerate(raw_objects):
+        if not isinstance(raw_object, dict):
+            raise ValueError(f"Object entry {index} must be a mapping in: {config_path}")
+        if not raw_object.get("enabled", True):
+            continue
+        object_id = str(raw_object.get("id", "")).strip()
+        if not object_id:
+            raise ValueError(f"Enabled object entry {index} requires a non-empty 'id'.")
+        object_ids.append(object_id)
+    return object_ids
+
+
+def _resolve_object_dirs(input_root: Path, object_ids: list[str]) -> list[Path]:
     discovered = _discover_object_dirs(input_root)
     dir_map = {path.name.lower(): path for path in discovered}
 
+    if not object_ids:
+        return discovered
+
     resolved = []
-    for object_id in OBJECT_ALIASES.values():
+    for object_id in object_ids:
         object_dir = dir_map.get(object_id.lower())
         if object_dir is None:
             continue
         resolved.append(object_dir)
     if not resolved:
-        configured = " ".join(OBJECT_ALIASES.values())
+        configured = " ".join(object_ids)
         available = " ".join(path.name for path in discovered)
         raise ValueError(
             "None of the configured object rows were found. "
@@ -118,7 +149,7 @@ def main() -> int:
     if not input_root.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_root}")
 
-    object_dirs = _resolve_object_dirs(input_root)
+    object_dirs = _resolve_object_dirs(input_root, _load_object_ids(args.config))
     if not object_dirs:
         raise ValueError(f"No object subdirectories with metric PNGs found under: {input_root}")
 

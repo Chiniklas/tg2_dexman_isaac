@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Plot comparison figures from a hardcoded list of TensorBoard runs."""
+"""Plot comparison figures from TensorBoard runs listed in a YAML config."""
 
 from __future__ import annotations
 
 import argparse
+import pickle
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 from matplotlib.ticker import MaxNLocator
 from matplotlib.ticker import FuncFormatter
 
@@ -62,21 +64,6 @@ TAG_PLOT_OVERRIDES = {
     },
 }
 
-RUN_SPECS = [
-    (
-        "Vanilla Dagger",
-        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-safedagger_02-11-56-50",
-    ),
-    (
-        "SafeDagger With Disagreement",
-        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-safedagger_26-15-44-54",
-    ),
-    (
-        "SafeDagger With Disagreement And Predictor",
-        "/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac/dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-both_26-10-53-04",
-    ),
-]
-
 PLOT_TAGS = list(DEFAULT_TAG_PRIORITY)
 X_AXIS = "iteration"
 SMOOTHING = 0.75
@@ -90,6 +77,7 @@ FIGSIZE = (6.5, 6.5)
 DPI = 180
 LINEWIDTH = 1.8 # default 1.6
 DEFAULT_OUTPUT_PATH = Path(__file__).resolve().parent / "plots" / "comparison.png"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 TRAIN_NUM_ENVS = 32
 TITLE_FONTSIZE = 22
 LABEL_FONTSIZE = 18
@@ -112,8 +100,20 @@ class ScalarPoint:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Plot comparison figures from the hardcoded TensorBoard run list.",
+        description="Plot comparison figures from TensorBoard runs listed in YAML.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="YAML file containing the training runs to compare.",
+    )
+    parser.add_argument(
+        "--scalar-cache",
+        type=Path,
+        default=None,
+        help="Optional shared scalar cache produced by prepare_scalar_cache.py.",
     )
     parser.add_argument(
         "--tags",
@@ -217,6 +217,57 @@ def _find_event_files(path: Path) -> list[Path]:
     return sorted(p for p in path.rglob("events.out.tfevents*") if p.is_file())
 
 
+def _load_run_specs(config_path: Path) -> list[tuple[str, str]]:
+    config_path = config_path.expanduser().resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Plot config does not exist: {config_path}")
+
+    with config_path.open("r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream) or {}
+
+    raw_runs = config.get("runs")
+    if not isinstance(raw_runs, list) or not raw_runs:
+        raise ValueError(f"Expected a non-empty 'runs' list in: {config_path}")
+
+    run_specs = []
+    for index, raw_run in enumerate(raw_runs):
+        if not isinstance(raw_run, dict):
+            raise ValueError(f"Run entry {index} must be a mapping in: {config_path}")
+        if not raw_run.get("enabled", True):
+            continue
+
+        label = str(raw_run.get("label", "")).strip()
+        raw_path = str(raw_run.get("path", "")).strip()
+        if not label or not raw_path:
+            raise ValueError(
+                f"Enabled run entry {index} requires non-empty 'label' and 'path' values."
+            )
+
+        run_path = Path(raw_path).expanduser()
+        if not run_path.is_absolute():
+            run_path = config_path.parent / run_path
+        run_specs.append((label, str(run_path.resolve())))
+
+    if not run_specs:
+        raise ValueError(f"No enabled runs were found in: {config_path}")
+    return run_specs
+
+
+def _load_run_colors(config_path: Path) -> dict[str, str]:
+    config_path = config_path.expanduser().resolve()
+    with config_path.open("r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream) or {}
+    colors = {}
+    for raw_run in config.get("runs", []):
+        if not isinstance(raw_run, dict) or not raw_run.get("enabled", True):
+            continue
+        label = str(raw_run.get("label", "")).strip()
+        color = str(raw_run.get("color", "")).strip()
+        if label and color:
+            colors[label] = color
+    return colors
+
+
 def _logical_run_root(event_file: Path) -> Path:
     parent = event_file.parent
     if parent.name == "summaries":
@@ -259,8 +310,18 @@ def _load_run_scalars(run: RunSpec) -> dict[str, list[ScalarPoint]]:
     scalars_by_tag: dict[str, list[ScalarPoint]] = defaultdict(list)
 
     for event_file in run.event_files:
+        size_mb = event_file.stat().st_size / (1024.0 * 1024.0)
+        print(
+            f"[training curves] Loading {run.label}: {event_file.name} "
+            f"({size_mb:.1f} MB)...",
+            flush=True,
+        )
         accumulator = event_accumulator.EventAccumulator(str(event_file), size_guidance=size_guidance)
         accumulator.Reload()
+        print(
+            f"[training curves] Loaded {run.label}; extracting scalar tags...",
+            flush=True,
+        )
         for tag in accumulator.Tags().get("scalars", []):
             scalars_by_tag[tag].extend(
                 ScalarPoint(step=int(s.step), value=float(s.value), wall_time=float(s.wall_time))
@@ -275,6 +336,25 @@ def _load_run_scalars(run: RunSpec) -> dict[str, list[ScalarPoint]]:
             deduped_by_step[point.step] = point
         merged_scalars[tag] = [deduped_by_step[step] for step in sorted(deduped_by_step)]
     return merged_scalars
+
+
+def _load_cached_scalars(cache_path: Path) -> dict[str, dict[str, list[ScalarPoint]]]:
+    cache_path = cache_path.expanduser().resolve()
+    with cache_path.open("rb") as stream:
+        payload = pickle.load(stream)
+    if payload.get("version") != 1:
+        raise ValueError(f"Unsupported scalar cache version in: {cache_path}")
+
+    result = {}
+    for run in payload.get("runs", []):
+        result[str(run["label"])] = {
+            str(tag): [ScalarPoint(*point) for point in points]
+            for tag, points in run.get("scalars", {}).items()
+        }
+    if not result:
+        raise ValueError(f"No run scalars found in cache: {cache_path}")
+    print(f"[training curves] Reusing shared scalar cache: {cache_path}", flush=True)
+    return result
 
 
 def _available_tags(run_scalars_by_run: dict[str, dict[str, list[ScalarPoint]]]) -> list[str]:
@@ -413,6 +493,7 @@ def _plot_tag(
     run_scalars_by_run: dict[str, dict[str, list[ScalarPoint]]],
     tag: str,
     *,
+    run_colors: dict[str, str],
     x_axis: str,
     smoothing: float,
     downsample: int,
@@ -451,7 +532,7 @@ def _plot_tag(
             effective_smoothing,
             band_smoothing=band_smoothing,
         ) * band_scale
-        color = color_map(index % 10)
+        color = run_colors.get(run_label, color_map(index % 10))
 
         axis.fill_between(
             x_plot,
@@ -498,15 +579,22 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    if not RUN_SPECS:
-        raise ValueError("RUN_SPECS is empty.")
     if not (0.0 <= args.smoothing < 1.0):
         raise ValueError("--smoothing must be in the range [0, 1).")
     if args.downsample < 1:
         raise ValueError("--downsample must be >= 1.")
 
-    runs = _resolve_runs(RUN_SPECS)
-    run_scalars_by_run = {run.label: _load_run_scalars(run) for run in runs}
+    if args.scalar_cache is not None:
+        run_scalars_by_run = _load_cached_scalars(args.scalar_cache)
+    else:
+        run_specs = _load_run_specs(args.config)
+        runs = _resolve_runs(run_specs)
+        print(
+            f"[training curves] Reading {len(runs)} runs from {args.config.resolve()}",
+            flush=True,
+        )
+        run_scalars_by_run = {run.label: _load_run_scalars(run) for run in runs}
+    run_colors = _load_run_colors(args.config)
 
     tags = args.tags or PLOT_TAGS or _select_default_tags(run_scalars_by_run)
     if not tags:
@@ -520,6 +608,7 @@ def main() -> int:
         fig = _plot_tag(
             run_scalars_by_run,
             tag,
+            run_colors=run_colors,
             x_axis=args.x_axis,
             smoothing=args.smoothing,
             downsample=args.downsample,

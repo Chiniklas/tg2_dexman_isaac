@@ -154,6 +154,15 @@ parser.add_argument(
     help=argparse.SUPPRESS,
 )
 parser.add_argument(
+    "--unsafe_l2_threshold",
+    type=float,
+    default=None,
+    help=(
+        "Override the student-teacher weighted-L2 threshold used by l2 SafeDagger "
+        "intervention."
+    ),
+)
+parser.add_argument(
     "--failure_predictor_warm_start_model_path",
     type=str,
     default=None,
@@ -541,6 +550,8 @@ def main(env_cfg, agent_cfg: dict):
             )
         if args_cli.unsafe_mode is not None:
             dagger_config["unsafe_mode"] = args_cli.unsafe_mode
+        if args_cli.unsafe_l2_threshold is not None:
+            dagger_config["unsafe_l2_threshold"] = float(args_cli.unsafe_l2_threshold)
         mode = dagger_config["unsafe_mode"]
         vlm_advisor_enabled = bool(dagger_config["vlm_threshold_advisor"].get("enabled", False))
         if mode == "failure_predictor" or vlm_advisor_enabled:

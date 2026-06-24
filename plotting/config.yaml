@@ -1,0 +1,34 @@
+# Edit these entries to choose the TensorBoard runs shown in the paper figure.
+# Relative paths are resolved from this plotting directory.
+runs:
+  - label: DexSafeDaggerUltra
+    path: ../dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-dexsafedaggerultra_23-22-51-53
+    color: "#2ca02c"
+    enabled: true
+
+  - label: Vanilla Dagger
+    path: ../dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-vanilla_dagger_20-22-02-06
+    color: "#1f77b4"
+    enabled: true
+
+  - label: Vanilla SafeDagger
+    path: ../dexsafedagger_lab/distillation/runs/dexsafedagger-tg2-inspirehand-vanilla_safedagger_21-09-56-29
+    color: "#ff7f0e"
+    enabled: true
+
+# These objects become rows in the combined failure-reason decomposition.
+# All discovered objects still receive individual PNGs.
+failure_reason_decomposition:
+  objects:
+    - id: 1m0lvpzs
+      name: windcart
+      enabled: true
+    - id: 2kp2e9k7
+      name: boot
+      enabled: false
+    - id: 2oiqpnts
+      name: toolbox
+      enabled: false
+    - id: z73ltdbb
+      name: cow
+      enabled: true

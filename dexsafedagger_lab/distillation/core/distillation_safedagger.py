@@ -1100,6 +1100,7 @@ class SafeDagger:
                 )
         while log_counter < num_iters:
             beta = 0.0
+            skip_optimizer_step = False
             if self.play_policy:
                 self.optimizer.param_groups[0]["lr"] = 0.0
 
@@ -1236,31 +1237,49 @@ class SafeDagger:
                 aux_sum = sum(aux_loss) if aux_loss else 0.0
                 aux_sum_tensor = aux_sum if torch.is_tensor(aux_sum) else torch.tensor(aux_sum, device=self.device)
                 total_loss_step = imitation_loss + self.aux_coeff * aux_sum_tensor
-                total_loss += total_loss_step
                 current_l2_threshold = self._current_unsafe_l2_threshold()
-                if self.failure_predictor is not None and self.failure_predictor.enabled:
-                    self._log_predictor_output_stats(obs, actions_student["actions"])
-                unsafe_raw = self.check_unsafe(
-                    l2_loss_per_env=l2_loss_per_env,
-                    obs=obs,
-                    l2_threshold=current_l2_threshold,
-                    student_action=actions_student["actions"],
+                nonfinite_step = (
+                    not torch.isfinite(total_loss_step).all()
+                    or not torch.isfinite(l2_loss_per_env).all()
+                    or not torch.isfinite(actions_student["actions"]).all()
+                    or not torch.isfinite(actions_teacher["actions"]).all()
                 )
-                if self.switch_back_min_teacher_steps > 0:
-                    trigger_mask = unsafe_raw & (self.teacher_takeover_steps_remaining <= 0)
-                    if bool(trigger_mask.any().item()):
-                        self.teacher_takeover_steps_remaining[trigger_mask] = self.switch_back_min_teacher_steps
-                    teacher_hold_mask = self.teacher_takeover_steps_remaining > 0
-                    self.unsafe = unsafe_raw | teacher_hold_mask
+                if nonfinite_step:
+                    skip_optimizer_step = True
+                    if self.rank == 0 and not getattr(self, "_warned_nonfinite_online_step", False):
+                        print(
+                            "[WARN] Non-finite distillation tensors detected; "
+                            "skipping this optimizer step and forcing teacher takeover.",
+                            flush=True,
+                        )
+                        self._warned_nonfinite_online_step = True
+                    self.unsafe = torch.ones((self.num_envs,), device=self.device, dtype=torch.bool)
+                    beta = 1.0
                 else:
-                    self.unsafe = unsafe_raw
-                beta = float(self.unsafe.float().mean().item())
-                self._maybe_update_vlm_thresholds(
-                    l2_loss_per_env=l2_loss_per_env,
-                    obs=obs,
-                    student_action=actions_student["actions"],
-                    beta=beta,
-                )
+                    total_loss += total_loss_step
+                    if self.failure_predictor is not None and self.failure_predictor.enabled:
+                        self._log_predictor_output_stats(obs, actions_student["actions"])
+                    unsafe_raw = self.check_unsafe(
+                        l2_loss_per_env=l2_loss_per_env,
+                        obs=obs,
+                        l2_threshold=current_l2_threshold,
+                        student_action=actions_student["actions"],
+                    )
+                    if self.switch_back_min_teacher_steps > 0:
+                        trigger_mask = unsafe_raw & (self.teacher_takeover_steps_remaining <= 0)
+                        if bool(trigger_mask.any().item()):
+                            self.teacher_takeover_steps_remaining[trigger_mask] = self.switch_back_min_teacher_steps
+                        teacher_hold_mask = self.teacher_takeover_steps_remaining > 0
+                        self.unsafe = unsafe_raw | teacher_hold_mask
+                    else:
+                        self.unsafe = unsafe_raw
+                    beta = float(self.unsafe.float().mean().item())
+                    self._maybe_update_vlm_thresholds(
+                        l2_loss_per_env=l2_loss_per_env,
+                        obs=obs,
+                        student_action=actions_student["actions"],
+                        beta=beta,
+                    )
             # pos = torch.tensor([
             #     [self.ov_env.cfg.x_center+self.ov_env.cfg.x_width/2, self.ov_env.cfg.y_center+self.ov_env.cfg.y_width/2, 0.5],
             #     [self.ov_env.cfg.x_center-self.ov_env.cfg.x_width/2, self.ov_env.cfg.y_center-self.ov_env.cfg.y_width/2, 0.5],
@@ -1288,7 +1307,13 @@ class SafeDagger:
             self.env_counter += 1
             self._online_step_counter += 1
 
-            if self.is_rnn:
+            if skip_optimizer_step:
+                self.optimizer.zero_grad()
+                if self.is_rnn:
+                    for i, s in enumerate(self.student_hidden_states):
+                        self.student_hidden_states[i] = s.detach()
+                total_loss = 0.
+            elif self.is_rnn:
                 if log_counter % self.seq_length == 0:
                     total_loss.backward()
                     torch.nn.utils.clip_grad_norm_(
@@ -1314,6 +1339,19 @@ class SafeDagger:
                 stepping_actions[self.unsafe] = actions_teacher["actions"][self.unsafe].to(
                     dtype=stepping_actions.dtype
                 )
+            if not torch.isfinite(stepping_actions).all():
+                if self.rank == 0 and not getattr(self, "_warned_nonfinite_step_actions", False):
+                    print(
+                        "[WARN] Non-finite actions reached env step; applying nan_to_num and action clamp.",
+                        flush=True,
+                    )
+                    self._warned_nonfinite_step_actions = True
+                stepping_actions = torch.nan_to_num(
+                    stepping_actions,
+                    nan=0.0,
+                    posinf=1.0,
+                    neginf=-1.0,
+                ).clamp(-1.0, 1.0)
 
             prev_obs = obs
             obs, rew, out_of_reach, timed_out, info = self.env.step(
@@ -2317,7 +2355,7 @@ class SafeDagger:
                 continue
             idx = env_mask.nonzero(as_tuple=False).flatten()
             batch_dict = {
-                "is_train": False,
+                "is_train": True,
                 "obs": obs[self.teacher_obs_type][idx],
                 "prev_actions": self.prev_actions_teacher[idx],
             }
@@ -2390,7 +2428,7 @@ class SafeDagger:
                 mus, sigmas = self._get_actions_multi_teacher(obs)
             else:
                 batch_dict = {
-                    "is_train": False,
+                    "is_train": True,
                     "obs": obs[self.teacher_obs_type],
                     "prev_actions": self.prev_actions_teacher,
                 }
@@ -2426,7 +2464,7 @@ class SafeDagger:
     # --- Evaluation ---
     def _get_student_actions_eval(self, obs, prev_actions, hidden_states):
         batch_dict = {
-            "is_train": False,
+            "is_train": True,
             "obs": obs[self.student_obs_type],
             "prev_actions": prev_actions,
         }
