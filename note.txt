@@ -2,12 +2,103 @@
 
 ```bash
 export REPO=/home/chi-zhang/projects/dexsafedagger/tg2_dexman_isaac
+conda activate dexsafedagger
+```
+
+### Run the Core Distillation Ablations
+
+The bash launcher runs these three variants sequentially:
+
+1. `vanilla_dagger`
+2. `vanilla_safedagger`
+3. `dexsafedagger`
+
+```bash
+cd "$REPO/dexsafedagger_lab/distillation"
+
+VARIANT=all MAX_ITERS=100000 \
+  ./scripts/run_vanilla_and_safe_dagger_headless.sh
+```
+
+The success-value critic currently uses:
+
+```yaml
+gamma: 0.98
+horizon_steps: 1
+unsafe_enable_after_steps: 2000
+beta_saturation_threshold: 0.95
+beta_saturation_steps: 500
+```
+
+After warm-start training, the intervention threshold is automatically set to
+the 10th percentile of critic predictions over safe successful teacher
+rollouts. If beta then stays at or above 0.95 for 500 consecutive active
+predictor steps, the run stops with a diagnostic error instead of silently
+continuing with permanent teacher control.
+
+### Run One Ablation
+
+Set `VARIANT` to one of:
+
+- `vanilla_dagger`
+- `vanilla_safedagger`
+- `dexsafedagger`
+- `dexsafedaggerUltra`
+
+For example:
+
+```bash
+cd "$REPO/dexsafedagger_lab/distillation"
+
+VARIANT=dexsafedagger MAX_ITERS=100000 \
+  ./scripts/run_vanilla_and_safe_dagger_headless.sh
+```
+
+For a short smoke run:
+
+```bash
+cd "$REPO/dexsafedagger_lab/distillation"
+
+VARIANT=dexsafedagger MAX_ITERS=1000 \
+  ./scripts/run_vanilla_and_safe_dagger_headless.sh
+```
+
+### Run the VLM Threshold-Advisor Ablation
+
+`VARIANT=all` intentionally excludes the experimental VLM variant. Run it
+separately:
+
+```bash
+cd "$REPO/dexsafedagger_lab/distillation"
+
+VARIANT=dexsafedaggerUltra MAX_ITERS=100000 \
+  ./scripts/run_vanilla_and_safe_dagger_headless.sh \
+  --vlm_threshold_advisor_mode active
+```
+
+### Warm-Start the Success Predictor Only
+
+Small smoke run:
+
+```bash
+cd "$REPO/dexsafedagger_lab/distillation"
+
+SMOKE=1 ./scripts/run_warmstart_predictor.sh
+```
+
+Full-scale warm start:
+
+```bash
+cd "$REPO/dexsafedagger_lab/distillation"
+
+SMOKE=0 LEGACY_FULL_SCALE=1 ALLOW_LARGE_NUM_ENVS=1 \
+  ./scripts/run_warmstart_predictor.sh
 ```
 
 ### Teacher Training
 
 ```bash
-cd $REPO/dexsafedagger_lab/rl_games
+cd "$REPO/dexsafedagger_lab/rl_games"
 
 python train.py \
   --task dexsafedagger_tg2_inspirehand \
@@ -29,25 +120,25 @@ python train.py \
 ### Teacher Replay
 
 ```bash
-cd $REPO/dexsafedagger_lab/rl_games
+cd "$REPO/dexsafedagger_lab/rl_games"
 
 python play.py \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 8 \
   --objects_dir test_object \
   --max_pose_angle 90 \
-  --checkpoint $REPO/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/<run>/nn/dexsafedagger_lstm.pth
+  --checkpoint "$REPO/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/<run>/nn/dexsafedagger_lstm.pth"
 ```
 
 ### Record Teacher Trajectories
 
 ```bash
-cd $REPO/dexsafedagger_lab/rl_games
+cd "$REPO/dexsafedagger_lab/rl_games"
 
 python record_teacher_traj.py \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 1 \
-  --checkpoint $REPO/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/<run>/nn/dexsafedagger_lstm.pth \
+  --checkpoint "$REPO/dexsafedagger_lab/rl_games/logs/rl_games/dexsafedagger_lstm/<run>/nn/dexsafedagger_lstm.pth" \
   --record_data \
   --deterministic \
   --num_episodes 5 \
@@ -60,99 +151,14 @@ python record_teacher_traj.py \
 ### Replay Recorded Teacher Trajectories
 
 ```bash
-cd $REPO/dexsafedagger_lab/rl_games
+cd "$REPO/dexsafedagger_lab/rl_games"
 
 python replay_teacher_traj.py \
   --task dexsafedagger_tg2_inspirehand \
   --num_envs 1 \
   --objects_dir test_object \
   --max_pose_angle 90 \
-  --traj_dir $REPO/dexsafedagger_lab/rl_games/offline_trajs/<recording>/data/<object_name> \
+  --traj_dir "$REPO/dexsafedagger_lab/rl_games/offline_trajs/<recording>/data/<object_name>" \
   --action_key action \
   --num_replays_per_file 1
-```
-
-### Vanilla DAgger
-
-```bash
-cd $REPO/dexsafedagger_lab/distillation
-
-python scripts/run_distillation_safedagger.py \
-  --variant vanilla_dagger \
-  --task dexsafedagger_tg2_inspirehand \
-  --num_envs 32 \
-  --headless \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --eval_every 2500 \
-  --eval_num_episodes 3 \
-  --max_iterations 100000 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
-```
-
-### Vanilla SafeDAgger
-
-```bash
-cd $REPO/dexsafedagger_lab/distillation
-
-python scripts/run_distillation_safedagger.py \
-  --variant vanilla_safedagger \
-  --task dexsafedagger_tg2_inspirehand \
-  --num_envs 32 \
-  --headless \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --eval_every 2500 \
-  --eval_num_episodes 3 \
-  --max_iterations 100000 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
-```
-
-### DexSafeDagger
-
-```bash
-cd $REPO/dexsafedagger_lab/distillation
-
-python scripts/run_distillation_safedagger.py \
-  --variant dexsafedagger \
-  --task dexsafedagger_tg2_inspirehand \
-  --num_envs 32 \
-  --headless \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --eval_every 2500 \
-  --eval_num_episodes 3 \
-  --max_iterations 100000 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
-```
-
-### DexSafeDaggerUltra
-
-```bash
-cd $REPO/dexsafedagger_lab/distillation
-
-python scripts/run_distillation_safedagger.py \
-  --variant dexsafedaggerUltra \
-  --vlm_threshold_advisor_mode active \
-  --task dexsafedagger_tg2_inspirehand \
-  --num_envs 32 \
-  --headless \
-  --enable_cameras \
-  --teacher multi_object_distillation \
-  --eval_every 2500 \
-  --eval_num_episodes 3 \
-  --max_iterations 100000 \
-  env.distillation=True \
-  env.simulate_stereo=True \
-  env.objects_dir=distill_multi_objects \
-  env.enable_adr=False
 ```

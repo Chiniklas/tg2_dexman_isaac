@@ -336,6 +336,119 @@ class DistillWarmStart:
             self._tb_add_scalar("warmstart/predictor_overfit/pred_neg_mean", pred_neg_mean, 0)
         return metrics
 
+    def _calibrate_success_threshold(self, collected_samples):
+        """Set the intervention threshold from safe successful teacher rollouts."""
+        if not getattr(self.a, "warm_start_calibrate_success_threshold", False):
+            return None
+        fp = getattr(self.a, "failure_predictor", None)
+        if fp is None or not getattr(fp, "enabled", False) or not getattr(fp, "_initialized", False):
+            if self.a.rank == 0:
+                print(
+                    "[WarmStart] Success-threshold calibration skipped: predictor is unavailable.",
+                    flush=True,
+                )
+            return None
+
+        episode_status = {}
+        for sample in collected_samples:
+            episode_ids = torch.as_tensor(sample["episode_id"]).reshape(-1)
+            lift_success = torch.as_tensor(sample["lift_success"], dtype=torch.bool).reshape(-1)
+            unsafe = torch.as_tensor(sample["out_of_reach"], dtype=torch.bool).reshape(-1)
+            for env_id in range(int(episode_ids.numel())):
+                key = (env_id, int(episode_ids[env_id].item()))
+                status = episode_status.setdefault(key, {"success": False, "unsafe": False})
+                status["success"] = status["success"] or bool(lift_success[env_id].item())
+                status["unsafe"] = status["unsafe"] or bool(unsafe[env_id].item())
+
+        safe_successful_episodes = {
+            key
+            for key, status in episode_status.items()
+            if status["success"] and not status["unsafe"]
+        }
+        if not safe_successful_episodes:
+            if self.a.rank == 0:
+                print(
+                    "[WarmStart] Success-threshold calibration skipped: "
+                    "no safe successful teacher rollout was collected.",
+                    flush=True,
+                )
+            return None
+
+        prediction_chunks = []
+        chunk_size = int(getattr(self.a, "warm_start_success_threshold_chunk_size", 4096))
+        with torch.no_grad():
+            for sample in collected_samples:
+                episode_ids = torch.as_tensor(sample["episode_id"]).reshape(-1)
+                selected = [
+                    env_id
+                    for env_id in range(int(episode_ids.numel()))
+                    if (env_id, int(episode_ids[env_id].item())) in safe_successful_episodes
+                ]
+                if not selected:
+                    continue
+                indices = torch.tensor(selected, dtype=torch.long)
+                predictor_obs = sample["obs"]["predictor_transition"].index_select(0, indices)
+                teacher_actions = sample["teacher_actions"].index_select(0, indices)
+                for start in range(0, len(selected), chunk_size):
+                    end = min(len(selected), start + chunk_size)
+                    prediction = fp.predict_success(
+                        predictor_obs[start:end],
+                        teacher_actions[start:end],
+                    )
+                    if prediction is None:
+                        raise RuntimeError(
+                            "[WarmStart] Success-threshold calibration failed: "
+                            "predict_success returned None."
+                        )
+                    prediction_chunks.append(
+                        prediction.detach().to(device="cpu", dtype=torch.float32).reshape(-1)
+                    )
+
+        if not prediction_chunks:
+            return None
+        predictions = torch.cat(prediction_chunks)
+        quantile = float(getattr(self.a, "warm_start_success_threshold_quantile", 0.10))
+        floor = float(getattr(self.a, "warm_start_success_threshold_floor", 1.0e-6))
+        raw_threshold = float(torch.quantile(predictions, quantile).item())
+        calibrated_threshold = max(floor, min(1.0, raw_threshold))
+        old_threshold = float(fp.success_threshold)
+        fp.success_threshold = calibrated_threshold
+        self.a.success_critic_base_threshold = calibrated_threshold
+
+        advisor = getattr(self.a, "vlm_threshold_advisor", None)
+        if advisor is not None:
+            advisor.base_success_threshold = calibrated_threshold
+            advisor.state.success_threshold = calibrated_threshold
+
+        metrics = {
+            "threshold": calibrated_threshold,
+            "old_threshold": old_threshold,
+            "quantile": quantile,
+            "sample_count": int(predictions.numel()),
+            "episode_count": int(len(safe_successful_episodes)),
+            "prediction_mean": float(predictions.mean().item()),
+            "prediction_median": float(predictions.median().item()),
+        }
+        self._tb_add_scalar("warmstart/predictor/calibrated_success_threshold", calibrated_threshold, 0)
+        self._tb_add_scalar(
+            "warmstart/predictor/calibration_sample_count",
+            metrics["sample_count"],
+            0,
+        )
+        self._print_summary(
+            "Success-threshold calibration",
+            [
+                ("safe_successful_episodes", metrics["episode_count"]),
+                ("transition_samples", metrics["sample_count"]),
+                ("quantile", f"{quantile:.3f}"),
+                ("prediction_mean", f"{metrics['prediction_mean']:.6f}"),
+                ("prediction_median", f"{metrics['prediction_median']:.6f}"),
+                ("old_threshold", f"{old_threshold:.6f}"),
+                ("calibrated_threshold", f"{calibrated_threshold:.6f}"),
+            ],
+        )
+        return metrics
+
     def _warm_start_fit_failure_predictor(self, collected_samples):
         if len(collected_samples) > 0:
             safety_obs_key = "predictor_transition"
@@ -411,6 +524,9 @@ class DistillWarmStart:
                     )
                     predictor_updates += 1
         predictor_overfit_metrics = self._run_predictor_overfit_test()
+        calibration_metrics = None
+        if predictor_updates > 0:
+            calibration_metrics = self._calibrate_success_threshold(collected_samples)
 
         if self.a.rank == 0:
             fp = getattr(self.a, "failure_predictor", None)
@@ -448,6 +564,13 @@ class DistillWarmStart:
                     rows.append(("pred_pos_mean", f"{predictor_overfit_metrics['pred_pos_mean']:.4f}"))
                 if "pred_neg_mean" in predictor_overfit_metrics:
                     rows.append(("pred_neg_mean", f"{predictor_overfit_metrics['pred_neg_mean']:.4f}"))
+            if calibration_metrics is not None:
+                rows.append(
+                    (
+                        "calibrated_threshold",
+                        f"{calibration_metrics['threshold']:.6f}",
+                    )
+                )
             self._print_summary("Predictor fitting summary", rows)
         if predictor_fit_enabled and len(predictor_losses) > 0:
             self._tb_add_scalar(

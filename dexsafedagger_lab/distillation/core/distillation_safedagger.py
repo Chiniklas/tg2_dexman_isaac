@@ -60,6 +60,8 @@ from dexsafedagger_lab.distillation.utils.eval_utils import (
 # - failure_predictor.gamma / failure_predictor.polyak: critic update parameters
 # - failure_predictor.unsafe_enable_after_steps: online env-step warmup before
 #   predictor output is allowed to drive unsafe decisions
+# - failure_predictor.beta_saturation_*: fail-fast guard for a predictor that
+#   keeps nearly every environment under teacher control
 # - failure_predictor.warm_start_model_path: optional checkpoint path used to
 #   save predictor after warmstart and load predictor for non-warmstart runs
 #
@@ -404,6 +406,25 @@ class SafeDagger:
                 "failure_predictor.unsafe_enable_after_steps must be >= 0, "
                 f"got {self.failure_predictor_unsafe_enable_after_steps}."
             )
+        self.failure_predictor_beta_saturation_threshold = float(
+            fp_cfg.get("beta_saturation_threshold", 0.95)
+        )
+        self.failure_predictor_beta_saturation_steps = int(
+            fp_cfg.get("beta_saturation_steps", 0)
+        )
+        self.failure_predictor_beta_saturation_action = str(
+            fp_cfg.get("beta_saturation_action", "error")
+        ).strip().lower()
+        if not 0.0 <= self.failure_predictor_beta_saturation_threshold <= 1.0:
+            raise ValueError("failure_predictor.beta_saturation_threshold must be in [0, 1].")
+        if self.failure_predictor_beta_saturation_steps < 0:
+            raise ValueError("failure_predictor.beta_saturation_steps must be >= 0.")
+        if self.failure_predictor_beta_saturation_action not in {"warn", "error"}:
+            raise ValueError(
+                "failure_predictor.beta_saturation_action must be 'warn' or 'error'."
+            )
+        self._failure_predictor_beta_saturation_count = 0
+        self._failure_predictor_beta_saturation_triggered = False
         self.failure_predictor_online_train_step_calls = int(
             fp_cfg.get("online_train_step_calls", 1)
         )
@@ -445,6 +466,24 @@ class SafeDagger:
         self.warm_start_predictor_overfit_chunk_size = int(
             warm_cfg.get("predictor_overfit_chunk_size", 1024)
         )
+        self.warm_start_calibrate_success_threshold = bool(
+            warm_cfg.get("calibrate_success_threshold", True)
+        )
+        self.warm_start_success_threshold_quantile = float(
+            warm_cfg.get("success_threshold_quantile", 0.10)
+        )
+        self.warm_start_success_threshold_floor = float(
+            warm_cfg.get("success_threshold_floor", 1.0e-6)
+        )
+        self.warm_start_success_threshold_chunk_size = int(
+            warm_cfg.get("success_threshold_chunk_size", 4096)
+        )
+        if not 0.0 <= self.warm_start_success_threshold_quantile <= 1.0:
+            raise ValueError("warm_start.success_threshold_quantile must be in [0, 1].")
+        if not 0.0 <= self.warm_start_success_threshold_floor <= 1.0:
+            raise ValueError("warm_start.success_threshold_floor must be in [0, 1].")
+        if self.warm_start_success_threshold_chunk_size <= 0:
+            raise ValueError("warm_start.success_threshold_chunk_size must be >= 1.")
         self.warm_start_save_collected_data = bool(warm_cfg.get("save_collected_data", False))
         self.warm_start_match_predictor_buffer_size = bool(
             warm_cfg.get("match_predictor_buffer_size", True)
@@ -501,6 +540,8 @@ class SafeDagger:
                 f"predictor_overfit_test={self.warm_start_predictor_overfit_test}, "
                 f"predictor_overfit_max_samples={self.warm_start_predictor_overfit_max_samples}, "
                 f"predictor_overfit_chunk_size={self.warm_start_predictor_overfit_chunk_size}, "
+                f"calibrate_success_threshold={self.warm_start_calibrate_success_threshold}, "
+                f"success_threshold_quantile={self.warm_start_success_threshold_quantile}, "
                 f"save_collected_data={self.warm_start_save_collected_data}, "
                 f"match_predictor_buffer_size={self.warm_start_match_predictor_buffer_size}, "
                 f"save_steps={self.warm_start_save_steps}, "
@@ -633,6 +674,43 @@ class SafeDagger:
         if warmup_steps <= 0:
             return True
         return int(getattr(self, "_online_step_counter", 0)) >= warmup_steps
+
+    def _update_predictor_beta_saturation_guard(self, beta: float) -> None:
+        guard_steps = int(self.failure_predictor_beta_saturation_steps)
+        if (
+            guard_steps <= 0
+            or self.unsafe_mode != "failure_predictor"
+            or not self._predictor_unsafe_active()
+        ):
+            self._failure_predictor_beta_saturation_count = 0
+            return
+        if float(beta) >= self.failure_predictor_beta_saturation_threshold:
+            self._failure_predictor_beta_saturation_count += 1
+        else:
+            self._failure_predictor_beta_saturation_count = 0
+            self._failure_predictor_beta_saturation_triggered = False
+            return
+        if (
+            self._failure_predictor_beta_saturation_count < guard_steps
+            or self._failure_predictor_beta_saturation_triggered
+        ):
+            return
+
+        self._failure_predictor_beta_saturation_triggered = True
+        success_threshold = float(
+            getattr(self.failure_predictor, "success_threshold", float("nan"))
+        )
+        message = (
+            "Success predictor beta saturation guard triggered: "
+            f"beta stayed >= {self.failure_predictor_beta_saturation_threshold:.3f} "
+            f"for {guard_steps} consecutive online steps after activation "
+            f"(current beta={float(beta):.3f}, success_threshold={success_threshold:.6f}). "
+            "Inspect warm-start calibration and predictor output statistics."
+        )
+        if self.failure_predictor_beta_saturation_action == "error":
+            raise RuntimeError(message)
+        if self.rank == 0:
+            print(f"Warning: {message}", flush=True)
 
     def _apply_online_predictor_update_multiplier(self, fp_loss):
         """Run extra predictor train_step() calls after an interval-triggered update."""
@@ -1308,6 +1386,7 @@ class SafeDagger:
                     current_l2_threshold,
                     int(l2_loss_per_env.numel()),
                 )
+            self._update_predictor_beta_saturation_guard(beta)
 
             log_counter += 1
             self.env_counter += 1
@@ -1679,6 +1758,16 @@ class SafeDagger:
             return False
         return bool(self.failure_predictor.save_checkpoint(path))
 
+    def _sync_success_threshold_dependents(self):
+        if self.failure_predictor is None or not self.failure_predictor.enabled:
+            return
+        threshold = float(self.failure_predictor.success_threshold)
+        self.success_critic_base_threshold = threshold
+        advisor = getattr(self, "vlm_threshold_advisor", None)
+        if advisor is not None:
+            advisor.base_success_threshold = threshold
+            advisor.state.success_threshold = threshold
+
     def _load_failure_predictor_warm_start_model(self):
         if self.failure_predictor is None or not self.failure_predictor.enabled:
             return False
@@ -1706,7 +1795,16 @@ class SafeDagger:
                     flush=True,
                 )
             return False
-        return bool(self.failure_predictor.load_checkpoint(path))
+        loaded = bool(self.failure_predictor.load_checkpoint(path))
+        if loaded:
+            self._sync_success_threshold_dependents()
+            if self.rank == 0:
+                print(
+                    "[Pipeline] Restored calibrated success threshold from checkpoint: "
+                    f"{self.failure_predictor.success_threshold:.6f}",
+                    flush=True,
+                )
+        return loaded
 
     def distill(self):
         """Backward-compatible default entrypoint (equivalent to run_pipeline('both'))."""
