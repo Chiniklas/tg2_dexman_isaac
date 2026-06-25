@@ -2,7 +2,7 @@
 
 Warm-start pipeline (2 phases only):
 1) Collect teacher rollout data and save it explicitly.
-2) Fit the failure predictor from that collected data.
+2) Fit the success-value critic from that collected data.
 
 BC is intentionally removed from warm-start.
 """
@@ -16,7 +16,7 @@ from dexsafedagger_lab.distillation.utils.loss_utils import weighted_l2
 
 
 class DistillWarmStart:
-    """Implements a 2-phase warm start: collect dataset, then fit the failure predictor."""
+    """Implements a 2-phase warm start: collect data, then fit the success critic."""
 
     def __init__(self, agent):
         self.a = agent
@@ -108,11 +108,11 @@ class DistillWarmStart:
                 "teacher_student_l2": (
                     float(l2_flat[env_id].item()) if env_id < l2_flat.numel() else None
                 ),
-                "predictor_risk": None,
+                "predictor_success": None,
                 "unsafe": True,
                 "l2_threshold": float(self.a._current_unsafe_l2_threshold()),
-                "risk_threshold": (
-                    float(self.a.failure_predictor.failure_threshold)
+                "success_threshold": (
+                    float(self.a.failure_predictor.success_threshold)
                     if self.a.failure_predictor is not None and self.a.failure_predictor.enabled
                     else None
                 ),
@@ -288,16 +288,16 @@ class DistillWarmStart:
 
         obs = fp._obs_buf[idx]
         act = fp._act_buf[idx]
-        labels = fp._fail_buf[idx].to(dtype=torch.float32).reshape(-1)
+        labels = fp._success_buf[idx].to(dtype=torch.float32).reshape(-1)
 
         pred_chunks = []
         with torch.no_grad():
             for start in range(0, sample_count, chunk_size):
                 end = min(sample_count, start + chunk_size)
-                pred = fp.predict_risk(obs[start:end], act[start:end])
+                pred = fp.predict_success(obs[start:end], act[start:end])
                 if pred is None:
                     raise RuntimeError(
-                        "[WarmStart] Predictor overfit test failed: predict_risk returned None."
+                        "[WarmStart] Predictor overfit test failed: predict_success returned None."
                     )
                 pred_chunks.append(pred.detach().to(device="cpu", dtype=torch.float32).reshape(-1))
         preds = torch.cat(pred_chunks, dim=0)
@@ -345,7 +345,7 @@ class DistillWarmStart:
                     raise KeyError(
                         f"[WarmStart] Collected dataset sample {step} is missing '{safety_obs_key}'."
                     )
-                # Fit the failure predictor on full warm-start transitions (all envs/steps).
+                # Fit the success critic on full warm-start transitions (all envs/steps).
                 current_obs = {
                     safety_obs_key: obs_dict[safety_obs_key],
                 }
@@ -459,7 +459,7 @@ class DistillWarmStart:
             predictor_fit_status = 4
         # Unified warm-start fitting status code:
         # 0 = fail/no-op
-        # 4 = failure predictor critic
+        # 4 = success-value critic
         self._tb_add_scalar("warmstart/model_fit/status_code", predictor_fit_status, 0)
 
     def run_offline_stage(self, obs):
@@ -479,7 +479,7 @@ class DistillWarmStart:
         obs, collected_samples = self._warm_start_collect(obs)
         self._save_collected_data(collected_samples)
         if self.a.rank == 0:
-            print("[WarmStart] Phase 2/2: warm-fit failure predictor.", flush=True)
+            print("[WarmStart] Phase 2/2: warm-fit success-value critic.", flush=True)
         self._warm_start_fit_failure_predictor(collected_samples)
         obs = self.a.env.reset()[0]
         self.a.init_tensors()

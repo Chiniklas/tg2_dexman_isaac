@@ -119,7 +119,8 @@ params:
       online_train_step_calls: 20 # default 2000# run this many train_step() calls at each update interval
       unsafe_enable_after_steps: 0 # use warm-started predictor immediately
       horizon_steps: 1 # default 8 
-      failure_threshold: 0.25
+      success_threshold: 0.2
+      success_key: lift_success
       output_temperature: 4.0
       include_current_step: false
       pos_weight: null # 2.0 for failure label
@@ -138,8 +139,8 @@ params:
       smoothing: 0.1
       l2_min_scale: 0.5
       l2_max_scale: 1.5
-      risk_min_scale: 0.5
-      risk_max_scale: 1.5
+      success_min_scale: 0.5
+      success_max_scale: 1.5
       max_tokens: 1024
       timeout: 90.0
       visual_buffer_enabled: true

@@ -13,11 +13,8 @@
   "latex-workshop.latex.tools": [
     {
       "name": "paper-latexmk",
-      "command": "latexmk",
+      "command": "${workspaceFolder}/paper/RAL_dexsafedagger/build-paper.sh",
       "args": [
-        "-pdf",
-        "-interaction=nonstopmode",
-        "-file-line-error",
         "%DOC%"
       ],
       "env": {}

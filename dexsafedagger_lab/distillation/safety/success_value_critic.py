@@ -1,27 +1,26 @@
-"""Bellman-style failure risk critic for intervention gating.
+"""Paper-aligned Bellman success-value critic for intervention gating.
 
 What this module is for
 -----------------------
-This predictor estimates how likely a state-action pair is to eventually end
-in a failure event. The output is used online to decide whether to intervene
-(for example, switch from student action to teacher action).
+This predictor estimates how likely a state-action pair is to reach the
+hold-gated lift-success event used by the paper. Low predicted success triggers
+teacher intervention.
 
-The active DexSafeDagger pipeline uses this critic-style predictor:
-    FailurePredictorCritic
+The active DexSafeDagger pipeline uses:
+    SuccessValueCritic
 
 Core idea
 ---------
-We model a safety critic F(s, a) in [0, 1], interpreted as a discounted
-eventual failure probability:
+We model Q_succ(s, a) in [0, 1], interpreted as discounted future success:
 
-    F(s, a) ~= P(failure eventually | s, a, policy rollouts)
+    Q_succ(s, a) ~= P(lift success | s, a, policy rollouts)
 
 Training uses Bellman bootstrapping with twin critics and target networks:
 
-    y = f_now + gamma * (1 - d_eff) * min(F1_targ(s', a'), F2_targ(s', a'))
+    y = u_now + gamma * (1 - d_eff) * min(Q1_targ(s', a'), Q2_targ(s', a'))
 
 where:
-- f_now is immediate failure signal (1 only on failure terminal transition)
+- u_now is the per-step hold-gated lift-success signal
 - d_eff is terminal mask (or "cannot bootstrap" mask)
 - a' is the next action observed from rollout (SARSA-style target)
 
@@ -29,27 +28,25 @@ Data flow in training loop
 --------------------------
 1) The distillation loop calls add_step(obs, action, next_obs, done, info) once
    per environment step.
-2) add_step converts observations to features, infers done/failure masks, and
+2) add_step converts observations to features, reads lift-success labels, and
    writes transitions into a ring replay buffer.
 3) Every update_interval calls, train_step() samples replay minibatches and
    updates twin critics by MSE to Bellman targets.
-4) At inference time, predict_risk()/should_intervene() use min(q1, q2) as a
-   conservative risk estimate.
+4) At inference time, predict_success()/should_intervene() use min(q1, q2) as a
+   conservative success estimate.
 
 Why there is "open transition" state
 ------------------------------------
-The replay stores (s, a, s', a_next, f_now, done). At time t we know (s_t, a_t)
+The replay stores (s, a, s', a_next, u_now, done). At time t we know (s_t, a_t)
 and s_{t+1}, but we only know a_{t+1} when the next step arrives. To support
 this, each env keeps one "open" transition reference. On the next call, that
 previous transition is closed by writing its a_next.
 
-Failure labeling semantics
+Success labeling semantics
 --------------------------
-This predictor uses terminal failure supervision inferred from info/done fields,
-plus configurable horizon back-labeling: when a failure terminal occurs, the
-most recent `horizon_steps` transitions on that environment are marked as
-risky (fail=1). Bellman bootstrapping then propagates this danger-zone signal
-further backward through replay updates.
+The predictor requires the per-environment ``info["lift_success"]`` signal.
+When success is observed, the most recent ``horizon_steps`` transitions are
+marked positive. Bellman bootstrapping propagates success value backward.
 """
 
 import os
@@ -59,7 +56,7 @@ from collections import deque
 import torch
 import torch.nn as nn
 
-class _FailureQFunction(nn.Module):
+class _SuccessQFunction(nn.Module):
     def __init__(self, obs_dim: int, act_dim: int, hidden_sizes: list[int], dropout: float):
         super().__init__()
         layers = []
@@ -77,8 +74,8 @@ class _FailureQFunction(nn.Module):
         return self.net(torch.cat([obs, act], dim=-1)).squeeze(-1)
 
 
-class FailurePredictorCritic:
-    """Bellman-style failure risk critic with twin Q networks."""
+class SuccessValueCritic:
+    """Bellman-style lift-success critic with twin Q networks."""
 
     def __init__(
         self,
@@ -102,7 +99,13 @@ class FailurePredictorCritic:
         self.gamma = float(cfg.get("gamma", 0.99))
         # Reference alignment: use fixed target-network averaging factor.
         self.polyak = 0.995
-        self.failure_threshold = float(cfg.get("failure_threshold", 0.5))
+        self.success_threshold = float(cfg.get("success_threshold", 0.5))
+        self.success_key = str(cfg.get("success_key", "lift_success"))
+        if self.success_key != "lift_success":
+            raise ValueError(
+                "SuccessValueCritic only supports success_key='lift_success', "
+                f"got '{self.success_key}'."
+            )
         self.output_temperature = float(cfg.get("output_temperature", 2.0))
         if self.output_temperature <= 0.0:
             raise ValueError(f"output_temperature must be > 0, got {self.output_temperature}.")
@@ -125,7 +128,7 @@ class FailurePredictorCritic:
         self.update_interval = int(cfg.get("update_interval", 1_000))
         if "train_steps" in cfg:
             raise ValueError(
-                "failure_predictor.train_steps is removed. "
+                "success critic train_steps is removed. "
                 "Use warm_start.predictor_train_steps (offline total calls) and "
                 "failure_predictor.online_train_step_calls (online calls per interval)."
             )
@@ -159,7 +162,7 @@ class FailurePredictorCritic:
         self._obs2_buf = None
         self._next_act_buf = None
         self._has_next_act = None
-        self._fail_buf = None
+        self._success_buf = None
         self._done_buf = None
         self._token_buf = None
         self._open_refs = None
@@ -167,10 +170,10 @@ class FailurePredictorCritic:
 
         if self.rank == 0 and self.enabled:
             print(
-                "FailurePredictorCritic enabled: "
+                "SuccessValueCritic enabled: "
                 f"buffer_size={self.buffer_size}, min_samples={self.min_samples}, "
                 f"update_interval={self.update_interval}, minibatch_updates_per_call=1, "
-                f"gamma={self.gamma}, polyak={self.polyak}, failure_threshold={self.failure_threshold}, "
+                f"gamma={self.gamma}, polyak={self.polyak}, success_threshold={self.success_threshold}, "
                 f"horizon_steps={self.horizon_steps}, pos_fraction={self.pos_fraction}, "
                 f"output_temperature={self.output_temperature}",
                 flush=True,
@@ -208,7 +211,7 @@ class FailurePredictorCritic:
 
         num_envs = obs_feats.shape[0]
         self._ensure_initialized(obs_feats.shape[1], act.shape[1], num_envs)
-        done_mask, failure_done_mask = self._compute_done_and_failure_masks(
+        done_mask, success_mask = self._compute_done_and_success_masks(
             obs=obs, reward=reward, done=done, info=info, num_envs=num_envs
         )
 
@@ -221,14 +224,14 @@ class FailurePredictorCritic:
                 self._set_next_action(prev_ref, act_cpu[env_id])
                 self._open_refs[env_id] = None
 
-            fail_now = 1.0 if bool(failure_done_mask[env_id].item()) else 0.0
+            success_now = 1.0 if bool(success_mask[env_id].item()) else 0.0
             done_now = 1.0 if bool(done_mask[env_id].item()) else 0.0
             curr_ref = self._store_transition(
-                obs_cpu[env_id], act_cpu[env_id], next_cpu[env_id], fail_now, done_now
+                obs_cpu[env_id], act_cpu[env_id], next_cpu[env_id], success_now, done_now
             )
             self._recent_refs[env_id].append(curr_ref)
-            if bool(failure_done_mask[env_id].item()):
-                self._mark_recent_failure_labels(env_id)
+            if bool(success_mask[env_id].item()):
+                self._mark_recent_success_labels(env_id)
             if done_now > 0.5:
                 self._set_next_action(curr_ref, torch.zeros_like(act_cpu[env_id]))
                 self._recent_refs[env_id].clear()
@@ -261,7 +264,7 @@ class FailurePredictorCritic:
         pred_means = []
         sampled_pos_frac = []
         replay_pos_frac = float(
-            (self._fail_buf[: self._buf_count] > 0.5).to(dtype=torch.float32).mean().item()
+            (self._success_buf[: self._buf_count] > 0.5).to(dtype=torch.float32).mean().item()
         )
         for _ in range(self.train_steps):
             idx = self._sample_batch_indices(self.batch_size)
@@ -270,16 +273,18 @@ class FailurePredictorCritic:
             obs2 = self._obs2_buf[idx].to(self.device)
             next_act = self._next_act_buf[idx].to(self.device)
             has_next_act = self._has_next_act[idx].to(self.device)
-            fail = self._fail_buf[idx].to(self.device)
+            success = self._success_buf[idx].to(self.device)
             done = self._done_buf[idx].to(self.device)
-            sampled_pos_frac.append(float((fail > 0.5).to(dtype=torch.float32).mean().item()))
+            sampled_pos_frac.append(float((success > 0.5).to(dtype=torch.float32).mean().item()))
 
             d_eff = torch.maximum(done, (~has_next_act).to(dtype=torch.float32))
             with torch.no_grad():
                 q1_t_logits = self._q1_targ(obs2, next_act)
                 q2_t_logits = self._q2_targ(obs2, next_act)
-                next_fail = torch.sigmoid(torch.minimum(q1_t_logits, q2_t_logits) / self.output_temperature)
-                backup = fail + self.gamma * (1.0 - d_eff) * next_fail
+                next_success = torch.sigmoid(
+                    torch.minimum(q1_t_logits, q2_t_logits) / self.output_temperature
+                )
+                backup = success + self.gamma * (1.0 - d_eff) * next_success
                 backup = torch.clamp(backup, 0.0, 1.0)
 
             q1_logits = self._q1(obs, act)
@@ -329,13 +334,13 @@ class FailurePredictorCritic:
             "replay_pos_frac": replay_pos_frac,
         }
         if self.debug_print_interval > 0 and (self._steps % self.debug_print_interval == 0) and self.rank == 0:
-            print(f"[FailurePredictorCritic] {self.last_train_stats}", flush=True)
+            print(f"[SuccessValueCritic] {self.last_train_stats}", flush=True)
 
         if self.return_debug_dict:
             return dict(self.last_train_stats)
         return self.last_train_stats["loss_total"]
 
-    def predict_risk(self, obs, action):
+    def predict_success(self, obs, action):
         if not self.enabled or not self._initialized:
             return None
         feats = self._flatten_features(self._extract_features(obs))
@@ -354,10 +359,10 @@ class FailurePredictorCritic:
             return None
         if self._buf_count < self.min_samples and not self._has_pretrained_model:
             return None
-        risk = self.predict_risk(obs, action)
-        if risk is None:
+        success = self.predict_success(obs, action)
+        if success is None:
             return None
-        return risk > self.failure_threshold
+        return success < self.success_threshold
 
     def save_checkpoint(self, path: str) -> bool:
         """Persist predictor weights (warm-start artifact)."""
@@ -370,12 +375,12 @@ class FailurePredictorCritic:
         if len(ckpt_dir) > 0:
             os.makedirs(ckpt_dir, exist_ok=True)
         payload = {
-            "predictor_type": "critic",
+            "predictor_type": "success_value_critic",
             "obs_dim": int(self._obs_dim),
             "act_dim": int(self._act_dim),
             "hidden_sizes": list(self.hidden_sizes),
             "dropout": float(self.dropout),
-            "failure_threshold": float(self.failure_threshold),
+            "success_threshold": float(self.success_threshold),
             "output_temperature": float(self.output_temperature),
             "horizon_steps": int(self.horizon_steps),
             "q1": self._q1.state_dict(),
@@ -401,13 +406,13 @@ class FailurePredictorCritic:
                 "obs2": self._obs2_buf[:n].clone(),
                 "next_act": self._next_act_buf[:n].clone(),
                 "has_next_act": self._has_next_act[:n].clone(),
-                "fail": self._fail_buf[:n].clone(),
+                "success": self._success_buf[:n].clone(),
                 "done": self._done_buf[:n].clone(),
                 "token": self._token_buf[:n].clone(),
             }
         torch.save(payload, ckpt_path)
         if self.rank == 0:
-            print(f"[FailurePredictorCritic] Saved warm-start checkpoint: {ckpt_path}", flush=True)
+            print(f"[SuccessValueCritic] Saved warm-start checkpoint: {ckpt_path}", flush=True)
         return True
 
     def load_checkpoint(self, path: str) -> bool:
@@ -418,14 +423,16 @@ class FailurePredictorCritic:
             return False
         ckpt_path = os.path.expanduser(str(path).strip())
         if not os.path.isfile(ckpt_path):
-            raise FileNotFoundError(f"Failure predictor checkpoint not found: {ckpt_path}")
+            raise FileNotFoundError(f"Success critic checkpoint not found: {ckpt_path}")
         payload = torch.load(ckpt_path, map_location=self.device)
         if not isinstance(payload, dict):
-            raise ValueError(f"Invalid failure predictor checkpoint format: {ckpt_path}")
+            raise ValueError(f"Invalid success critic checkpoint format: {ckpt_path}")
         predictor_type = str(payload.get("predictor_type", "")).lower()
-        if predictor_type not in {"critic", ""}:
+        if predictor_type not in {"success_value_critic", "legacy_success_critic"}:
             raise ValueError(
-                f"Checkpoint predictor_type='{predictor_type}' is incompatible with critic predictor."
+                f"Checkpoint predictor_type='{predictor_type}' is incompatible with the "
+                "paper-aligned success critic. Retrain warm-start instead of loading "
+                "a failure-risk checkpoint."
             )
         obs_dim = int(payload.get("obs_dim", 0))
         act_dim = int(payload.get("act_dim", 0))
@@ -453,13 +460,25 @@ class FailurePredictorCritic:
         )
         self._buf_idx = int(payload.get("buf_idx", 0))
         self._token_counter = int(payload.get("token_counter", 0))
+        self.success_threshold = float(
+            payload.get("success_threshold", self.success_threshold)
+        )
         self.output_temperature = float(payload.get("output_temperature", self.output_temperature))
         if self.output_temperature <= 0.0:
             raise ValueError(f"Checkpoint has invalid output_temperature={self.output_temperature}.")
 
         replay = payload.get("replay", None)
         if isinstance(replay, dict):
-            required = ("obs", "act", "obs2", "next_act", "has_next_act", "fail", "done", "token")
+            required = (
+                "obs",
+                "act",
+                "obs2",
+                "next_act",
+                "has_next_act",
+                "success",
+                "done",
+                "token",
+            )
             if not all(k in replay for k in required):
                 raise ValueError("Invalid predictor replay payload: missing required replay tensors.")
             n = int(replay["obs"].shape[0])
@@ -472,7 +491,7 @@ class FailurePredictorCritic:
             self._obs2_buf[:n] = replay["obs2"].to(dtype=torch.float32, device="cpu")
             self._next_act_buf[:n] = replay["next_act"].to(dtype=torch.float32, device="cpu")
             self._has_next_act[:n] = replay["has_next_act"].to(dtype=torch.bool, device="cpu")
-            self._fail_buf[:n] = replay["fail"].to(dtype=torch.float32, device="cpu")
+            self._success_buf[:n] = replay["success"].to(dtype=torch.float32, device="cpu")
             self._done_buf[:n] = replay["done"].to(dtype=torch.float32, device="cpu")
             self._token_buf[:n] = replay["token"].to(dtype=torch.long, device="cpu")
             self._buf_count = n
@@ -484,7 +503,7 @@ class FailurePredictorCritic:
         self._has_pretrained_model = True
         if self.rank == 0:
             print(
-                "[FailurePredictorCritic] Loaded warm-start checkpoint: "
+                "[SuccessValueCritic] Loaded warm-start checkpoint: "
                 f"{ckpt_path} (replay_size={self._buf_count})",
                 flush=True,
             )
@@ -492,10 +511,10 @@ class FailurePredictorCritic:
 
     def compute_failure_label(self, obs, reward, done, info):
         num_envs = self._num_envs_from_obs(obs)
-        _, failure_done = self._compute_done_and_failure_masks(
+        done_mask, success = self._compute_done_and_success_masks(
             obs=obs, reward=reward, done=done, info=info, num_envs=num_envs
         )
-        return failure_done.to(dtype=torch.float32)
+        return (done_mask & (~success)).to(dtype=torch.float32)
 
     def _ensure_initialized(self, obs_dim: int, act_dim: int, num_envs: int):
         if self._initialized:
@@ -509,10 +528,10 @@ class FailurePredictorCritic:
         self._obs_dim = int(obs_dim)
         self._act_dim = int(act_dim)
         self._num_envs = int(num_envs)
-        self._q1 = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
-        self._q2 = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
-        self._q1_targ = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
-        self._q2_targ = _FailureQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
+        self._q1 = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
+        self._q2 = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
+        self._q1_targ = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
+        self._q2_targ = _SuccessQFunction(self._obs_dim, self._act_dim, self.hidden_sizes, self.dropout).to(self.device)
         self._q1_targ.load_state_dict(self._q1.state_dict())
         self._q2_targ.load_state_dict(self._q2.state_dict())
 
@@ -524,7 +543,7 @@ class FailurePredictorCritic:
         self._obs2_buf = torch.zeros((self.buffer_size, self._obs_dim), dtype=torch.float32, device="cpu")
         self._next_act_buf = torch.zeros((self.buffer_size, self._act_dim), dtype=torch.float32, device="cpu")
         self._has_next_act = torch.zeros((self.buffer_size,), dtype=torch.bool, device="cpu")
-        self._fail_buf = torch.zeros((self.buffer_size,), dtype=torch.float32, device="cpu")
+        self._success_buf = torch.zeros((self.buffer_size,), dtype=torch.float32, device="cpu")
         self._done_buf = torch.zeros((self.buffer_size,), dtype=torch.float32, device="cpu")
         self._token_buf = torch.full((self.buffer_size,), -1, dtype=torch.long, device="cpu")
         self._open_refs = [None for _ in range(self._num_envs)]
@@ -540,7 +559,7 @@ class FailurePredictorCritic:
                 p_t.data.mul_(self.polyak)
                 p_t.data.add_((1.0 - self.polyak) * p.data)
 
-    def _store_transition(self, obs, act, obs2, fail, done):
+    def _store_transition(self, obs, act, obs2, success, done):
         idx = self._buf_idx
         token = self._token_counter
         self._token_counter += 1
@@ -550,7 +569,7 @@ class FailurePredictorCritic:
         self._obs2_buf[idx] = obs2
         self._next_act_buf[idx] = 0.0
         self._has_next_act[idx] = False
-        self._fail_buf[idx] = float(fail)
+        self._success_buf[idx] = float(success)
         self._done_buf[idx] = float(done)
         self._token_buf[idx] = token
 
@@ -567,28 +586,28 @@ class FailurePredictorCritic:
         self._next_act_buf[idx] = torch.as_tensor(next_action, dtype=torch.float32, device="cpu")
         self._has_next_act[idx] = True
 
-    def _set_fail_label(self, ref, fail_value: float):
+    def _set_success_label(self, ref, success_value: float):
         idx, token = ref
         if idx < 0 or idx >= self.buffer_size:
             return
         if int(self._token_buf[idx].item()) != int(token):
             return
-        self._fail_buf[idx] = float(fail_value)
+        self._success_buf[idx] = float(success_value)
 
-    def _mark_recent_failure_labels(self, env_id: int):
+    def _mark_recent_success_labels(self, env_id: int):
         if self._recent_refs is None:
             return
         for ref in self._recent_refs[env_id]:
-            self._set_fail_label(ref, 1.0)
+            self._set_success_label(ref, 1.0)
 
     def _sample_batch_indices(self, batch_size: int):
         if self._buf_count <= 0:
             raise ValueError("Cannot sample replay indices: empty buffer.")
         if self.pos_fraction <= 0.0:
             return torch.randint(0, self._buf_count, (batch_size,), dtype=torch.long)
-        fail_mask = (self._fail_buf[: self._buf_count] > 0.5)
-        pos_idx = torch.nonzero(fail_mask, as_tuple=False).squeeze(-1)
-        neg_idx = torch.nonzero(~fail_mask, as_tuple=False).squeeze(-1)
+        success_mask = self._success_buf[: self._buf_count] > 0.5
+        pos_idx = torch.nonzero(success_mask, as_tuple=False).squeeze(-1)
+        neg_idx = torch.nonzero(~success_mask, as_tuple=False).squeeze(-1)
         if pos_idx.numel() == 0 or neg_idx.numel() == 0:
             return torch.randint(0, self._buf_count, (batch_size,), dtype=torch.long)
 
@@ -613,7 +632,7 @@ class FailurePredictorCritic:
 
     def _extract_features(self, obs):
         if obs is None:
-            raise ValueError("obs is required for failure predictor.")
+            raise ValueError("obs is required for success critic.")
         if isinstance(obs, dict):
             key = self.obs_key or self.default_obs_key
             if key is None:
@@ -648,33 +667,26 @@ class FailurePredictorCritic:
         feats = self._flatten_features(self._extract_features(obs))
         return int(feats.shape[0])
 
-    def _compute_done_and_failure_masks(self, obs, reward, done, info, num_envs: int):
-        """Infer per-env terminal and failure-terminal masks.
-
-        Priority for failure signal:
-        1) explicit keys in info (failure/failed/task_failed/unsafe/out_of_reach)
-        2) inverse of in_success_region if available
-        3) fallback to done_mask
-        """
+    def _compute_done_and_success_masks(self, obs, reward, done, info, num_envs: int):
+        """Infer terminal and hold-gated lift-success masks."""
         done_mask = self._to_bool_tensor(done, num_envs)
-        failure_mask = None
-        if isinstance(info, dict):
-            for key in ("failure", "failed", "task_failed", "unsafe", "out_of_reach"):
-                if key in info:
-                    failure_mask = self._to_bool_tensor(info[key], num_envs)
-                    break
-            if "done" in info:
-                done_mask = done_mask | self._to_bool_tensor(info["done"], num_envs)
-            if "terminated" in info:
-                done_mask = done_mask | self._to_bool_tensor(info["terminated"], num_envs)
-            if "timed_out" in info:
-                done_mask = done_mask | self._to_bool_tensor(info["timed_out"], num_envs)
-            if "time_out" in info:
-                done_mask = done_mask | self._to_bool_tensor(info["time_out"], num_envs)
-            if failure_mask is None and "in_success_region" in info:
-                success = self._to_bool_tensor(info["in_success_region"], num_envs)
-                failure_mask = ~success
-        if failure_mask is None:
-            failure_mask = done_mask.clone()
-        failure_done = done_mask & failure_mask
-        return done_mask, failure_done
+        if not isinstance(info, dict):
+            raise TypeError(
+                "SuccessValueCritic requires info to contain per-env 'lift_success'."
+            )
+        for key in ("done", "terminated", "timed_out", "time_out"):
+            if key in info:
+                done_mask = done_mask | self._to_bool_tensor(info[key], num_envs)
+        if self.success_key not in info:
+            raise KeyError(
+                "SuccessValueCritic requires info['lift_success'] for success labeling."
+            )
+        success_mask = torch.as_tensor(
+            info[self.success_key], device=self.device
+        ).reshape(-1)
+        if success_mask.numel() != num_envs:
+            raise ValueError(
+                f"info['lift_success'] must have length {num_envs}, "
+                f"got {success_mask.numel()}."
+            )
+        return done_mask, success_mask.to(dtype=torch.bool)

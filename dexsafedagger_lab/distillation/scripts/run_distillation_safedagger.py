@@ -26,13 +26,21 @@ DISTILLATION_VARIANTS = {
     "dexsafedagger": {
         "pipeline": "both",
         "unsafe_mode": "failure_predictor",
-        "description": "DexSafeDagger: warm-start plus disagreement/risk-predictor intervention.",
+        "description": "DexSafeDagger: warm-start plus disagreement/success-value intervention.",
+    },
+    "vc_dexsafedagger": {
+        "pipeline": "both",
+        "unsafe_mode": "failure_predictor",
+        "description": (
+            "VC-DexSafeDagger: SafeDAgger disagreement plus success-value critic "
+            "and VLM threshold tuner."
+        ),
     },
     "dexsafedaggerUltra": {
         "pipeline": "both",
         "unsafe_mode": "failure_predictor",
         "description": (
-            "DexSafeDaggerUltra ablation: DexSafeDagger with the optional VLM threshold advisor."
+            "Legacy alias for VC-DexSafeDagger with the VLM threshold tuner."
         ),
         "experimental": True,
     },
@@ -72,7 +80,7 @@ parser.add_argument(
     choices=sorted(DISTILLATION_VARIANTS.keys()),
     help=(
         "Distillation variant: vanilla_dagger, vanilla_safedagger, "
-        "dexsafedagger, or experimental dexsafedaggerUltra advisor ablation."
+        "dexsafedagger, vc_dexsafedagger, or the legacy dexsafedaggerUltra alias."
     ),
 )
 parser.add_argument(
@@ -184,7 +192,7 @@ parser.add_argument(
     "--vlm_threshold_advisor",
     action="store_true",
     default=False,
-    help="Enable VLM threshold advisor for L2/risk thresholds.",
+    help="Enable VLM threshold advisor for L2/success thresholds.",
 )
 parser.add_argument(
     "--vlm_threshold_advisor_mode",
@@ -465,7 +473,8 @@ def main(env_cfg, agent_cfg: dict):
             "online_train_step_calls": 1,
             "unsafe_enable_after_steps": 0,
             "horizon_steps": 10,
-            "failure_threshold": 0.5,
+            "success_threshold": 0.5,
+            "success_key": "lift_success",
             "output_temperature": 2.0,
             "include_current_step": False,
             "pos_weight": None,
@@ -486,8 +495,8 @@ def main(env_cfg, agent_cfg: dict):
                 "smoothing": 0.1,
                 "l2_min_scale": 0.5,
                 "l2_max_scale": 1.5,
-                "risk_min_scale": 0.5,
-                "risk_max_scale": 1.5,
+                "success_min_scale": 0.5,
+                "success_max_scale": 1.5,
                 "max_tokens": 1024,
                 "timeout": 90.0,
                 "visual_buffer_enabled": True,
@@ -524,8 +533,9 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["failure_predictor"].update(distill_cfg["failure_predictor"])
         if args_cli.vlm_threshold_advisor:
             dagger_config["vlm_threshold_advisor"]["enabled"] = True
-        if args_cli.variant == "dexsafedaggerUltra":
+        if args_cli.variant in {"vc_dexsafedagger", "dexsafedaggerUltra"}:
             dagger_config["vlm_threshold_advisor"]["enabled"] = True
+            dagger_config["vlm_threshold_advisor"]["mode"] = "active"
         if args_cli.vlm_threshold_advisor_mode is not None:
             dagger_config["vlm_threshold_advisor"]["mode"] = args_cli.vlm_threshold_advisor_mode
         if args_cli.vlm_threshold_update_interval_steps is not None:

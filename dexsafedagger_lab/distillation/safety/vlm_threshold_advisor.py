@@ -74,7 +74,7 @@ def _parse_json_answer(answer: str) -> dict[str, Any] | None:
 @dataclass
 class VLMThresholdAdvisorState:
     l2_threshold: float
-    risk_threshold: float
+    success_threshold: float
     recommendation_count: int = 0
     attempt_count: int = 0
     failure_count: int = 0
@@ -92,7 +92,7 @@ class VLMThresholdAdvisor:
         cfg: dict[str, Any] | None,
         *,
         base_l2_threshold: float,
-        base_risk_threshold: float,
+        base_success_threshold: float,
         run_dir: str | None = None,
         rank: int = 0,
     ):
@@ -103,10 +103,10 @@ class VLMThresholdAdvisor:
             raise ValueError(f"vlm_threshold_advisor.mode must be 'shadow' or 'active', got {self.mode!r}.")
         self.rank = int(rank)
         self.base_l2_threshold = float(base_l2_threshold)
-        self.base_risk_threshold = float(base_risk_threshold)
+        self.base_success_threshold = float(base_success_threshold)
         self.state = VLMThresholdAdvisorState(
             l2_threshold=self.base_l2_threshold,
-            risk_threshold=self.base_risk_threshold,
+            success_threshold=self.base_success_threshold,
         )
 
         self.update_interval_steps = int(cfg.get("update_interval_steps", 1000))
@@ -120,8 +120,8 @@ class VLMThresholdAdvisor:
         self.smoothing = min(1.0, max(0.0, self.smoothing))
         self.l2_min_scale = float(cfg.get("l2_min_scale", 0.5))
         self.l2_max_scale = float(cfg.get("l2_max_scale", 1.5))
-        self.risk_min_scale = float(cfg.get("risk_min_scale", 0.5))
-        self.risk_max_scale = float(cfg.get("risk_max_scale", 1.5))
+        self.success_min_scale = float(cfg.get("success_min_scale", 0.5))
+        self.success_max_scale = float(cfg.get("success_max_scale", 1.5))
         self.max_tokens = int(cfg.get("max_tokens", 1024))
         self.timeout = float(cfg.get("timeout", 90.0))
         self.temperature = float(cfg.get("temperature", 0.0))
@@ -155,7 +155,7 @@ class VLMThresholdAdvisor:
         self.task = str(
             cfg.get(
                 "task",
-                "Tune teacher-student disagreement and predictor-risk thresholds for dexterous robot distillation.",
+                "Tune teacher-student disagreement and predicted-success thresholds for dexterous robot distillation.",
             )
         )
         self.run_dir = run_dir
@@ -183,8 +183,8 @@ class VLMThresholdAdvisor:
         return float(self.state.l2_threshold)
 
     @property
-    def current_risk_threshold(self) -> float:
-        return float(self.state.risk_threshold)
+    def current_success_threshold(self) -> float:
+        return float(self.state.success_threshold)
 
     def should_update(self, step: int, sample_count: int) -> bool:
         if not self.enabled:
@@ -210,7 +210,7 @@ class VLMThresholdAdvisor:
             "failure_count": int(self.state.failure_count),
             "last_attempt_step": int(self.state.last_attempt_step),
             "l2_threshold": float(self.current_l2_threshold),
-            "risk_threshold": float(self.current_risk_threshold),
+            "success_threshold": float(self.current_success_threshold),
             "last_confidence": float(self.state.last_confidence),
             "last_error": str(self.state.last_error),
         }
@@ -258,22 +258,28 @@ class VLMThresholdAdvisor:
 
     def _apply_recommendation(self, recommendation: dict[str, Any]) -> dict[str, Any]:
         rec_l2 = self._float_or_none(recommendation.get("l2_threshold"))
-        rec_risk = self._float_or_none(recommendation.get("risk_threshold"))
+        rec_success = self._float_or_none(recommendation.get("success_threshold"))
         conf = self._float_or_none(recommendation.get("confidence"))
         self.state.last_confidence = 0.0 if conf is None else float(conf)
         self.state.last_reason = str(recommendation.get("reason", ""))
         self.state.recommendation_count += 1
 
         proposed_l2 = self.current_l2_threshold if rec_l2 is None else self._clamp_l2(rec_l2)
-        proposed_risk = self.current_risk_threshold if rec_risk is None else self._clamp_risk(rec_risk)
+        proposed_success = (
+            self.current_success_threshold
+            if rec_success is None
+            else self._clamp_success(rec_success)
+        )
         if self.mode == "active":
             self.state.l2_threshold = self._smooth(self.current_l2_threshold, proposed_l2)
-            self.state.risk_threshold = self._smooth(self.current_risk_threshold, proposed_risk)
+            self.state.success_threshold = self._smooth(
+                self.current_success_threshold, proposed_success
+            )
         return {
             "l2_threshold": float(self.state.l2_threshold),
-            "risk_threshold": float(self.state.risk_threshold),
+            "success_threshold": float(self.state.success_threshold),
             "proposed_l2_threshold": float(proposed_l2),
-            "proposed_risk_threshold": float(proposed_risk),
+            "proposed_success_threshold": float(proposed_success),
         }
 
     def _query(self, stats: dict[str, Any]) -> dict[str, Any] | None:
@@ -388,18 +394,18 @@ class VLMThresholdAdvisor:
             f"Task: {self.task}\n\n"
             "Existing arbitration:\n"
             "- intervene if teacher_student_l2 >= l2_threshold\n"
-            "- or if predictor_risk >= risk_threshold\n\n"
-            "Return only strict JSON with keys: l2_threshold, risk_threshold, confidence, reason.\n"
+            "- or if predictor_success <= success_threshold\n\n"
+            "Return only strict JSON with keys: l2_threshold, success_threshold, confidence, reason.\n"
             "Keep changes conservative. Prefer small threshold shifts unless the recent window shows clear over- "
             "or under-intervention.\n\n"
             "Base thresholds and clamps:\n"
             f"- base_l2_threshold={self.base_l2_threshold}\n"
             f"- allowed_l2_range=[{self._clamp_l2(-float('inf'))}, {self._clamp_l2(float('inf'))}]\n"
-            f"- base_risk_threshold={self.base_risk_threshold}\n"
-            f"- allowed_risk_range=[{self._clamp_risk(-float('inf'))}, {self._clamp_risk(float('inf'))}]\n\n"
+            f"- base_success_threshold={self.base_success_threshold}\n"
+            f"- allowed_success_range=[{self._clamp_success(-float('inf'))}, {self._clamp_success(float('inf'))}]\n\n"
             "Current advisor thresholds:\n"
             f"- current_l2_threshold={self.current_l2_threshold}\n"
-            f"- current_risk_threshold={self.current_risk_threshold}\n\n"
+            f"- current_success_threshold={self.current_success_threshold}\n\n"
             "Recent rollout statistics:\n"
             f"{json.dumps(stats_for_prompt, ensure_ascii=False, sort_keys=True)}"
         )
@@ -463,9 +469,9 @@ class VLMThresholdAdvisor:
         high = self.base_l2_threshold * self.l2_max_scale
         return min(high, max(low, float(value)))
 
-    def _clamp_risk(self, value: float) -> float:
-        low = self.base_risk_threshold * self.risk_min_scale
-        high = self.base_risk_threshold * self.risk_max_scale
+    def _clamp_success(self, value: float) -> float:
+        low = self.base_success_threshold * self.success_min_scale
+        high = self.base_success_threshold * self.success_max_scale
         return min(high, max(low, float(value)))
 
     def _smooth(self, current: float, proposed: float) -> float:
@@ -493,9 +499,9 @@ class VLMThresholdAdvisor:
             "base_url": self.base_url,
             "mode": self.mode,
             "base_l2_threshold": self.base_l2_threshold,
-            "base_risk_threshold": self.base_risk_threshold,
+            "base_success_threshold": self.base_success_threshold,
             "current_l2_threshold": self.current_l2_threshold,
-            "current_risk_threshold": self.current_risk_threshold,
+            "current_success_threshold": self.current_success_threshold,
             "max_tokens": self.max_tokens,
             "visual_samples_per_update": self.visual_samples_per_update,
             "env_file_loaded": self.env_file_loaded or "<none>",

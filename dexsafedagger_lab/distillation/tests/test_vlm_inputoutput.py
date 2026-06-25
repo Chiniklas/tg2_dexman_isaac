@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--envs-per-object", type=int, default=8)
     parser.add_argument("--samples-per-object", type=int, default=2)
     parser.add_argument("--base-l2-threshold", type=float, default=8.0)
-    parser.add_argument("--base-risk-threshold", type=float, default=0.25)
+    parser.add_argument("--base-success-threshold", type=float, default=0.2)
     parser.add_argument("--model", default=os.getenv("VLM_MODEL", None))
     parser.add_argument("--base-url", default=os.getenv("VLM_BASE_URL", None))
     parser.add_argument("--api-key-env", default=os.getenv("VLM_API_KEY_ENV", None))
@@ -200,12 +200,12 @@ def build_simulated_stats(
     sample_plan: list[dict[str, Any]],
     rng: random.Random,
     l2_threshold: float,
-    risk_threshold: float,
+    success_threshold: float,
 ) -> dict[str, Any]:
     step = rng.randrange(2_000, 100_000)
     frame = step * 32
     l2_values = [max(0.0, rng.gauss(7.0, 4.0)) for _ in range(32)]
-    risk_values = [max(0.0, min(1.0, rng.lognormvariate(-5.2, 1.0))) for _ in range(32)]
+    success_values = [max(0.0, min(1.0, rng.gauss(0.45, 0.2))) for _ in range(32)]
     intervention_rate = sum(v > l2_threshold for v in l2_values) / len(l2_values)
     unsafe_rate = rng.uniform(0.08, 0.25)
     reason_prop = {
@@ -218,11 +218,11 @@ def build_simulated_stats(
     if total_reason > 0:
         reason_prop = {k: v * unsafe_rate / total_reason for k, v in reason_prop.items()}
 
-    source_cycle = ["warmstart_unsafe", "high_l2", "high_risk", "unsafe_triggered"]
+    source_cycle = ["warmstart_unsafe", "high_l2", "low_success", "unsafe_triggered"]
     visual_samples = []
     for idx, ((image_name, image_data_url), plan_item) in enumerate(zip(images, sample_plan)):
         l2 = max(0.0, rng.gauss(10.0 if idx % 2 else 5.5, 3.0))
-        risk = max(0.0, min(1.0, rng.lognormvariate(-5.0, 1.1)))
+        success = max(0.0, min(1.0, rng.gauss(0.35 if idx % 2 else 0.65, 0.18)))
         unsafe = bool(idx in {0, 3} or l2 > l2_threshold)
         visual_samples.append(
             {
@@ -233,10 +233,10 @@ def build_simulated_stats(
                 "step": step - (len(images) - idx) * 20,
                 "frame": frame,
                 "teacher_student_l2": l2,
-                "predictor_risk": risk,
+                "predictor_success": success,
                 "unsafe": unsafe,
                 "l2_threshold": l2_threshold,
-                "risk_threshold": risk_threshold,
+                "success_threshold": success_threshold,
             }
             | plan_item
         )
@@ -247,9 +247,9 @@ def build_simulated_stats(
         "sample_count": len(l2_values),
         "intervention_rate": intervention_rate,
         "l2_threshold": l2_threshold,
-        "risk_threshold": risk_threshold,
+        "success_threshold": success_threshold,
         "l2": tensor_stats(l2_values),
-        "risk": tensor_stats(risk_values),
+        "success": tensor_stats(success_values),
         "unsafe_episode_rate": unsafe_rate,
         "unsafe_reason_prop": reason_prop,
         "visual_samples": visual_samples,
@@ -380,7 +380,7 @@ def render_html(
         <div><strong>env_file_loaded</strong><br>{html.escape(advisor.env_file_loaded or '<none>')}</div>
         <div><strong>mode</strong><br>{html.escape(advisor.mode)}</div>
         <div><strong>base_l2_threshold</strong><br>{advisor.base_l2_threshold}</div>
-        <div><strong>base_risk_threshold</strong><br>{advisor.base_risk_threshold}</div>
+        <div><strong>base_success_threshold</strong><br>{advisor.base_success_threshold}</div>
         <div><strong>max_tokens</strong><br>{advisor.max_tokens}</div>
       </div>
     </section>
@@ -444,7 +444,7 @@ def main() -> int:
     advisor = VLMThresholdAdvisor(
         advisor_cfg,
         base_l2_threshold=args.base_l2_threshold,
-        base_risk_threshold=args.base_risk_threshold,
+        base_success_threshold=args.base_success_threshold,
         run_dir=str(REPO_ROOT),
         rank=0,
     )
@@ -453,7 +453,7 @@ def main() -> int:
         sample_plan=sample_plan,
         rng=rng,
         l2_threshold=advisor.current_l2_threshold,
-        risk_threshold=advisor.current_risk_threshold,
+        success_threshold=advisor.current_success_threshold,
     )
     payload = advisor._build_payload(stats)
 
@@ -508,7 +508,7 @@ def main() -> int:
             "env_file_loaded": advisor.env_file_loaded or DEFAULT_ENV_FILE,
             "mode": advisor.mode,
             "base_l2_threshold": advisor.base_l2_threshold,
-            "base_risk_threshold": advisor.base_risk_threshold,
+            "base_success_threshold": advisor.base_success_threshold,
             "max_tokens": advisor.max_tokens,
         },
         payload=payload,

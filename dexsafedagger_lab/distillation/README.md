@@ -63,7 +63,7 @@ VARIANT=dexsafedagger MAX_ITERS=100000 ./scripts/run_vanilla_and_safe_dagger_hea
 - `scripts/`: training and replay entrypoints.
 - `core/`: SafeDAgger loop and warm-start orchestration.
 - `models/`: RL-Games stereo transformer and teacher network builders.
-- `safety/`: failure predictor and optional VLM threshold advisor.
+- `safety/`: success-value critic and optional VLM threshold advisor.
 - `utils/`: shared losses, eval metrics, augmentations, and data recording.
 - `eval/`: standalone student evaluation.
 
@@ -76,19 +76,21 @@ VARIANT=dexsafedagger MAX_ITERS=100000 ./scripts/run_vanilla_and_safe_dagger_hea
   disagreement crosses `unsafe_l2_threshold`.
 - `dexsafedagger`: the full method from the paper. It runs warm-start first,
   then online SafeDAgger with the OR gate combining action disagreement and the
-  learned critic-style risk predictor.
-- `dexsafedaggerUltra`: the VLM-advisor ablation. It keeps the same
+  learned success-value critic.
+- `vc_dexsafedagger`: VC-DexSafeDAgger, combining the SafeDAgger disagreement
+  gate, success-value critic, and active VLM threshold-tuner pipeline.
+- `dexsafedaggerUltra`: legacy alias for `vc_dexsafedagger`. It keeps the same
   `failure_predictor` arbitration as DexSafeDagger and only enables the VLM
   threshold advisor. The VLM recommends smoothed/clamped values for
-  `unsafe_l2_threshold` and the predictor risk threshold; it does not replace
+  `unsafe_l2_threshold` and the predictor success threshold; it does not replace
   the OR gate or directly decide teacher takeover.
-  Whenever the VLM advisor is enabled, the failure predictor is enabled by
-  default so predictor-risk statistics are included in advisor inputs.
+  Whenever the VLM advisor is enabled, the success-value critic is enabled by
+  default so predicted-success statistics are included in advisor inputs.
 
 The VLM advisor maintains a moderate runtime visual buffer by default: up to 64
 downscaled frames, capturing 2 representative frames every 20 online steps and
 attaching at most 6 images to each advisor request. Samples are selected from
-high teacher-student disagreement, high predictor risk, and unsafe-triggered
+high teacher-student disagreement, low predicted success, and unsafe-triggered
 states, while the VLM still only returns threshold recommendations.
 During warm-start, VLM-enabled runs also seed this buffer with compact images
 from unsafe warm-start terminal states, so the first online advisor call can
@@ -97,7 +99,7 @@ see prior unsafe visual examples instead of starting from an empty buffer.
 The default distillation settings live in the `params.distillation` section of
 `rl_games_ppo_stereo_transformer.yaml`. CLI flags override the most common
 values, including `variant`, `eval_every`, warm-start collection steps, and
-failure predictor warm-start checkpoint path.
+success-critic warm-start checkpoint path.
 
 ## Checkpoints And Outputs
 
@@ -213,9 +215,9 @@ python eval/eval_student.py \
 - `core/distill_warm_start.py`: warm-start rollout collection and offline bootstrap
   support.
 - `models/a2c_stereo_transformer.py`: stereo transformer RL-Games network builder.
-- `safety/failure_predictor.py`: learned critic-style intervention/risk model.
+- `safety/success_value_critic.py`: learned Bellman success-value critic.
 - `safety/vlm_threshold_advisor.py`: optional VLM advisor that recommends
-  smoothed/clamped L2 and predictor-risk thresholds while leaving existing
+  smoothed/clamped L2 and predicted-success thresholds while leaving existing
   arbitration logic in place.
 - `eval/eval_student.py`: standalone student checkpoint evaluation.
 - `scripts/replay.py`: student policy replay/recording utility.

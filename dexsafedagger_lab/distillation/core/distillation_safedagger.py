@@ -37,7 +37,7 @@ import wandb
 from typing import Dict
 
 from dexsafedagger_lab.distillation.models.teacher_a2c_builder import TeacherA2CBuilder
-from dexsafedagger_lab.distillation.safety.failure_predictor import FailurePredictorCritic
+from dexsafedagger_lab.distillation.safety.success_value_critic import SuccessValueCritic
 from dexsafedagger_lab.distillation.safety.vlm_threshold_advisor import VLMThresholdAdvisor
 from dexsafedagger_lab.distillation.utils.loss_utils import (
     l2,
@@ -52,11 +52,11 @@ from dexsafedagger_lab.distillation.utils.eval_utils import (
 # Imitation loss:
 # - "l2": weighted L2 on mus (by 1/sigma^2) + L2 on sigmas.
 #
-# Optional failure predictor config (state-action risk model):
+# Optional success-value critic config:
 # - failure_predictor.enabled: bool
 # - failure_predictor.obs_key: observation key used by predictor (default: student obs_type)
-# - failure_predictor.failure_threshold: intervention threshold in [0, 1]
-# - failure_predictor.horizon_steps: failure-within-horizon labeling window
+# - failure_predictor.success_threshold: intervene below this value
+# - failure_predictor.horizon_steps: success back-labeling window
 # - failure_predictor.gamma / failure_predictor.polyak: critic update parameters
 # - failure_predictor.unsafe_enable_after_steps: online env-step warmup before
 #   predictor output is allowed to drive unsafe decisions
@@ -64,14 +64,14 @@ from dexsafedagger_lab.distillation.utils.eval_utils import (
 #   save predictor after warmstart and load predictor for non-warmstart runs
 #
 # Optional VLM threshold advisor:
-# - vlm_threshold_advisor.enabled: ask a VLM to recommend l2/risk thresholds
+# - vlm_threshold_advisor.enabled: ask a VLM to recommend l2/success thresholds
 # - vlm_threshold_advisor.mode: "shadow" logs recommendations, "active" applies
 #   clamped/smoothed threshold updates while keeping existing arbitration logic
 #
 # Optional warm-start config (2-phase bootstrap):
 # - warm_start.enabled: bool
 # - warm_start.collect_steps: env steps collected before normal intervention loop
-# - warm_start.predictor_train_steps: offline train_step() calls for failure predictor
+# - warm_start.predictor_train_steps: offline train_step() calls for success critic
 # - warm_start.save_collected_data: whether to persist warm-start rollout snapshots to disk
 # - warm_start.save_path: output file for saved warm-start data
 #   (default: <run_dir>/bc_dataset/*.pt)
@@ -385,12 +385,16 @@ class SafeDagger:
         if self.rank == 0 and self.unsafe_mode == "failure_predictor":
             if self.failure_predictor is None or not self.failure_predictor.enabled:
                 print(
-                    "Warning: unsafe_mode=failure_predictor but failure predictor is disabled.",
+                    "Warning: unsafe_mode=failure_predictor but success critic is disabled.",
                     flush=True,
                 )
         fp_cfg = self.config.get("failure_predictor", {}) or {}
-        self.failure_predictor_base_threshold = float(
-            getattr(self.failure_predictor, "failure_threshold", fp_cfg.get("failure_threshold", 0.5))
+        self.success_critic_base_threshold = float(
+            getattr(
+                self.failure_predictor,
+                "success_threshold",
+                fp_cfg.get("success_threshold", 0.5),
+            )
         )
         self.failure_predictor_unsafe_enable_after_steps = int(
             fp_cfg.get("unsafe_enable_after_steps", 0)
@@ -411,7 +415,7 @@ class SafeDagger:
         fp_ws_model_path = fp_cfg.get("warm_start_model_path", None)
         self.failure_predictor_warm_start_model_path = os.path.join(
             self.nn_dir,
-            "fp_warmstart_critic.pt",
+            "success_value_warmstart_critic.pt",
         )
         if self.rank == 0 and isinstance(fp_ws_model_path, str) and len(str(fp_ws_model_path).strip()) > 0:
             print(
@@ -421,7 +425,7 @@ class SafeDagger:
             )
         if self.rank == 0 and self.failure_predictor_warm_start_model_path is not None:
             print(
-                "Failure predictor warm-start model path: "
+                "Success critic warm-start model path: "
                 f"{self.failure_predictor_warm_start_model_path}",
                 flush=True,
             )
@@ -468,7 +472,7 @@ class SafeDagger:
                 if self.warm_start_collect_steps < target_collect_steps:
                     if self.rank == 0:
                         print(
-                            "[WarmStart] Increasing collect_steps to match failure predictor replay capacity: "
+                            "[WarmStart] Increasing collect_steps to match success critic replay capacity: "
                             f"{self.warm_start_collect_steps} -> {target_collect_steps} "
                             f"(buffer_size={fp_buffer_size}, num_envs={self.num_envs}).",
                             flush=True,
@@ -507,7 +511,7 @@ class SafeDagger:
             )
         if self.rank == 0 and self.failure_predictor is not None and self.failure_predictor.enabled:
             print(
-                "Failure predictor online update schedule: "
+                "Success critic online update schedule: "
                 f"update_interval={self.failure_predictor.update_interval}, "
                 "minibatch_updates_per_call=1, "
                 f"online_train_step_calls={self.failure_predictor_online_train_step_calls}, "
@@ -679,18 +683,18 @@ class SafeDagger:
             return
         if self.failure_predictor is None or not self.failure_predictor.enabled:
             return
-        pred = self.failure_predictor.predict_risk(obs, student_action)
+        pred = self.failure_predictor.predict_success(obs, student_action)
         if pred is None:
             return
         pred = torch.as_tensor(pred, device=self.device, dtype=torch.float32).reshape(-1)
         if pred.numel() != self.num_envs:
             raise ValueError(
-                f"failure predictor output size mismatch: expected {self.num_envs}, got {pred.numel()}."
+                f"success critic output size mismatch: expected {self.num_envs}, got {pred.numel()}."
             )
         p50 = torch.quantile(pred, 0.5)
-        self.writer.add_scalar("failure_predictor/output_min", float(pred.min().item()), self.frame)
-        self.writer.add_scalar("failure_predictor/output_mean", float(pred.mean().item()), self.frame)
-        self.writer.add_scalar("failure_predictor/output_p50", float(p50.item()), self.frame)
+        self.writer.add_scalar("success_critic/output_min", float(pred.min().item()), self.frame)
+        self.writer.add_scalar("success_critic/output_mean", float(pred.mean().item()), self.frame)
+        self.writer.add_scalar("success_critic/output_p50", float(p50.item()), self.frame)
 
     def _tensor_stats(self, values):
         tensor = torch.as_tensor(values, device=self.device, dtype=torch.float32).reshape(-1)
@@ -769,7 +773,7 @@ class SafeDagger:
             "object_env_count": envs_for_object,
         }
 
-    def _select_vlm_capture_indices(self, *, l2_values, risk_values=None, unsafe_values=None, limit=2):
+    def _select_vlm_capture_indices(self, *, l2_values, success_values=None, unsafe_values=None, limit=2):
         candidates = []
 
         def add_index(idx, source):
@@ -783,10 +787,12 @@ class SafeDagger:
         if l2_flat.numel() > 0:
             add_index(int(torch.argmax(l2_flat).item()), "high_l2")
 
-        if risk_values is not None:
-            risk_flat = torch.as_tensor(risk_values, device=self.device, dtype=torch.float32).reshape(-1)
-            if risk_flat.numel() == l2_flat.numel() and risk_flat.numel() > 0:
-                add_index(int(torch.argmax(risk_flat).item()), "high_risk")
+        if success_values is not None:
+            success_flat = torch.as_tensor(
+                success_values, device=self.device, dtype=torch.float32
+            ).reshape(-1)
+            if success_flat.numel() == l2_flat.numel() and success_flat.numel() > 0:
+                add_index(int(torch.argmin(success_flat).item()), "low_success")
 
         if unsafe_values is not None:
             unsafe_flat = torch.as_tensor(unsafe_values, device=self.device, dtype=torch.bool).reshape(-1)
@@ -805,7 +811,7 @@ class SafeDagger:
 
         return candidates[:limit]
 
-    def _maybe_capture_vlm_visuals(self, *, obs, l2_loss_per_env, risk_values=None):
+    def _maybe_capture_vlm_visuals(self, *, obs, l2_loss_per_env, success_values=None):
         advisor = self.vlm_threshold_advisor
         if advisor is None or not advisor.enabled or not getattr(advisor, "visual_buffer_enabled", True):
             return
@@ -830,14 +836,14 @@ class SafeDagger:
         limit = int(getattr(advisor, "visual_captures_per_step", 2))
         indices = self._select_vlm_capture_indices(
             l2_values=l2_loss_per_env,
-            risk_values=risk_values,
+            success_values=success_values,
             unsafe_values=getattr(self, "unsafe", None),
             limit=limit,
         )
         l2_flat = torch.as_tensor(l2_loss_per_env, device=self.device, dtype=torch.float32).reshape(-1)
-        risk_flat = (
-            torch.as_tensor(risk_values, device=self.device, dtype=torch.float32).reshape(-1)
-            if risk_values is not None
+        success_flat = (
+            torch.as_tensor(success_values, device=self.device, dtype=torch.float32).reshape(-1)
+            if success_values is not None
             else None
         )
         unsafe_flat = (
@@ -860,9 +866,9 @@ class SafeDagger:
                 "frame": int(getattr(self, "frame", 0)),
                 "env_id": int(env_id),
                 "teacher_student_l2": float(l2_flat[env_id].item()) if env_id < l2_flat.numel() else None,
-                "predictor_risk": (
-                    float(risk_flat[env_id].item())
-                    if risk_flat is not None and env_id < risk_flat.numel()
+                "predictor_success": (
+                    float(success_flat[env_id].item())
+                    if success_flat is not None and env_id < success_flat.numel()
                     else None
                 ),
                 "unsafe": (
@@ -871,8 +877,8 @@ class SafeDagger:
                     else None
                 ),
                 "l2_threshold": float(self._current_unsafe_l2_threshold()),
-                "risk_threshold": (
-                    float(self.failure_predictor.failure_threshold)
+                "success_threshold": (
+                    float(self.failure_predictor.success_threshold)
                     if self.failure_predictor is not None and self.failure_predictor.enabled
                     else None
                 ),
@@ -943,13 +949,13 @@ class SafeDagger:
 
     def _build_vlm_threshold_advisor_stats(self, *, l2_loss_per_env, obs, student_action, beta):
         l2_stats = self._tensor_stats(l2_loss_per_env)
-        risk_stats = None
-        current_risk_threshold = self.failure_predictor_base_threshold
+        success_stats = None
+        current_success_threshold = self.success_critic_base_threshold
         if self.failure_predictor is not None and self.failure_predictor.enabled:
-            current_risk_threshold = float(self.failure_predictor.failure_threshold)
-            risk = self.failure_predictor.predict_risk(obs, student_action)
-            if risk is not None:
-                risk_stats = self._tensor_stats(risk)
+            current_success_threshold = float(self.failure_predictor.success_threshold)
+            success = self.failure_predictor.predict_success(obs, student_action)
+            if success is not None:
+                success_stats = self._tensor_stats(success)
         unsafe_episode_rate = None
         unsafe_reason_prop = {}
         if self.game_unsafe_terminated.current_size > 0:
@@ -964,9 +970,9 @@ class SafeDagger:
             "sample_count": int(torch.as_tensor(l2_loss_per_env).numel()),
             "intervention_rate": float(beta),
             "l2_threshold": float(self._current_unsafe_l2_threshold()),
-            "risk_threshold": float(current_risk_threshold),
+            "success_threshold": float(current_success_threshold),
             "l2": l2_stats,
-            "risk": risk_stats,
+            "success": success_stats,
             "unsafe_episode_rate": unsafe_episode_rate,
             "unsafe_reason_prop": unsafe_reason_prop,
         }
@@ -983,18 +989,18 @@ class SafeDagger:
             return
         step = int(getattr(self, "_online_step_counter", 0))
         sample_count = int(torch.as_tensor(l2_loss_per_env).numel())
-        risk_values = None
+        success_values = None
         capture_due = (
             getattr(advisor, "visual_buffer_enabled", True)
             and step % max(1, int(getattr(advisor, "visual_capture_interval_steps", 20))) == 0
         )
         if capture_due and self.failure_predictor is not None and self.failure_predictor.enabled:
-            risk_values = self.failure_predictor.predict_risk(obs, student_action)
+            success_values = self.failure_predictor.predict_success(obs, student_action)
         if capture_due:
             self._maybe_capture_vlm_visuals(
                 obs=obs,
                 l2_loss_per_env=l2_loss_per_env,
-                risk_values=risk_values,
+                success_values=success_values,
             )
         if not advisor.should_update(step, sample_count):
             return
@@ -1012,7 +1018,7 @@ class SafeDagger:
             return
         applied = record.get("applied", {})
         if advisor.mode == "active" and self.failure_predictor is not None and self.failure_predictor.enabled:
-            self.failure_predictor.failure_threshold = float(applied["risk_threshold"])
+            self.failure_predictor.success_threshold = float(applied["success_threshold"])
         if self.rank == 0 and hasattr(self, "writer") and self.writer is not None:
             self.writer.add_scalar(
                 "vlm_threshold_advisor/l2_threshold",
@@ -1020,8 +1026,8 @@ class SafeDagger:
                 self.frame,
             )
             self.writer.add_scalar(
-                "vlm_threshold_advisor/risk_threshold",
-                float(advisor.current_risk_threshold),
+                "vlm_threshold_advisor/success_threshold",
+                float(advisor.current_success_threshold),
                 self.frame,
             )
             self.writer.add_scalar(
@@ -1034,7 +1040,7 @@ class SafeDagger:
                 "[VLMThresholdAdvisor] recommendation "
                 f"mode={advisor.mode} "
                 f"l2={advisor.current_l2_threshold:.4f} "
-                f"risk={advisor.current_risk_threshold:.4f} "
+                f"success={advisor.current_success_threshold:.4f} "
                 f"reason={advisor.state.last_reason[:180]}",
                 flush=True,
             )
@@ -1153,7 +1159,7 @@ class SafeDagger:
                 # obs['img_left'][:] = real_img_left #[:, torch.arange(3 - 1, -1, -1), :, :]
                 # obs['img_right'][:] = real_img_right #[:, torch.arange(3 - 1, -1, -1), :, :]
                 actions_student = self.get_actions(obs, "student")
-                # Critic-style failure predictor needs next_obs features.
+                # Bellman success critic needs next_obs features.
                 # Feed one step later so next_obs is available for SARSA-style targets.
                 if (
                     self.failure_predictor is not None
@@ -1380,7 +1386,7 @@ class SafeDagger:
                     )
                     if fp_key is None or fp_key not in prev_obs:
                         raise KeyError(
-                            f"Failure predictor expected obs key '{fp_key}' in prev_obs, "
+                            f"Success critic expected obs key '{fp_key}' in prev_obs, "
                             "but it was not found."
                         )
                     pending_fp_step = {
@@ -1667,7 +1673,7 @@ class SafeDagger:
         if not hasattr(self.failure_predictor, "save_checkpoint"):
             if self.rank == 0:
                 print(
-                    "[Pipeline] Failure predictor does not expose save_checkpoint(); skipping warm-start save.",
+                    "[Pipeline] Success critic does not expose save_checkpoint(); skipping warm-start save.",
                     flush=True,
                 )
             return False
@@ -1688,14 +1694,14 @@ class SafeDagger:
         if not hasattr(self.failure_predictor, "load_checkpoint"):
             if self.rank == 0:
                 print(
-                    "[Pipeline] Failure predictor does not expose load_checkpoint(); cannot load warm-start model.",
+                    "[Pipeline] Success critic does not expose load_checkpoint(); cannot load warm-start model.",
                     flush=True,
                 )
             return False
         if not os.path.isfile(path):
             if self.rank == 0:
                 print(
-                    "[Pipeline] Failure predictor warm-start checkpoint not found; "
+                    "[Pipeline] Success critic warm-start checkpoint not found; "
                     "starting predictor from scratch.",
                     flush=True,
                 )
@@ -1905,7 +1911,7 @@ class SafeDagger:
                     step=int(getattr(self, "_online_step_counter", 0)),
                     sample_count=advisor_sample_count,
                 )
-                risk_threshold = advisor_status["risk_threshold"]
+                success_threshold = advisor_status["success_threshold"]
                 print(
                     "VLM Threshold Advisor: "
                     f"mode={advisor_status['mode']}, "
@@ -1918,7 +1924,7 @@ class SafeDagger:
                     f"failures={advisor_status['failure_count']}, "
                     f"recommendations={advisor_status['recommendation_count']}, "
                     f"l2_threshold={advisor_status['l2_threshold']:.4f}, "
-                    f"risk_threshold={risk_threshold:.4f}, "
+                    f"success_threshold={success_threshold:.4f}, "
                     f"confidence={advisor_status['last_confidence']:.3f}"
                 )
                 if advisor_status.get("last_error"):
@@ -1934,7 +1940,7 @@ class SafeDagger:
                 if fp_pos_stats is not None:
                     pos_count, total_count, pos_pct = fp_pos_stats
                     print(
-                        "\tfailure_predictor_pos_labeled: "
+                        "\tsuccess_critic_pos_labeled: "
                         f"{pos_count}/{total_count} ({pos_pct:.2f}%)"
                     )
 
@@ -1952,16 +1958,16 @@ class SafeDagger:
         if fp is None or not fp.enabled:
             return None
 
-        # Critic predictor: positives are fail-labeled transitions in replay.
-        if hasattr(fp, "_fail_buf") and hasattr(fp, "_buf_count") and fp._fail_buf is not None:
+        # Success critic: positives are lift-success-labeled transitions.
+        if hasattr(fp, "_success_buf") and hasattr(fp, "_buf_count") and fp._success_buf is not None:
             total_count = int(fp._buf_count)
             if total_count <= 0:
                 return (0, 0, 0.0)
-            fail_buf = fp._fail_buf[:total_count]
-            if torch.is_tensor(fail_buf):
-                pos_count = int((fail_buf > 0.5).to(dtype=torch.int64).sum().item())
+            success_buf = fp._success_buf[:total_count]
+            if torch.is_tensor(success_buf):
+                pos_count = int((success_buf > 0.5).to(dtype=torch.int64).sum().item())
             else:
-                pos_count = int(np.sum(np.asarray(fail_buf) > 0.5))
+                pos_count = int(np.sum(np.asarray(success_buf) > 0.5))
             pos_pct = 100.0 * pos_count / max(1, total_count)
             return (pos_count, total_count, pos_pct)
 
@@ -2025,12 +2031,12 @@ class SafeDagger:
             return _compute_unsafe_l2()
         if self.unsafe_mode == "failure_predictor":
             if self.failure_predictor is None or not self.failure_predictor.enabled:
-                raise ValueError("unsafe_mode='failure_predictor' requires an enabled failure predictor.")
-            if not isinstance(self.failure_predictor, FailurePredictorCritic):
+                raise ValueError("unsafe_mode='failure_predictor' requires an enabled success critic.")
+            if not isinstance(self.failure_predictor, SuccessValueCritic):
                 raise ValueError(
-                    "Unsupported failure predictor class: "
+                    "Unsupported success critic class: "
                     f"{self.failure_predictor.__class__.__name__}. "
-                    "Expected FailurePredictorCritic."
+                    "Expected SuccessValueCritic."
                 )
 
             unsafe_l2 = _compute_unsafe_l2()
@@ -2040,13 +2046,13 @@ class SafeDagger:
             unsafe_pred = self.failure_predictor.should_intervene(obs, student_action)
             if unsafe_pred is None:
                 raise RuntimeError(
-                    "Failure predictor returned None in unsafe_mode='failure_predictor' "
+                    "Success critic returned None in unsafe_mode='failure_predictor' "
                     "after warmup activation."
                 )
             unsafe_pred = torch.as_tensor(unsafe_pred, device=self.device, dtype=torch.bool).reshape(-1)
             if unsafe_pred.numel() != self.num_envs:
                 raise ValueError(
-                    f"Failure predictor unsafe mask size mismatch: expected {self.num_envs}, got {unsafe_pred.numel()}."
+                    f"Success critic intervention mask size mismatch: expected {self.num_envs}, got {unsafe_pred.numel()}."
                 )
             return unsafe_pred | unsafe_l2
             # return unsafe_pred & unsafe_l2
@@ -2132,7 +2138,7 @@ class SafeDagger:
     def _build_failure_predictor(self, cfg):
         fp_cfg = cfg or {}
         device = str(fp_cfg.get("device", self.device))
-        return FailurePredictorCritic(
+        return SuccessValueCritic(
             fp_cfg,
             device=device,
             default_obs_key="predictor_transition",
@@ -2146,7 +2152,7 @@ class SafeDagger:
         advisor = VLMThresholdAdvisor(
             advisor_cfg,
             base_l2_threshold=self.unsafe_l2_threshold,
-            base_risk_threshold=self.failure_predictor_base_threshold,
+            base_success_threshold=self.success_critic_base_threshold,
             run_dir=os.path.dirname(self.nn_dir),
             rank=self.rank,
         )
@@ -2155,7 +2161,7 @@ class SafeDagger:
                 "[VLMThresholdAdvisor] enabled: "
                 f"mode={advisor.mode}, "
                 f"base_l2_threshold={advisor.base_l2_threshold}, "
-                f"base_risk_threshold={advisor.base_risk_threshold}, "
+                f"base_success_threshold={advisor.base_success_threshold}, "
                 f"env_file={advisor.env_file_loaded or 'none'}",
                 flush=True,
             )
