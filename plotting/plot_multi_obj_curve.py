@@ -524,6 +524,8 @@ def _plot_metric(
         axis.xaxis.set_major_formatter(FuncFormatter(_iteration_tick_formatter))
     if not plotted_any:
         axis.text(0.5, 0.5, "No data", ha="center", va="center", transform=axis.transAxes)
+    else:
+        axis.legend(loc="upper right", fontsize=11, frameon=True)
 
     fig.suptitle(f"{_display_object_name(object_name)}: {title}", fontsize=TITLE_FONTSIZE)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))

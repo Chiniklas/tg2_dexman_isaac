@@ -37,8 +37,9 @@ DEFAULT_TAG_TITLES = {
 
 TAG_PLOT_OVERRIDES = {
     "beta": {
-        "smoothing": 0.95,
-        "downsample": 20,
+        "smoothing": 0.999,
+        "rolling_window": 501,
+        "downsample": 100,
         "show_raw": False,
         "legend_loc": "upper right",
         "band_scale": 1.0,
@@ -46,8 +47,9 @@ TAG_PLOT_OVERRIDES = {
         "band_smoothing": 0.999,
     },
     "train/avg/unsafe_episode_rate": {
-        "smoothing": 0.9,
-        "downsample": 20,
+        "smoothing": 0.9995,
+        "rolling_window": 1201,
+        "downsample": 200,
         "show_raw": False,
         "legend_loc": "upper right",
         "band_scale": 1.0,
@@ -400,6 +402,22 @@ def _ema(values: np.ndarray, smoothing: float) -> np.ndarray:
     return smoothed
 
 
+def _centered_moving_average(values: np.ndarray, window: int | None) -> np.ndarray:
+    if window is None or window <= 1 or len(values) <= 2:
+        return values
+    effective_window = min(int(window), len(values))
+    if effective_window <= 1:
+        return values
+    if effective_window % 2 == 0:
+        effective_window -= 1
+    if effective_window <= 1:
+        return values
+    pad = effective_window // 2
+    padded = np.pad(values, (pad, pad), mode="edge")
+    kernel = np.ones(effective_window, dtype=float) / float(effective_window)
+    return np.convolve(padded, kernel, mode="valid")
+
+
 def _fluctuation_band(
     raw_values: np.ndarray,
     smooth_values: np.ndarray,
@@ -512,6 +530,7 @@ def _plot_tag(
     band_scale = float(_tag_plot_setting(tag, "band_scale", 1.0))
     band_alpha = float(_tag_plot_setting(tag, "band_alpha", 0.14))
     band_smoothing = _tag_plot_setting(tag, "band_smoothing", None)
+    rolling_window = _tag_plot_setting(tag, "rolling_window", None)
     all_band_values: list[np.ndarray] = []
     color_map = plt.get_cmap("tab10")
     for index, (run_label, run_scalars) in enumerate(run_scalars_by_run.items()):
@@ -522,16 +541,18 @@ def _plot_tag(
             continue
 
         x_values, raw_values = _points_to_xy(points, x_axis=x_axis)
-        initial_indices = _downsample_indices(len(raw_values), effective_downsample)
-        x_plot = x_values[initial_indices]
-        raw_plot = raw_values[initial_indices]
-        smooth_plot = _ema(raw_plot, effective_smoothing)
-        band_plot = _fluctuation_band(
-            raw_plot,
-            smooth_plot,
+        smooth_values = _ema(raw_values, effective_smoothing)
+        smooth_values = _centered_moving_average(smooth_values, rolling_window)
+        band_values = _fluctuation_band(
+            raw_values,
+            smooth_values,
             effective_smoothing,
             band_smoothing=band_smoothing,
         ) * band_scale
+        initial_indices = _downsample_indices(len(raw_values), effective_downsample)
+        x_plot = x_values[initial_indices]
+        smooth_plot = smooth_values[initial_indices]
+        band_plot = band_values[initial_indices]
         color = run_colors.get(run_label, color_map(index % 10))
 
         axis.fill_between(
@@ -570,6 +591,8 @@ def _plot_tag(
         axis.xaxis.set_major_formatter(FuncFormatter(_iteration_tick_formatter))
     if not plotted_any:
         axis.text(0.5, 0.5, "No data", ha="center", va="center", transform=axis.transAxes)
+    else:
+        axis.legend(loc=legend_loc, fontsize=11, frameon=True)
     fig.suptitle(_display_title_for_tag(tag, title), fontsize=TITLE_FONTSIZE)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
     return fig

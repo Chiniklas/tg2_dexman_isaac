@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concatenate the three training-curve plots horizontally."""
+"""Concatenate the configured training-curve metric plots horizontally."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ PADDING = 16
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Concatenate the three training curve PNGs horizontally.",
+        description="Concatenate the configured training curve PNGs horizontally.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
