@@ -171,6 +171,18 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--student_grad_clip_norm",
+    type=float,
+    default=None,
+    help="Override student gradient clipping norm used by guarded optimizer steps.",
+)
+parser.add_argument(
+    "--nonfinite_gradient_patience",
+    type=int,
+    default=None,
+    help="Consecutive skipped non-finite student gradients before failing.",
+)
+parser.add_argument(
     "--failure_predictor_warm_start_model_path",
     type=str,
     default=None,
@@ -458,6 +470,8 @@ def main(env_cfg, agent_cfg: dict):
         "imitation_loss_type": distill_cfg.get("imitation_loss_type", "l2"),
         "unsafe_mode": distill_cfg.get("unsafe_mode", "l2"),
         "unsafe_l2_threshold": distill_cfg.get("unsafe_l2_threshold", 0.5),
+        "student_grad_clip_norm": distill_cfg.get("student_grad_clip_norm", 1.0),
+        "nonfinite_gradient_patience": distill_cfg.get("nonfinite_gradient_patience", 10),
         "switch_back_min_teacher_steps": distill_cfg.get("switch_back_min_teacher_steps", 10),
         "failure_predictor": {
             "enabled": False,
@@ -565,6 +579,12 @@ def main(env_cfg, agent_cfg: dict):
             dagger_config["unsafe_mode"] = args_cli.unsafe_mode
         if args_cli.unsafe_l2_threshold is not None:
             dagger_config["unsafe_l2_threshold"] = float(args_cli.unsafe_l2_threshold)
+        if args_cli.student_grad_clip_norm is not None:
+            dagger_config["student_grad_clip_norm"] = float(args_cli.student_grad_clip_norm)
+        if args_cli.nonfinite_gradient_patience is not None:
+            dagger_config["nonfinite_gradient_patience"] = int(
+                args_cli.nonfinite_gradient_patience
+            )
         mode = dagger_config["unsafe_mode"]
         vlm_advisor_enabled = bool(dagger_config["vlm_threshold_advisor"].get("enabled", False))
         if mode == "failure_predictor" or vlm_advisor_enabled:

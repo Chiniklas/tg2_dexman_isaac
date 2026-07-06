@@ -40,6 +40,7 @@ from dexsafedagger_lab.distillation.models.teacher_a2c_builder import TeacherA2C
 from dexsafedagger_lab.distillation.safety.success_value_critic import SuccessValueCritic
 from dexsafedagger_lab.distillation.safety.vlm_threshold_advisor import VLMThresholdAdvisor
 from dexsafedagger_lab.distillation.utils.loss_utils import (
+    clip_gradients_and_step,
     l2,
     weighted_l2,
 )
@@ -248,6 +249,15 @@ class SafeDagger:
         if self.rank == 0:
             print(f"Using imitation loss: {self.imitation_loss_type}")
         self.optimizer = torch.optim.Adam(self.student_model.parameters(), lr=1e-4, eps=1e-8) # default lr = 1e-4
+        self.student_grad_clip_norm = float(self.config.get("student_grad_clip_norm", 1.0))
+        self.nonfinite_gradient_patience = int(
+            self.config.get("nonfinite_gradient_patience", 10)
+        )
+        if self.student_grad_clip_norm <= 0.0:
+            raise ValueError("student_grad_clip_norm must be > 0.")
+        if self.nonfinite_gradient_patience <= 0:
+            raise ValueError("nonfinite_gradient_patience must be >= 1.")
+        self._nonfinite_gradient_count = 0
         self.num_iters = int(self.config.get("num_iters", 100_000) or 100_000)
 
         # load weights for student and teacher
@@ -711,6 +721,40 @@ class SafeDagger:
             raise RuntimeError(message)
         if self.rank == 0:
             print(f"Warning: {message}", flush=True)
+
+    def _step_student_optimizer(self, context: str) -> bool:
+        """Apply one guarded student update without poisoning model weights."""
+        stepped, grad_norm = clip_gradients_and_step(
+            self.student_model.parameters(),
+            self.optimizer,
+            self.student_grad_clip_norm,
+        )
+        if self.rank == 0 and hasattr(self, "writer") and self.writer is not None:
+            self.writer.add_scalar("numerics/student_grad_norm", grad_norm, self.frame)
+            self.writer.add_scalar(
+                "numerics/nonfinite_gradient_skipped",
+                0.0 if stepped else 1.0,
+                self.frame,
+            )
+        if stepped:
+            self._nonfinite_gradient_count = 0
+            return True
+
+        self._nonfinite_gradient_count += 1
+        message = (
+            "Non-finite student gradient detected before optimizer.step(); "
+            f"skipped update ({context}, frame={self.frame}, grad_norm={grad_norm}, "
+            f"consecutive={self._nonfinite_gradient_count}/"
+            f"{self.nonfinite_gradient_patience})."
+        )
+        if self.rank == 0:
+            print(f"[WARN] {message}", flush=True)
+        if self._nonfinite_gradient_count >= self.nonfinite_gradient_patience:
+            raise RuntimeError(
+                message
+                + " Repeated invalid gradients indicate an unstable student backward pass."
+            )
+        return False
 
     def _apply_online_predictor_update_multiplier(self, fp_loss):
         """Run extra predictor train_step() calls after an interval-triggered update."""
@@ -1184,7 +1228,6 @@ class SafeDagger:
                 )
         while log_counter < num_iters:
             beta = 0.0
-            skip_optimizer_step = False
             if self.play_policy:
                 self.optimizer.param_groups[0]["lr"] = 0.0
 
@@ -1329,16 +1372,21 @@ class SafeDagger:
                     or not torch.isfinite(actions_teacher["actions"]).all()
                 )
                 if nonfinite_step:
-                    skip_optimizer_step = True
-                    if self.rank == 0 and not getattr(self, "_warned_nonfinite_online_step", False):
-                        print(
-                            "[WARN] Non-finite distillation tensors detected; "
-                            "skipping this optimizer step and forcing teacher takeover.",
-                            flush=True,
+                    nonfinite_names = [
+                        name
+                        for name, tensor in (
+                            ("total_loss", total_loss_step),
+                            ("l2_loss", l2_loss_per_env),
+                            ("student_action", actions_student["actions"]),
+                            ("teacher_action", actions_teacher["actions"]),
                         )
-                        self._warned_nonfinite_online_step = True
-                    self.unsafe = torch.ones((self.num_envs,), device=self.device, dtype=torch.bool)
-                    beta = 1.0
+                        if not torch.isfinite(tensor).all()
+                    ]
+                    raise RuntimeError(
+                        "Non-finite distillation forward pass detected before the "
+                        f"environment step (frame={self.frame}, tensors={nonfinite_names}). "
+                        "The student model or recurrent state is already numerically invalid."
+                    )
                 else:
                     total_loss += total_loss_step
                     if self.failure_predictor is not None and self.failure_predictor.enabled:
@@ -1392,20 +1440,10 @@ class SafeDagger:
             self.env_counter += 1
             self._online_step_counter += 1
 
-            if skip_optimizer_step:
-                self.optimizer.zero_grad()
-                if self.is_rnn:
-                    for i, s in enumerate(self.student_hidden_states):
-                        self.student_hidden_states[i] = s.detach()
-                total_loss = 0.
-            elif self.is_rnn:
+            if self.is_rnn:
                 if log_counter % self.seq_length == 0:
                     total_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.student_model.parameters(), 1.0
-                    )
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                    self._step_student_optimizer("rnn_sequence")
                     for i, s in enumerate(self.student_hidden_states):
                         self.student_hidden_states[i] = s.detach()
                     total_loss = 0.
@@ -1413,7 +1451,7 @@ class SafeDagger:
             else:
                 self.optimizer.zero_grad()
                 total_loss.backward()
-                self.optimizer.step()
+                self._step_student_optimizer("feed_forward_step")
                 total_loss = 0.
             end_time = time.time()
             # print(f"Time taken for backward and step: {end_time - start_time} seconds")
@@ -1534,11 +1572,7 @@ class SafeDagger:
             if self.is_rnn and len(all_done_indices) > 0:
                 if total_loss > 1e-8:
                     total_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.student_model.parameters(), 1.0
-                    )
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                    self._step_student_optimizer("rnn_episode_boundary")
                     for i, s in enumerate(self.student_hidden_states):
                         self.student_hidden_states[i] = s.detach()
                     total_loss = 0.

@@ -16,6 +16,14 @@ import yaml
 from matplotlib.ticker import MaxNLocator
 from matplotlib.ticker import FuncFormatter
 
+from ablation_raw_data import (
+    OBJECT_PREPROCESSING,
+    arrays_to_tuples,
+    is_per_object_tag,
+    load_ablation_dataset,
+    read_tensorboard_scalars,
+)
+
 
 UNSAFE_REASON_NAMES = (
     "object_out_of_bound",
@@ -61,8 +69,8 @@ OBJECT_ALIASES = {
 
 X_AXIS = "iteration"
 TRAIN_NUM_ENVS = 32
-SMOOTHING = 0.97
-DOWNSAMPLE = 10
+SMOOTHING = float(OBJECT_PREPROCESSING["smoothing"])
+DOWNSAMPLE = int(OBJECT_PREPROCESSING["downsample"])
 MIN_STEP = None
 MAX_STEP = None
 SHOW_FIGURES = False
@@ -70,7 +78,7 @@ FIGSIZE = (7.0, 7.0)
 DPI = 180
 LINEWIDTH = 2.6
 AVG_BAND_ALPHA = 0.16
-AVG_BAND_SCALE = 1.0
+AVG_BAND_SCALE = float(OBJECT_PREPROCESSING["band_scale"])
 DEFAULT_OUTPUT_PATH = Path(__file__).resolve().parent / "plots"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 TITLE_FONTSIZE = 22
@@ -90,6 +98,8 @@ class ScalarPoint:
     step: int
     value: float
     wall_time: float
+    smoothed_value: float | None = None
+    band: float | None = None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -108,6 +118,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional shared scalar cache produced by prepare_scalar_cache.py.",
+    )
+    parser.add_argument(
+        "--raw-data-dir",
+        type=Path,
+        default=None,
+        help="NumPy dataset produced by export_ablation_raw_data.py. Takes precedence over --scalar-cache.",
     )
     parser.add_argument(
         "--x-axis",
@@ -166,17 +182,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Figure DPI when saving.",
     )
     return parser
-
-
-def _import_event_accumulator():
-    try:
-        from tensorboard.backend.event_processing import event_accumulator
-    except ImportError as exc:
-        raise RuntimeError(
-            "TensorBoard event reading requires the 'tensorboard' package. "
-            "Install it in the Python environment used to run this script."
-        ) from exc
-    return event_accumulator
 
 
 def _find_event_files(path: Path) -> list[Path]:
@@ -272,37 +277,15 @@ def _resolve_runs(run_specs: list[tuple[str, str]]) -> list[RunSpec]:
 
 
 def _load_run_scalars(run: RunSpec) -> dict[str, list[ScalarPoint]]:
-    event_accumulator = _import_event_accumulator()
-    size_guidance = {event_accumulator.SCALARS: 0}
-    scalars_by_tag: dict[str, list[ScalarPoint]] = defaultdict(list)
-
-    for event_file in run.event_files:
-        size_mb = event_file.stat().st_size / (1024.0 * 1024.0)
-        print(
-            f"[failure reasons] Loading {run.label}: {event_file.name} "
-            f"({size_mb:.1f} MB)...",
-            flush=True,
-        )
-        accumulator = event_accumulator.EventAccumulator(str(event_file), size_guidance=size_guidance)
-        accumulator.Reload()
-        print(
-            f"[failure reasons] Loaded {run.label}; extracting scalar tags...",
-            flush=True,
-        )
-        for tag in accumulator.Tags().get("scalars", []):
-            scalars_by_tag[tag].extend(
-                ScalarPoint(step=int(s.step), value=float(s.value), wall_time=float(s.wall_time))
-                for s in accumulator.Scalars(tag)
-            )
-
-    merged_scalars: dict[str, list[ScalarPoint]] = {}
-    for tag, points in scalars_by_tag.items():
-        points.sort(key=lambda point: (point.step, point.wall_time))
-        deduped_by_step = {}
-        for point in points:
-            deduped_by_step[point.step] = point
-        merged_scalars[tag] = [deduped_by_step[step] for step in sorted(deduped_by_step)]
-    return merged_scalars
+    raw_scalars = read_tensorboard_scalars(
+        run.label,
+        run.source_path,
+        all_scalars=True,
+    )
+    return {
+        tag: [ScalarPoint(*point) for point in points]
+        for tag, points in arrays_to_tuples(raw_scalars).items()
+    }
 
 
 def _load_cached_scalars(cache_path: Path) -> dict[str, dict[str, list[ScalarPoint]]]:
@@ -321,6 +304,19 @@ def _load_cached_scalars(cache_path: Path) -> dict[str, dict[str, list[ScalarPoi
     if not result:
         raise ValueError(f"No run scalars found in cache: {cache_path}")
     print(f"[failure reasons] Reusing shared scalar cache: {cache_path}", flush=True)
+    return result
+
+
+def _load_raw_data_scalars(raw_data_dir: Path) -> dict[str, dict[str, list[ScalarPoint]]]:
+    result = load_ablation_dataset(
+        raw_data_dir,
+        tag_filter=is_per_object_tag,
+        point_factory=ScalarPoint,
+    )
+    print(
+        f"[failure reasons] Loading compact NumPy plotting data: {raw_data_dir.resolve()}",
+        flush=True,
+    )
     return result
 
 
@@ -481,11 +477,29 @@ def _plot_metric(
             continue
 
         avg_x, avg_values = _points_to_xy(filtered_points, x_axis=x_axis)
-        avg_indices = _downsample_indices(len(avg_values), downsample)
-        avg_x_plot = avg_x[avg_indices]
-        avg_value_plot = avg_values[avg_indices]
-        avg_smooth_plot = _ema(avg_value_plot, smoothing)
-        avg_band_plot = _fluctuation_band(avg_value_plot, avg_smooth_plot, smoothing) * AVG_BAND_SCALE
+        if (
+            filtered_points[0].smoothed_value is not None
+            and filtered_points[0].band is not None
+        ):
+            # NumPy export already applied per-object smoothing and downsampling.
+            avg_x_plot = avg_x
+            avg_smooth_plot = np.asarray(
+                [point.smoothed_value for point in filtered_points],
+                dtype=float,
+            )
+            avg_band_plot = np.asarray(
+                [point.band for point in filtered_points],
+                dtype=float,
+            )
+        else:
+            avg_indices = _downsample_indices(len(avg_values), downsample)
+            avg_x_plot = avg_x[avg_indices]
+            avg_value_plot = avg_values[avg_indices]
+            avg_smooth_plot = _ema(avg_value_plot, smoothing)
+            avg_band_plot = (
+                _fluctuation_band(avg_value_plot, avg_smooth_plot, smoothing)
+                * AVG_BAND_SCALE
+            )
 
         axis.fill_between(
             avg_x_plot,
@@ -539,7 +553,9 @@ def main() -> int:
     if args.downsample < 1:
         raise ValueError("--downsample must be >= 1.")
 
-    if args.scalar_cache is not None:
+    if args.raw_data_dir is not None:
+        run_scalars_by_run = _load_raw_data_scalars(args.raw_data_dir)
+    elif args.scalar_cache is not None:
         run_scalars_by_run = _load_cached_scalars(args.scalar_cache)
     else:
         runs = _resolve_runs(_load_run_specs(args.config))

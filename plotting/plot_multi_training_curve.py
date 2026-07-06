@@ -16,6 +16,13 @@ import yaml
 from matplotlib.ticker import MaxNLocator
 from matplotlib.ticker import FuncFormatter
 
+from ablation_raw_data import (
+    TRAINING_PREPROCESSING,
+    arrays_to_tuples,
+    load_ablation_dataset,
+    read_tensorboard_scalars,
+)
+
 
 DEFAULT_TAG_PRIORITY = [
     "beta",
@@ -35,33 +42,32 @@ DEFAULT_TAG_TITLES = {
     "eval/avg/lift_success": "Comparison Student Policy Lift Success",
 }
 
+RUN_DISPLAY_LABELS = {
+    "Ablation (b)": "Vanilla DAgger",
+    "Ablation (c)": "Vanilla SafeDAgger",
+    "Ablation (e)": "DexSafeDagger",
+    "Ablation (f)": "VLM-DexSafeDagger",
+}
+
 TAG_PLOT_OVERRIDES = {
     "beta": {
-        "smoothing": 0.999,
-        "rolling_window": 501,
-        "downsample": 100,
+        **TRAINING_PREPROCESSING["beta"],
+        "post_smoothing": 0.92,
         "show_raw": False,
         "legend_loc": "upper right",
-        "band_scale": 1.0,
         "band_alpha": 0.14,
-        "band_smoothing": 0.999,
     },
     "train/avg/unsafe_episode_rate": {
-        "smoothing": 0.9995,
-        "rolling_window": 1201,
-        "downsample": 200,
+        **TRAINING_PREPROCESSING["train/avg/unsafe_episode_rate"],
+        "post_smoothing": 0.95,
         "show_raw": False,
         "legend_loc": "upper right",
-        "band_scale": 1.0,
         "band_alpha": 0.14,
-        "band_smoothing": 0.999,
     },
     "eval/avg/lift_success": {
-        "smoothing": 0.75,
-        "downsample": 1,
+        **TRAINING_PREPROCESSING["eval/avg/lift_success"],
         "show_raw": True,
         "legend_loc": "lower right",
-        "band_scale": 1.0,
         "band_alpha": 0.14,
     },
 }
@@ -98,6 +104,8 @@ class ScalarPoint:
     step: int
     value: float
     wall_time: float
+    smoothed_value: float | None = None
+    band: float | None = None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -116,6 +124,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Optional shared scalar cache produced by prepare_scalar_cache.py.",
+    )
+    parser.add_argument(
+        "--raw-data-dir",
+        type=Path,
+        default=None,
+        help="NumPy dataset produced by export_ablation_raw_data.py. Takes precedence over --scalar-cache.",
     )
     parser.add_argument(
         "--tags",
@@ -198,17 +212,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Overlay the downsampled raw trace under the smoothed curve.",
     )
     return parser
-
-
-def _import_event_accumulator():
-    try:
-        from tensorboard.backend.event_processing import event_accumulator
-    except ImportError as exc:
-        raise RuntimeError(
-            "TensorBoard event reading requires the 'tensorboard' package. "
-            "Install it in the Python environment used to run this script."
-        ) from exc
-    return event_accumulator
 
 
 def _find_event_files(path: Path) -> list[Path]:
@@ -307,37 +310,15 @@ def _resolve_runs(run_specs: list[tuple[str, str]]) -> list[RunSpec]:
 
 
 def _load_run_scalars(run: RunSpec) -> dict[str, list[ScalarPoint]]:
-    event_accumulator = _import_event_accumulator()
-    size_guidance = {event_accumulator.SCALARS: 0}
-    scalars_by_tag: dict[str, list[ScalarPoint]] = defaultdict(list)
-
-    for event_file in run.event_files:
-        size_mb = event_file.stat().st_size / (1024.0 * 1024.0)
-        print(
-            f"[training curves] Loading {run.label}: {event_file.name} "
-            f"({size_mb:.1f} MB)...",
-            flush=True,
-        )
-        accumulator = event_accumulator.EventAccumulator(str(event_file), size_guidance=size_guidance)
-        accumulator.Reload()
-        print(
-            f"[training curves] Loaded {run.label}; extracting scalar tags...",
-            flush=True,
-        )
-        for tag in accumulator.Tags().get("scalars", []):
-            scalars_by_tag[tag].extend(
-                ScalarPoint(step=int(s.step), value=float(s.value), wall_time=float(s.wall_time))
-                for s in accumulator.Scalars(tag)
-            )
-
-    merged_scalars: dict[str, list[ScalarPoint]] = {}
-    for tag, points in scalars_by_tag.items():
-        points.sort(key=lambda point: (point.step, point.wall_time))
-        deduped_by_step = {}
-        for point in points:
-            deduped_by_step[point.step] = point
-        merged_scalars[tag] = [deduped_by_step[step] for step in sorted(deduped_by_step)]
-    return merged_scalars
+    raw_scalars = read_tensorboard_scalars(
+        run.label,
+        run.source_path,
+        all_scalars=True,
+    )
+    return {
+        tag: [ScalarPoint(*point) for point in points]
+        for tag, points in arrays_to_tuples(raw_scalars).items()
+    }
 
 
 def _load_cached_scalars(cache_path: Path) -> dict[str, dict[str, list[ScalarPoint]]]:
@@ -356,6 +337,22 @@ def _load_cached_scalars(cache_path: Path) -> dict[str, dict[str, list[ScalarPoi
     if not result:
         raise ValueError(f"No run scalars found in cache: {cache_path}")
     print(f"[training curves] Reusing shared scalar cache: {cache_path}", flush=True)
+    return result
+
+
+def _load_raw_data_scalars(
+    raw_data_dir: Path,
+    tags: set[str],
+) -> dict[str, dict[str, list[ScalarPoint]]]:
+    result = load_ablation_dataset(
+        raw_data_dir,
+        tag_filter=tags.__contains__,
+        point_factory=ScalarPoint,
+    )
+    print(
+        f"[training curves] Loading compact NumPy plotting data: {raw_data_dir.resolve()}",
+        flush=True,
+    )
     return result
 
 
@@ -531,6 +528,7 @@ def _plot_tag(
     band_alpha = float(_tag_plot_setting(tag, "band_alpha", 0.14))
     band_smoothing = _tag_plot_setting(tag, "band_smoothing", None)
     rolling_window = _tag_plot_setting(tag, "rolling_window", None)
+    post_smoothing = float(_tag_plot_setting(tag, "post_smoothing", 0.0))
     all_band_values: list[np.ndarray] = []
     color_map = plt.get_cmap("tab10")
     for index, (run_label, run_scalars) in enumerate(run_scalars_by_run.items()):
@@ -541,24 +539,41 @@ def _plot_tag(
             continue
 
         x_values, raw_values = _points_to_xy(points, x_axis=x_axis)
-        smooth_values = _ema(raw_values, effective_smoothing)
-        smooth_values = _centered_moving_average(smooth_values, rolling_window)
-        band_values = _fluctuation_band(
-            raw_values,
-            smooth_values,
-            effective_smoothing,
-            band_smoothing=band_smoothing,
-        ) * band_scale
-        initial_indices = _downsample_indices(len(raw_values), effective_downsample)
-        x_plot = x_values[initial_indices]
-        smooth_plot = smooth_values[initial_indices]
-        band_plot = band_values[initial_indices]
+        if points[0].smoothed_value is not None and points[0].band is not None:
+            # NumPy export already applied this tag's smoothing and downsampling.
+            x_plot = x_values
+            smooth_plot = np.asarray(
+                [point.smoothed_value for point in points],
+                dtype=float,
+            )
+            band_plot = np.asarray([point.band for point in points], dtype=float)
+        else:
+            smooth_values = _ema(raw_values, effective_smoothing)
+            smooth_values = _centered_moving_average(smooth_values, rolling_window)
+            band_values = _fluctuation_band(
+                raw_values,
+                smooth_values,
+                effective_smoothing,
+                band_smoothing=band_smoothing,
+            ) * band_scale
+            initial_indices = _downsample_indices(len(raw_values), effective_downsample)
+            x_plot = x_values[initial_indices]
+            smooth_plot = smooth_values[initial_indices]
+            band_plot = band_values[initial_indices]
+        if post_smoothing > 0.0:
+            smooth_plot = _ema(smooth_plot, post_smoothing)
+            band_plot = _ema(band_plot, post_smoothing)
         color = run_colors.get(run_label, color_map(index % 10))
+        band_lower = smooth_plot - band_plot
+        band_upper = smooth_plot + band_plot
+        if tag == "beta":
+            band_lower = np.clip(band_lower, 0.0, 1.0)
+            band_upper = np.clip(band_upper, 0.0, 1.0)
 
         axis.fill_between(
             x_plot,
-            smooth_plot - band_plot,
-            smooth_plot + band_plot,
+            band_lower,
+            band_upper,
             color=color,
             alpha=band_alpha,
             linewidth=0.0,
@@ -569,10 +584,10 @@ def _plot_tag(
             color=color,
             alpha=0.95,
             linewidth=linewidth,
-            label=run_label,
+            label=RUN_DISPLAY_LABELS.get(run_label, run_label),
         )
-        all_band_values.append(smooth_plot - band_plot)
-        all_band_values.append(smooth_plot + band_plot)
+        all_band_values.append(band_lower)
+        all_band_values.append(band_upper)
         plotted_any = True
 
     if all_band_values:
@@ -607,7 +622,10 @@ def main() -> int:
     if args.downsample < 1:
         raise ValueError("--downsample must be >= 1.")
 
-    if args.scalar_cache is not None:
+    if args.raw_data_dir is not None:
+        requested_tags = set(args.tags or PLOT_TAGS)
+        run_scalars_by_run = _load_raw_data_scalars(args.raw_data_dir, requested_tags)
+    elif args.scalar_cache is not None:
         run_scalars_by_run = _load_cached_scalars(args.scalar_cache)
     else:
         run_specs = _load_run_specs(args.config)
