@@ -21,9 +21,9 @@ from tg2_lab.assets.tiangong2pro.robot import (
 from .simtoolreal_tg2_utils import TG2_INSPIREHAND_JOINT_NAMES
 
 
-DEXTRAH_LAB_DIR = Path(__file__).resolve().parents[2]
-PRIMITIVE_OBJECT_USD_PATH = DEXTRAH_LAB_DIR / "assets" / "primitives" / "USD" / "small_8_cuboid" / "small_8_cuboid.usd"
-DEXTOOLBENCH_USD_DIR = DEXTRAH_LAB_DIR / "assets" / "dextoolbench_usd"
+TG2_LAB_DIR = Path(__file__).resolve().parents[2]
+PRIMITIVE_OBJECT_USD_PATH = TG2_LAB_DIR / "assets" / "primitives" / "USD" / "small_8_cuboid" / "small_8_cuboid.usd"
+DEXTOOLBENCH_USD_DIR = TG2_LAB_DIR / "assets" / "dextoolbench_usd"
 DEXTOOLBENCH_OBJECT_SCALES = {
     "claw_hammer": (2.5, 0.5625, 0.375),
 }

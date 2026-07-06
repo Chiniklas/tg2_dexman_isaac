@@ -136,6 +136,11 @@ python tg2_lab/deployment/mujoco/test_single_object_policy_replay.py --headless 
 
 ## Internal Notes
 
+Future agents investigating TG2 grasp failure should start with
+[`tg2_lab/tasks/simtoolreal_tg2/REFERENCE_COMPARISON.md`](tg2_lab/tasks/simtoolreal_tg2/REFERENCE_COMPARISON.md).
+It records the concrete KUKA-SHARPA/TG2 recipe differences, likely blockers,
+and recommended validation order.
+
 Component references used by the current TG2 SimToolReal task:
 
 - Scene creation, parallel environment layout, and TG2 table-facing visual setup take reference from `tg2_lab/tasks/tg2_inspirehand`.

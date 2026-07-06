@@ -266,27 +266,13 @@ class SimToolRealTg2Env(DirectRLEnv):
             if self.cfg.max_consecutive_successes > 0:
                 self.episode_length_buf[success_env_ids] = 0
 
-        reward_terms = {
-            "fingertip_delta_reward": fingertip_delta_reward.mean(),
-            "hand_delta_penalty": hand_delta_penalty.mean(),
-            "lifting_reward": lifting_reward.mean(),
-            "lift_bonus_reward": lift_bonus_reward.mean(),
-            "keypoint_reward": keypoint_reward.mean(),
-            "reach_bonus": reach_bonus.mean(),
-            "arm_action_penalty": arm_action_penalty.mean(),
-            "hand_action_penalty": hand_action_penalty.mean(),
-            "object_lin_vel_penalty": object_lin_vel_penalty.mean(),
-            "object_ang_vel_penalty": object_ang_vel_penalty.mean(),
-            "total_reward": reward.mean(),
-        }
         self.extras["log"] = {
-            "keypoints_max_dist": self._reward_keypoints_max_dist().mean(),
-            "object_lift": (0.05 + self.object_pos[:, 2] - self.object_init_pos[:, 2]).mean(),
+            "total_reward": reward.mean(),
             "success_rate": reached_goal.float().mean(),
             "success_tolerance": self.success_tolerance,
-            **reward_terms,
+            "keypoints_max_dist": self._reward_keypoints_max_dist().mean(),
+            "object_lift": (0.05 + self.object_pos[:, 2] - self.object_init_pos[:, 2]).mean(),
         }
-        self.extras["reward_terms"] = reward_terms
         return reward
 
     def _update_success_tolerance_curriculum(self) -> None:

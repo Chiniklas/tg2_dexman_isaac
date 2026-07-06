@@ -3,6 +3,10 @@ Date: 2026-06-16
 
 Current implementation progress
 
+- Future grasp-debugging agents must first read
+  `tg2_lab/tasks/simtoolreal_tg2/REFERENCE_COMPARISON.md`; it documents the
+  KUKA-SHARPA/TG2 differences and the recommended investigation order.
+
 - Root entrypoints are now `tg2_lab/train_rl_games.py` and `tg2_lab/play_rl_games.py`.
 - The vendored SAPO fork is kept locally under `tg2_lab/rl_games`.
 - The active task is `tg2_lab/tasks/simtoolreal_tg2`.

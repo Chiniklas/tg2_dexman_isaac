@@ -67,22 +67,24 @@ env_cfg:
   success_steps: 10
   max_consecutive_successes: 50
   force_consecutive_near_goal_steps: True
-  use_obs_delay: True
-  obs_delay_max: 3
-  use_action_delay: True
-  action_delay_max: 3
-  use_object_state_delay_noise: True
-  object_state_delay_max: 10
-  object_state_xyz_noise_std: 0.01
-  object_state_rotation_noise_degrees: 5.0
-  joint_velocity_obs_noise_std: 0.01
-  force_scale: 20.0
-  force_prob_range: [0.001, 0.1]
+  # Temporary deterministic grasp-discovery baseline. Restore these
+  # sim-to-real effects incrementally only after grasp-and-lift is reliable.
+  use_obs_delay: False
+  obs_delay_max: 1
+  use_action_delay: False
+  action_delay_max: 1
+  use_object_state_delay_noise: False
+  object_state_delay_max: 1
+  object_state_xyz_noise_std: 0.0
+  object_state_rotation_noise_degrees: 0.0
+  joint_velocity_obs_noise_std: 0.0
+  force_scale: 0.0
+  force_prob_range: [0.0, 0.0]
   force_decay: 0.0
   force_decay_interval: 0.08
   force_only_when_lifted: True
-  torque_scale: 2.0
-  torque_prob_range: [0.001, 0.1]
+  torque_scale: 0.0
+  torque_prob_range: [0.0, 0.0]
   torque_decay: 0.0
   torque_decay_interval: 0.08
   torque_only_when_lifted: True

@@ -12,9 +12,9 @@ import time
 from datetime import datetime
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEXTRAH_ROOT = pathlib.Path(__file__).resolve().parent
-TASK_ROOT = DEXTRAH_ROOT / "tasks" / "simtoolreal_tg2"
-VENDORED_RL_GAMES = DEXTRAH_ROOT / "rl_games"
+TG2_LAB_ROOT = pathlib.Path(__file__).resolve().parent
+TASK_ROOT = TG2_LAB_ROOT / "tasks" / "simtoolreal_tg2"
+VENDORED_RL_GAMES = TG2_LAB_ROOT / "rl_games"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

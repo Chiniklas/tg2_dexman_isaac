@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib
 import math
 import pathlib
@@ -10,8 +11,8 @@ import pickle
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEXTRAH_ROOT = pathlib.Path(__file__).resolve().parent
-VENDORED_RL_GAMES = DEXTRAH_ROOT / "rl_games"
+TG2_LAB_ROOT = pathlib.Path(__file__).resolve().parent
+VENDORED_RL_GAMES = TG2_LAB_ROOT / "rl_games"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -47,6 +48,54 @@ from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
 import tg2_lab.tasks.simtoolreal_tg2.gym_setup  # noqa: F401
+
+
+class _LegacyModuleUnpickler(pickle.Unpickler):
+    """Load saved configs whose classes predate the tg2_lab package rename."""
+
+    def find_class(self, module: str, name: str):
+        legacy_package = "dextrah_lab"
+        if module == legacy_package or module.startswith(f"{legacy_package}."):
+            module = f"tg2_lab{module[len(legacy_package):]}"
+        return super().find_class(module, name)
+
+
+def _remap_legacy_package_paths(value, memo: set[int] | None = None):
+    """Rewrite paths embedded in configs saved before the tg2_lab rename."""
+    if isinstance(value, str):
+        return value.replace("dextrah_lab/", "tg2_lab/").replace("dextrah_lab.", "tg2_lab.")
+    if isinstance(value, pathlib.PurePath):
+        return type(value)(str(value).replace("dextrah_lab/", "tg2_lab/"))
+
+    if memo is None:
+        memo = set()
+    value_id = id(value)
+    if value_id in memo:
+        return value
+    memo.add(value_id)
+
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for field in dataclasses.fields(value):
+            current = getattr(value, field.name)
+            remapped = _remap_legacy_package_paths(current, memo)
+            if remapped is not current:
+                setattr(value, field.name, remapped)
+        return value
+    if isinstance(value, dict):
+        remapped_items = [
+            (_remap_legacy_package_paths(key, memo), _remap_legacy_package_paths(item, memo))
+            for key, item in value.items()
+        ]
+        value.clear()
+        value.update(remapped_items)
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _remap_legacy_package_paths(item, memo)
+        return value
+    if isinstance(value, tuple):
+        return tuple(_remap_legacy_package_paths(item, memo) for item in value)
+    return value
 
 
 class SimToolRealRlGamesVecEnvWrapper(RlGamesVecEnvWrapper):
@@ -129,7 +178,8 @@ def _load_replay_env_cfg(task_name: str, checkpoint_path: str):
     if env_pickle_path is not None and env_pickle_path.is_file():
         print(f"[INFO]: Loading environment config from: {env_pickle_path}")
         with env_pickle_path.open("rb") as f:
-            return pickle.load(f)
+            env_cfg = _LegacyModuleUnpickler(f).load()
+        return _remap_legacy_package_paths(env_cfg)
     return parse_env_cfg(
         task_name,
         device=args_cli.device,

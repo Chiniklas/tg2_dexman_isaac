@@ -113,6 +113,11 @@ class IsaacAlgoObserver(AlgoObserver):
                     self.direct_info[prefix] = value
 
             for k, v in infos.items():
+                # The Isaac Lab wrapper renames extras["log"] to "episode".
+                # It is already buffered above and must not also be emitted as
+                # redundant /frame, /iter, and /time scalar series.
+                if k == "episode":
+                    continue
                 _flatten(k, v)
 
     def after_clear_stats(self):
