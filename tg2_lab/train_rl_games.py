@@ -87,7 +87,7 @@ from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-import dextrah_lab.tasks.simtoolreal_tg2.gym_setup  # noqa: F401
+import tg2_lab.tasks.simtoolreal_tg2.gym_setup  # noqa: F401
 
 
 def _load_agent_cfg_override(agent_cfg_path: str) -> dict:

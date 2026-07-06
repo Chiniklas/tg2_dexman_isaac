@@ -46,7 +46,7 @@ from isaaclab.utils.assets import retrieve_file_path
 from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
-import dextrah_lab.tasks.simtoolreal_tg2.gym_setup  # noqa: F401
+import tg2_lab.tasks.simtoolreal_tg2.gym_setup  # noqa: F401
 
 
 class SimToolRealRlGamesVecEnvWrapper(RlGamesVecEnvWrapper):

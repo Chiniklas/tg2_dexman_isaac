@@ -181,9 +181,9 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 
 from distillation_safedagger import SafeDagger
-import dextrah_lab.tasks.tg2_inspirehand.gym_setup
+import tg2_lab.tasks.tg2_inspirehand.gym_setup
 
-from dextrah_lab.distillation_new.a2c_stereo_transformer import (
+from tg2_lab.distillation.a2c_stereo_transformer import (
     A2CBuilder as A2CStereoTransformerBuilder,
 )
 
@@ -312,10 +312,10 @@ def main(env_cfg, agent_cfg: dict):
                 )
 
         parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
-        agent_cfg_folder = "dextrah_lab/tasks/tg2_inspirehand/agents"
+        agent_cfg_folder = "tg2_lab/tasks/tg2_inspirehand/agents"
 
         if not ov_env.simulate_stereo:
-            raise ValueError("distillation_new only supports stereo transformer policies.")
+            raise ValueError("distillation only supports stereo transformer policies.")
         student_cfg = os.path.join(
             parent_path,
             agent_cfg_folder,

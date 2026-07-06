@@ -10,13 +10,13 @@ Contents:
 
 The root entrypoints are:
 
-- `dextrah_lab/train_rl_games.py`
-- `dextrah_lab/play_rl_games.py`
+- `tg2_lab/train_rl_games.py`
+- `tg2_lab/play_rl_games.py`
 
 Train with the vendored SAPO RL-Games fork:
 
 ```bash
-python dextrah_lab/train_rl_games.py \
+python tg2_lab/train_rl_games.py \
   --task simtoolreal_tg2 \
   --agent_cfg rl_games_sapo_cfg.yaml \
   --num_envs 1536 \
@@ -26,7 +26,7 @@ python dextrah_lab/train_rl_games.py \
 Small visual smoke test:
 
 ```bash
-python dextrah_lab/train_rl_games.py \
+python tg2_lab/train_rl_games.py \
   --task simtoolreal_tg2 \
   --agent_cfg rl_games_sapo_cfg.yaml \
   --num_envs 6 \
@@ -41,13 +41,13 @@ python dextrah_lab/train_rl_games.py \
 Replay a checkpoint:
 
 ```bash
-python dextrah_lab/play_rl_games.py \
+python tg2_lab/play_rl_games.py \
   --task simtoolreal_tg2 \
-  --checkpoint dextrah_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
+  --checkpoint tg2_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
 ```
 
 The SAPO package used by these scripts is the local copy at
-`dextrah_lab/rl_games`.
+`tg2_lab/rl_games`.
 
 Current checked-in object support:
 

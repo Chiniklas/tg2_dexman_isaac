@@ -1,6 +1,6 @@
 """Spawn the TG2-Inspirehand env, hold zero actions, and enable stereo cameras."""
 """
-cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/tasks/tg2_inspirehand/
+cd /home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/tasks/tg2_inspirehand/
 python test_camera_setup.py \
   --task dextrah_tg2_inspirehand \
   --objects_dir test_object \
@@ -82,7 +82,7 @@ def main() -> None:
     import isaaclab_tasks  # noqa: F401
     from isaaclab_tasks.utils import parse_env_cfg
 
-    import dextrah_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
+    import tg2_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
 
     device = getattr(args_cli, "device", "cuda:0")
     env_cfg = parse_env_cfg(

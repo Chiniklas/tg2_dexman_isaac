@@ -2,17 +2,17 @@
 """Replay a student policy and record trajectories.
 
 This script is intentionally standalone. It does not import helper classes from
-`distillation_new/replay.py` or `distillation_new/data_recorder.py`.
+`distillation/replay.py` or `distillation/data_recorder.py`.
 
 # default student checkpoint:
-/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-both_26-10-53-04/nn/dextrah_student_safe_dagger.pth.pth
+/home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/distillation/runs/dextrah-tg2-inspirehand-both_26-10-53-04/nn/dextrah_student_safe_dagger.pth.pth
 
 # default object dir:
-/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/distill_multi_objects
+/home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/assets/distill_multi_objects
 
 # command:
-python /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/deployment_tg2_inspirehand/ws/src/inference_offline/tests/student_traj_recorder.py   
---checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-both_26-10-53-04/nn/dextrah_student_safe_dagger.pth.pth   
+python /home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/deployment_tg2_inspirehand/ws/src/inference_offline/tests/student_traj_recorder.py
+--checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/distillation/runs/dextrah-tg2-inspirehand-both_26-10-53-04/nn/dextrah_student_safe_dagger.pth.pth
 --task dextrah_tg2_inspirehand   
 --num_envs 4   
 --enable_cameras   
@@ -94,7 +94,7 @@ from rl_games.algos_torch.model_builder import ModelBuilder
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-import dextrah_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
+import tg2_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
 
 
 def adjust_state_dict_keys(checkpoint_state_dict: dict[str, Any], model_state_dict: dict[str, Any]) -> dict[str, Any]:
@@ -124,11 +124,11 @@ def adjust_state_dict_keys(checkpoint_state_dict: dict[str, Any], model_state_di
 def register_stereo_transformer_builder() -> None:
     """Register rl_games network builder required by stereo transformer config."""
     try:
-        from dextrah_lab.distillation_new.a2c_stereo_transformer import (
+        from tg2_lab.distillation.a2c_stereo_transformer import (
             A2CBuilder as A2CStereoTransformerBuilder,
         )
     except ImportError:
-        from dextrah_lab.distillation.a2c_stereo_transformer import (  # type: ignore
+        from tg2_lab.distillation.a2c_stereo_transformer import (  # type: ignore
             A2CBuilder as A2CStereoTransformerBuilder,
         )
     model_builder.register_network("a2c_stereo_transformer", A2CStereoTransformerBuilder)
@@ -140,7 +140,7 @@ def load_yaml(path: str) -> dict[str, Any]:
 
 
 def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
-    needle = pathlib.Path("dextrah_lab/tasks/tg2_inspirehand/agents/rl_games_ppo_stereo_transformer.yaml")
+    needle = pathlib.Path("tg2_lab/tasks/tg2_inspirehand/agents/rl_games_ppo_stereo_transformer.yaml")
     for parent in [start, *start.parents]:
         if (parent / needle).exists():
             return parent
@@ -547,7 +547,7 @@ def main(env_cfg, _agent_cfg: dict) -> None:
 
     if args_cli.student_cfg is None:
         root = _find_repo_root(pathlib.Path(__file__).resolve())
-        student_cfg = root / "dextrah_lab/tasks/tg2_inspirehand/agents/rl_games_ppo_stereo_transformer.yaml"
+        student_cfg = root / "tg2_lab/tasks/tg2_inspirehand/agents/rl_games_ppo_stereo_transformer.yaml"
     else:
         student_cfg = pathlib.Path(args_cli.student_cfg).expanduser().resolve()
 

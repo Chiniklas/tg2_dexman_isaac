@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         import isaaclab_tasks  # noqa: F401
         from isaaclab_tasks.utils.hydra import hydra_task_config
 
-        import dextrah_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
+        import tg2_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
 
         @hydra_task_config(args_cli.task, "rl_games_cfg_entry_point")
         def run(env_cfg, _agent_cfg: dict) -> None:

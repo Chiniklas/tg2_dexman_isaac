@@ -9,7 +9,7 @@ from .simtoolreal_tg2_env_cfg import SimToolRealTg2EnvCfg
 
 gym.register(
     id="simtoolreal_tg2",
-    entry_point="dextrah_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env:SimToolRealTg2Env",
+    entry_point="tg2_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env:SimToolRealTg2Env",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": SimToolRealTg2EnvCfg,
@@ -19,7 +19,7 @@ gym.register(
 
 gym.register(
     id="simtoolreal_tg2_pretrain_like",
-    entry_point="dextrah_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env:SimToolRealTg2Env",
+    entry_point="tg2_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env:SimToolRealTg2Env",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": SimToolRealTg2EnvCfg,

@@ -16,7 +16,7 @@ from .dextrah_tg2_inspirehand_env_cfg import DextrahTG2InspirehandEnvCfg
 
 gym.register(
     id="dextrah_tg2_inspirehand",
-    entry_point="dextrah_lab.tasks.tg2_inspirehand.dextrah_tg2_inspirehand_env:DextrahTG2InspirehandEnv",
+    entry_point="tg2_lab.tasks.tg2_inspirehand.dextrah_tg2_inspirehand_env:DextrahTG2InspirehandEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": DextrahTG2InspirehandEnvCfg,

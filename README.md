@@ -16,18 +16,18 @@ stored checkpoints, and local reference material are still present in the tree.
 
 ## Layout
 
-- `dextrah_lab/train_rl_games.py`: root training entrypoint
-- `dextrah_lab/play_rl_games.py`: root replay entrypoint
-- `dextrah_lab/tasks/simtoolreal_tg2`: TG2 task code and SAPO YAML configs
-- `dextrah_lab/rl_games`: vendored SAPO RL-Games project
-- `dextrah_lab/assets/tg2_inspirehand`: TG2 robot USD/config
-- `dextrah_lab/assets/test_object`: checked-in SimToolReal object USDs
+- `tg2_lab/train_rl_games.py`: root training entrypoint
+- `tg2_lab/play_rl_games.py`: root replay entrypoint
+- `tg2_lab/tasks/simtoolreal_tg2`: TG2 task code and SAPO YAML configs
+- `tg2_lab/rl_games`: vendored SAPO RL-Games project
+- `tg2_lab/assets/tg2_inspirehand`: TG2 robot USD/config
+- `tg2_lab/assets/test_object`: checked-in SimToolReal object USDs
 - `reference/simtoolreal_isaacsim`: local reference snapshot used for alignment
 
 Logs and saved params are written under:
 
-- `dextrah_lab/tasks/simtoolreal_tg2/logs`
-- `dextrah_lab/tasks/simtoolreal_tg2/outputs`
+- `tg2_lab/tasks/simtoolreal_tg2/logs`
+- `tg2_lab/tasks/simtoolreal_tg2/outputs`
 
 ## Environment
 
@@ -43,7 +43,7 @@ python -m pip install -e .
 Small visual smoke test:
 
 ```bash
-python dextrah_lab/train_rl_games.py \
+python tg2_lab/train_rl_games.py \
   --task simtoolreal_tg2 \
   --agent_cfg rl_games_sapo_cfg.yaml \
   --num_envs 6 \
@@ -63,7 +63,7 @@ only because this smoke run uses 6 envs instead of the 1536-env training shape.
 Full 1536-env training run:
 
 ```bash
-python dextrah_lab/train_rl_games.py \
+python tg2_lab/train_rl_games.py \
   --task simtoolreal_tg2 \
   --agent_cfg rl_games_sapo_cfg.yaml \
   --num_envs 1536 \
@@ -73,7 +73,7 @@ python dextrah_lab/train_rl_games.py \
 Pretrain-like variant:
 
 ```bash
-python dextrah_lab/train_rl_games.py \
+python tg2_lab/train_rl_games.py \
   --task simtoolreal_tg2_pretrain_like \
   --agent_cfg rl_games_sapo_pretrain_like_cfg.yaml \
   --num_envs 1536 \
@@ -85,23 +85,23 @@ python dextrah_lab/train_rl_games.py \
 Replay a trained checkpoint:
 
 ```bash
-python dextrah_lab/play_rl_games.py \
+python tg2_lab/play_rl_games.py \
   --task simtoolreal_tg2 \
-  --checkpoint dextrah_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
+  --checkpoint tg2_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
 ```
 
 Optional object override:
 
 ```bash
-python dextrah_lab/play_rl_games.py \
+python tg2_lab/play_rl_games.py \
   --task simtoolreal_tg2 \
   --object 1wdf56lx \
-  --checkpoint dextrah_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
+  --checkpoint tg2_lab/tasks/simtoolreal_tg2/logs/<run>/nn/<checkpoint>.pth
 ```
 
 ## Tiangong2Pro MuJoCo Asset Prep
 
-The `dextrah_lab/assets/tiangong2pro` scaffold now keeps only:
+The `tg2_lab/assets/tiangong2pro` scaffold now keeps only:
 
 - `urdf/tiangong2.0_pro_with_hands.urdf`
 - `xml/tiangong2.0_pro_with_hands.xml`
@@ -109,7 +109,7 @@ The `dextrah_lab/assets/tiangong2pro` scaffold now keeps only:
 After `python -m pip install -e .`, you can open the standalone XML directly in
 the MuJoCo viewer by loading:
 
-`dextrah_lab/assets/tiangong2pro/xml/tiangong2.0_pro_with_hands.xml`
+`tg2_lab/assets/tiangong2pro/xml/tiangong2.0_pro_with_hands.xml`
 
 If `mujoco` is missing in the environment, editable install now pulls it in as
 part of this branch's package dependencies.
@@ -117,20 +117,20 @@ part of this branch's package dependencies.
 Simple local scene preview:
 
 ```bash
-python dextrah_lab/deployment_ros2/mujoco/scene_loader.py
+python tg2_lab/deployment/mujoco/scene_loader.py
 ```
 
 Claw-hammer replay smoke scene:
 
 ```bash
-python dextrah_lab/deployment_ros2/mujoco/test_single_object_policy_replay.py --headless --steps 240
+python tg2_lab/deployment/mujoco/test_single_object_policy_replay.py --headless --steps 240
 ```
 
 ## Current Status
 
 - SimToolReal-style TG2 task is implemented and registered
 - root train/play scripts match the reference project structure
-- SAPO RL-Games is vendored locally under `dextrah_lab/rl_games`
+- SAPO RL-Games is vendored locally under `tg2_lab/rl_games`
 - default TG2 SimToolReal object is DexToolBench `claw_hammer`; checked-in object assets also include `cube` and `1wdf56lx`
 - Tiangong2Pro MuJoCo asset scaffold is checked in as one URDF plus one standalone XML
 
@@ -138,7 +138,7 @@ python dextrah_lab/deployment_ros2/mujoco/test_single_object_policy_replay.py --
 
 Component references used by the current TG2 SimToolReal task:
 
-- Scene creation, parallel environment layout, and TG2 table-facing visual setup take reference from `dextrah_lab/tasks/tg2_inspirehand`.
+- Scene creation, parallel environment layout, and TG2 table-facing visual setup take reference from `tg2_lab/tasks/tg2_inspirehand`.
 - Robot asset/config conventions take reference from `reference/simtoolreal_isaacsim/simtoolreal_lab/tasks/simtoolreal_sharpa` and its `KUKA_SHARPA_CFG`; TG2 now uses a fixed-head USD reimport with robot self-collision enabled while relying on the converted asset's URDF joint limits.
 - Reward terms, keypoint reward structure, goal/object state bookkeeping, and table contact force handling take reference from `simtoolreal_sharpa`.
 - SAPO RL-Games training config, asymmetric observation setup, runner wiring, and block-size constraints take reference from the `simtoolreal_sharpa` agent configs.

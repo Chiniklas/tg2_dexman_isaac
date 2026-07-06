@@ -12,7 +12,7 @@ import pathlib
 import numpy as np
 import warp as wp
 import math
-from dextrah_lab.assets.tg2_inspirehand.tg2_inspirehand import TG2_INSPIREHAND_CFG
+from tg2_lab.assets.tg2_inspirehand.tg2_inspirehand import TG2_INSPIREHAND_CFG
 
 import isaaclab.envs.mdp as mdp
 import isaaclab.sim as sim_utils

@@ -17,8 +17,8 @@ import torch
 import warp as wp
 import warp.torch
 
-from dextrah_lab.utils.kinematics import Kinematics
-from dextrah_lab.utils.maps_base import BaseMap
+from tg2_lab.utils.kinematics import Kinematics
+from tg2_lab.utils.maps_base import BaseMap
 
 # Define PyTorch autograd op to wrap foward kinematics
 # function.

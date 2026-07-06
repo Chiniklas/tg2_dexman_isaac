@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 # Run from repo root:
-# python dextrah_lab/deployment_ros2/mujoco/test_single_object_policy_replay.py
+# python tg2_lab/deployment/mujoco/test_single_object_policy_replay.py
 #
 # Headless smoke check:
-# python dextrah_lab/deployment_ros2/mujoco/test_single_object_policy_replay.py --headless --steps 240
+# python tg2_lab/deployment/mujoco/test_single_object_policy_replay.py --headless --steps 240
 
 import argparse
 import copy
@@ -17,7 +17,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEXTRAH_ROOT = REPO_ROOT / "dextrah_lab"
+DEXTRAH_ROOT = REPO_ROOT / "tg2_lab"
 VENDORED_RL_GAMES = DEXTRAH_ROOT / "rl_games"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -26,7 +26,7 @@ if VENDORED_RL_GAMES.is_dir() and str(VENDORED_RL_GAMES) not in sys.path:
 
 DEFAULT_SCENE_XML = (
     REPO_ROOT
-    / "dextrah_lab"
+    / "tg2_lab"
     / "assets"
     / "tiangong2pro"
     / "mujoco_scene"
@@ -239,7 +239,7 @@ def _load_agent_cfg(checkpoint_path: Path) -> dict:
         return _yaml_load(params_dir / "agent.yaml")
     cfg_path = (
         REPO_ROOT
-        / "dextrah_lab"
+        / "tg2_lab"
         / "tasks"
         / "simtoolreal_tg2"
         / "agents"

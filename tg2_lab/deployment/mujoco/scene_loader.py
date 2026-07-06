@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_XML_PATH = REPO_ROOT / "dextrah_lab" / "assets" / "tiangong2pro" / "xml" / "tiangong2.0_pro_with_hands_half_body.xml"
+DEFAULT_XML_PATH = REPO_ROOT / "tg2_lab" / "assets" / "tiangong2pro" / "xml" / "tiangong2.0_pro_with_hands_half_body.xml"
 
 
 def _require_mujoco():

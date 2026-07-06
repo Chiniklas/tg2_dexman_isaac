@@ -12,8 +12,8 @@ import torch
 import numpy as np
 
 import warp as wp
-from dextrah_lab.utils.import_urdf import parse_urdf_annotated as parse_urdf
-from dextrah_lab.utils.cuda_stream_utils import setup_torch_to_use_warp_streams
+from tg2_lab.utils.import_urdf import parse_urdf_annotated as parse_urdf
+from tg2_lab.utils.cuda_stream_utils import setup_torch_to_use_warp_streams
 
 
 def extract_link_index_path(link_index, joint_parents):

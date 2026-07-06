@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT="/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/run_distillation_safedagger.py"
+SCRIPT="/home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/distillation/run_distillation_safedagger.py"
 MAX_ITERS="${MAX_ITERS:-100000}"
 MODE="${MODE:-both}" # dagger | safedagger | both
 

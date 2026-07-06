@@ -59,7 +59,7 @@ JOINT_UPPER_LIMITS = np.asarray(
 )
 
 DEFAULT_TRAJ_FILE = (
-    "/home/chi/projects/tg2_dexman_isaac/dextrah_lab/deployment_tg2_inspirehand/ws/src/"
+    "/home/chi/projects/tg2_dexman_isaac/tg2_lab/deployment_tg2_inspirehand/ws/src/"
     "inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5"
 )
 

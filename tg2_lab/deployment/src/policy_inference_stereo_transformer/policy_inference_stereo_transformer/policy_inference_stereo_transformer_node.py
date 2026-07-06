@@ -69,7 +69,7 @@ class PolicyInferenceNode(Node):
             "cfg_path",
             str(
                 resolved_repo_root
-                / "dextrah_lab"
+                / "tg2_lab"
                 / "tasks"
                 / "tg2_inspirehand"
                 / "agents"
@@ -84,7 +84,7 @@ class PolicyInferenceNode(Node):
         if not cfg_path:
             cfg_path = str(
                 resolved_repo_root
-                / "dextrah_lab"
+                / "tg2_lab"
                 / "tasks"
                 / "tg2_inspirehand"
                 / "agents"

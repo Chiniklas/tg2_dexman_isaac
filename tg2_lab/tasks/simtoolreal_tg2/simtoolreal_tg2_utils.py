@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from dextrah_lab.assets.tiangong2pro.robot import TIANGONG2PRO_POLICY_JOINT_NAMES
+from tg2_lab.assets.tiangong2pro.robot import TIANGONG2PRO_POLICY_JOINT_NAMES
 
 
 TG2_INSPIREHAND_JOINT_NAMES = TIANGONG2PRO_POLICY_JOINT_NAMES

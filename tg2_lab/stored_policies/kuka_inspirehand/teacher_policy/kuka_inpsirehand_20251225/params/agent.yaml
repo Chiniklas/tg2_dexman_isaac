@@ -112,7 +112,7 @@ params:
       deterministic: true
       games_num: 100000
       print_stats: true
-    train_dir: /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/rl_games/logs/rl_games/dextrah_lstm
+    train_dir: /home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/rl_games/logs/rl_games/dextrah_lstm
     full_experiment_name: 2025-12-25_20-42-55
 wandb_activate: false
 wandb_group: rl_gpu

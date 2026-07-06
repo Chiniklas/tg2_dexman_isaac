@@ -61,7 +61,7 @@ from .dextrah_tg2_inspirehand_constants import (
 )
 
 # this is for calculating the forward kinematics on the hand points
-from dextrah_lab.utils.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
+from tg2_lab.utils.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
 
 ## TODO:
 # define a palm direction vector

@@ -1,5 +1,5 @@
-asset_path: /home/karl/dev/dextrah-lab-internal/dextrah_lab/assets/primitives/urdf/small_12_cuboid/model.urdf
-usd_dir: /home/karl/dev/dextrah-lab-internal/dextrah_lab/assets/primitives/USD/small_12_cuboid
+asset_path: /home/karl/dev/tg2-lab-internal/tg2_lab/assets/primitives/urdf/small_12_cuboid/model.urdf
+usd_dir: /home/karl/dev/tg2-lab-internal/tg2_lab/assets/primitives/USD/small_12_cuboid
 usd_file_name: small_12_cuboid.usd
 force_usd_conversion: true
 make_instanceable: false

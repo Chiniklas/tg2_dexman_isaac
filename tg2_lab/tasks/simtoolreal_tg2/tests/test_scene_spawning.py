@@ -1,10 +1,10 @@
 """Spawn and inspect the SimToolReal TG2 Isaac Lab scene.
 
 Visual scene check:
-python dextrah_lab/tasks/simtoolreal_tg2/tests/test_scene_spawning.py --num-envs 1
+python tg2_lab/tasks/simtoolreal_tg2/tests/test_scene_spawning.py --num-envs 1
 
 Headless smoke check:
-python dextrah_lab/tasks/simtoolreal_tg2/tests/test_scene_spawning.py --headless --num-envs 1 --steps 2
+python tg2_lab/tasks/simtoolreal_tg2/tests/test_scene_spawning.py --headless --num-envs 1 --steps 2
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def _make_env_cfg(
     debug_fingertips: bool,
 ):
     """Build SimToolRealTg2EnvCfg after Kit/SimulationApp has started."""
-    from dextrah_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env_cfg import SimToolRealTg2EnvCfg
+    from tg2_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env_cfg import SimToolRealTg2EnvCfg
 
     cfg = SimToolRealTg2EnvCfg()
     cfg.scene.num_envs = num_envs
@@ -41,7 +41,7 @@ def _make_env_cfg(
 
 def _spawn_env(cfg):
     """Construct and reset the current task env."""
-    from dextrah_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env import SimToolRealTg2Env
+    from tg2_lab.tasks.simtoolreal_tg2.simtoolreal_tg2_env import SimToolRealTg2Env
 
     env = SimToolRealTg2Env(cfg)
     obs, _ = env.reset()

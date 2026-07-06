@@ -1,5 +1,5 @@
 asset_path: /tmp/tiangong2pro_urdf_import_4rrh40xd/urdf/tiangong2.0_pro_with_hands_half_body_fixed_head.urdf
-usd_dir: /home/chi-zhang/projects/tg2_dexman_isaac/dextrah_lab/assets/tiangong2pro/usd/tiangong2.0_pro_with_hands_half_body_fixed_head
+usd_dir: /home/chi-zhang/projects/tg2_dexman_isaac/tg2_lab/assets/tiangong2pro/usd/tiangong2.0_pro_with_hands_half_body_fixed_head
 usd_file_name: tiangong2.0_pro_with_hands_half_body_fixed_head.usd
 force_usd_conversion: true
 make_instanceable: true

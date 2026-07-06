@@ -44,7 +44,7 @@ parser.add_argument(
     "--objects_dir",
     type=str,
     default=None,
-    help="Optional object assets directory name under dextrah_lab/assets (e.g. unseen_objects).",
+    help="Optional object assets directory name under tg2_lab/assets (e.g. unseen_objects).",
 )
 parser.add_argument("--save_dir", type=str, default="eval_results", help="Directory to save evaluation results.")
 parser.add_argument(
@@ -83,9 +83,9 @@ from rl_games.algos_torch.model_builder import ModelBuilder
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-import dextrah_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
-from dextrah_lab.distillation_new.a2c_stereo_transformer import A2CBuilder as A2CStereoTransformerBuilder
-from dextrah_lab.distillation_new.eval_utils import (
+import tg2_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
+from tg2_lab.distillation.a2c_stereo_transformer import A2CBuilder as A2CStereoTransformerBuilder
+from tg2_lab.distillation.eval_utils import (
     UNSAFE_REASON_NAMES,
     classify_out_of_reach_reasons,
     unsafe_reason_percentages_from_counts,
@@ -607,9 +607,9 @@ def main(env_cfg, agent_cfg: dict):
         )
 
         parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
-        agent_cfg_folder = "dextrah_lab/tasks/tg2_inspirehand/agents"
+        agent_cfg_folder = "tg2_lab/tasks/tg2_inspirehand/agents"
         if not env.env.simulate_stereo:
-            raise ValueError("eval_student only supports stereo transformer policies for distillation_new.")
+            raise ValueError("eval_student only supports stereo transformer policies for distillation.")
         student_cfg = os.path.join(parent_path, agent_cfg_folder, "rl_games_ppo_stereo_transformer.yaml")
         with open(student_cfg, "r", encoding="utf-8") as f:
             student_cfg_yaml = yaml.safe_load(f) or {}

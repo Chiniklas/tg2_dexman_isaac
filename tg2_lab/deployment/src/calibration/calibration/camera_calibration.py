@@ -32,9 +32,9 @@ from calibration.repo_support import ensure_repo_root_on_path
 
 ensure_repo_root_on_path()
 
-from dextrah_lab.utils.kinematics import Kinematics
-from dextrah_lab.utils.rotation_utils import euler_to_matrix, quaternion_to_matrix
-from dextrah_lab.utils.utils import initialize_warp
+from tg2_lab.utils.kinematics import Kinematics
+from tg2_lab.utils.rotation_utils import euler_to_matrix, quaternion_to_matrix
+from tg2_lab.utils.utils import initialize_warp
 
 RIGHT_ARM_HAND_JOINTS = [
     "shoulder_pitch_r_joint",
@@ -442,7 +442,7 @@ def main(args: list[str] | None = None) -> int:
     parser.add_argument(
         "--urdf",
         type=str,
-        default="/home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/assets/tg2_inspirehand/urdf/tg2_with_hands_no_legs.urdf",
+        default="/home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/assets/tg2_inspirehand/urdf/tg2_with_hands_no_legs.urdf",
         help="Path to TG2 Inspirehand URDF.",
     )
     parser.add_argument("--palm-link", type=str, default="palm", help="Palm link name in the URDF.")

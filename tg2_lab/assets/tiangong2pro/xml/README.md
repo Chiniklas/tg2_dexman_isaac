@@ -10,5 +10,5 @@ Files:
 Quick local loader:
 
 ```bash
-python dextrah_lab/deployment_ros2/mujoco/scene_loader.py
+python tg2_lab/deployment/mujoco/scene_loader.py
 ```

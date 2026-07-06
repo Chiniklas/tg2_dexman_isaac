@@ -54,11 +54,11 @@ source /opt/ros/humble/setup.bash
 
 ## Workspace Setup
 
-Build this workspace from `deployment_ros2`:
+Build this workspace from `deployment`:
 
 ```bash
 source /opt/ros/humble/setup.bash
-cd /home/chi/tg2_dexman_isaac/dextrah_lab/deployment_ros2
+cd /home/chi/tg2_dexman_isaac/tg2_lab/deployment
 rosdep install --from-paths src --ignore-src -r -y
 colcon build
 source install/setup.bash
@@ -188,7 +188,7 @@ This workspace uses a simple pattern:
 
 ```bash
 source /opt/ros/humble/setup.bash
-cd /home/chi/tg2_dexman_isaac/dextrah_lab/deployment_ros2
+cd /home/chi/tg2_dexman_isaac/tg2_lab/deployment
 source install/setup.bash
 ```
 
@@ -227,7 +227,7 @@ ros2 launch policy_inference_stereo_transformer policy_inference_stereo_transfor
 
 Notes:
 
-- `repo_root` must point at the repository root, not `deployment_ros2`.
+- `repo_root` must point at the repository root, not `deployment`.
 - If `checkpoint_path` is empty, the node starts with random weights.
 - By default this node publishes only the right-arm joint targets.
 
@@ -292,7 +292,7 @@ ros2 topic echo /joint_states --once
 
 The scripts under `src/inference_offline/tests/` publish `sensor_msgs/JointState` commands to `/arm/command_joint_states` and rely on `/joint_states` feedback for initialization and safety checks.
 
-Run them from `deployment_ros2` after sourcing the workspace.
+Run them from `deployment` after sourcing the workspace.
 
 ### Move To Homing Or Init Pose
 
@@ -381,4 +381,4 @@ ros2 run calibration april_tag_detector --ros-args \
   -p debug_view:=true
 ```
 
-For the full camera calibration workflow and test utilities, see [src/calibration/README.md](/home/chi/tg2_dexman_isaac/dextrah_lab/deployment_ros2/src/calibration/README.md).
+For the full camera calibration workflow and test utilities, see [src/calibration/README.md](/home/chi/tg2_dexman_isaac/tg2_lab/deployment/src/calibration/README.md).

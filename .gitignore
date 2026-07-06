@@ -16,19 +16,19 @@ object_textures/
 table_textures/
 curated_table_textures/
 eval_results/
-dextrah_lab/assets/*
-!dextrah_lab/assets/kuka_inspirehand/
-!dextrah_lab/assets/kuka_inspirehand/**
-!dextrah_lab/assets/kuka_inspirehand_modified/
-!dextrah_lab/assets/kuka_inspirehand_modified/**
-!dextrah_lab/assets/tg2_inspirehand/
-!dextrah_lab/assets/tg2_inspirehand/**
-!dextrah_lab/assets/tiangong2pro/
-!dextrah_lab/assets/tiangong2pro/**
-dextrah_lab/assets/tiangong2pro/**/__pycache__/
-dextrah_lab/assets/tiangong2pro/**/*.pyc
+tg2_lab/assets/*
+!tg2_lab/assets/kuka_inspirehand/
+!tg2_lab/assets/kuka_inspirehand/**
+!tg2_lab/assets/kuka_inspirehand_modified/
+!tg2_lab/assets/kuka_inspirehand_modified/**
+!tg2_lab/assets/tg2_inspirehand/
+!tg2_lab/assets/tg2_inspirehand/**
+!tg2_lab/assets/tiangong2pro/
+!tg2_lab/assets/tiangong2pro/**
+tg2_lab/assets/tiangong2pro/**/__pycache__/
+tg2_lab/assets/tiangong2pro/**/*.pyc
 reference/
-# dextrah_lab/stored_policies/
+# tg2_lab/stored_policies/
 build/
 devel/
 .catkin_workspace

@@ -95,7 +95,7 @@ def update_urdf(urdf_full_path, object_name):
 def main():
     """
     Example usage:
-    python batch_convert_urdf.py /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/urdf /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/USD
+    python batch_convert_urdf.py /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/urdf /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/USD
     """
     # check valid file path
     urdf_path = args_cli.input

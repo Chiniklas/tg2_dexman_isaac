@@ -19,7 +19,7 @@ def ensure_repo_root_on_path(explicit_repo_root: str | None = None) -> Path:
         if candidate in seen:
             continue
         seen.add(candidate)
-        if (candidate / "setup.py").exists() and (candidate / "dextrah_lab" / "tasks").exists():
+        if (candidate / "setup.py").exists() and (candidate / "tg2_lab" / "tasks").exists():
             repo_root = str(candidate)
             if repo_root not in sys.path:
                 sys.path.insert(0, repo_root)

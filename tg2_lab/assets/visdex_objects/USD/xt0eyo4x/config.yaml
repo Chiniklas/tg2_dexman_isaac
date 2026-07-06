@@ -1,5 +1,5 @@
-asset_path: /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/urdf/xt0eyo4x/model.urdf
-usd_dir: /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/USD/xt0eyo4x
+asset_path: /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/urdf/xt0eyo4x/model.urdf
+usd_dir: /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/USD/xt0eyo4x
 usd_file_name: xt0eyo4x.usd
 force_usd_conversion: true
 make_instanceable: false

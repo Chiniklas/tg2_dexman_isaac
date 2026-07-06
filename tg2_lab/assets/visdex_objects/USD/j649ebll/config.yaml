@@ -1,5 +1,5 @@
-asset_path: /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/urdf/j649ebll/model.urdf
-usd_dir: /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/USD/j649ebll
+asset_path: /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/urdf/j649ebll/model.urdf
+usd_dir: /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/USD/j649ebll
 usd_file_name: j649ebll.usd
 force_usd_conversion: true
 make_instanceable: false

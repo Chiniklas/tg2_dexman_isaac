@@ -37,7 +37,7 @@ def main():
     from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
     from isaaclab.utils import configclass
 
-    from dextrah_lab.assets.tg2_inspirehand.tg2_inspirehand import TG2_INSPIREHAND_CFG
+    from tg2_lab.assets.tg2_inspirehand.tg2_inspirehand import TG2_INSPIREHAND_CFG
 
     plot_enabled = getattr(args_cli, "plot_joints", False)
     if plot_enabled:

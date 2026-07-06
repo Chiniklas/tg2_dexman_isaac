@@ -23,7 +23,7 @@ Output Structure:
             ├── env_0_file_0.mp4
             └── ...
 
-python3 replay.py   --task dextrah_tg2_inspirehand   --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/dextrah_lab/distillation_new/runs/dextrah-tg2-inspirehand-safedagger_02-11-56-50/nn/dextrah_student_safe_dagger.pth.pth   --num_envs 1   --num_episodes 5   --enable_cameras   env.objects_dir=test_object   env.distillation=True   env.simulate_stereo=True   env.disable_dome_light_randomization=False
+python3 replay.py   --task dextrah_tg2_inspirehand   --checkpoint /home/chizhang/projects/dextrah/tg2_dexman_isaac/tg2_lab/distillation/runs/dextrah-tg2-inspirehand-safedagger_02-11-56-50/nn/dextrah_student_safe_dagger.pth.pth   --num_envs 1   --num_episodes 5   --enable_cameras   env.objects_dir=test_object   env.distillation=True   env.simulate_stereo=True   env.disable_dome_light_randomization=False
 """
 
 import argparse
@@ -79,10 +79,10 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import the task setup
-import dextrah_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
+import tg2_lab.tasks.tg2_inspirehand.gym_setup  # noqa: F401
 
-from dextrah_lab.distillation_new.a2c_stereo_transformer import A2CBuilder as A2CStereoTransformerBuilder
-from dextrah_lab.distillation_new.data_recorder import DataRecorder
+from tg2_lab.distillation.a2c_stereo_transformer import A2CBuilder as A2CStereoTransformerBuilder
+from tg2_lab.distillation.data_recorder import DataRecorder
 
 def adjust_state_dict_keys(checkpoint_state_dict, model_state_dict):
     """Adjust state dict keys to match model architecture."""
@@ -343,10 +343,10 @@ def main(env_cfg, agent_cfg: dict):
     
     # Set up student configuration
     parent_path = str(pathlib.Path(__file__).parent.parent.parent.resolve())
-    agent_cfg_folder = "dextrah_lab/tasks/tg2_inspirehand/agents"
+    agent_cfg_folder = "tg2_lab/tasks/tg2_inspirehand/agents"
 
     if not env.env.simulate_stereo:
-        raise ValueError("distillation_new replay only supports stereo transformer policies.")
+        raise ValueError("distillation replay only supports stereo transformer policies.")
     student_cfg = os.path.join(
         parent_path,
         agent_cfg_folder,

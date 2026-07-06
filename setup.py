@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 
 setup(
-    name="dextrah_lab",
+    name="tg2_lab",
     packages=find_packages(exclude=("tests",)),
     install_requires=[
         "mujoco>=3.1.6",

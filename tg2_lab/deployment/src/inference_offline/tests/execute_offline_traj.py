@@ -11,7 +11,7 @@ Runtime flow:
 4) Replay offline trajectory
 
 Default target file:
-  .../deployment_ros2/src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5
+  .../deployment/src/inference_offline/tests/offline_tarjs/1m0lvpzs/traj_env_0_file_1.h5
 
 Working command (from a sourced ROS 2 workspace):
 python3 src/inference_offline/tests/execute_offline_traj.py \

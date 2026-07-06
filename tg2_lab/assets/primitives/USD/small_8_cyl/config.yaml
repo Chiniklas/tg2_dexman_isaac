@@ -1,5 +1,5 @@
-asset_path: /home/karl/dev/dextrah-lab-internal/dextrah_lab/assets/primitives/urdf/small_8_cyl/model.urdf
-usd_dir: /home/karl/dev/dextrah-lab-internal/dextrah_lab/assets/primitives/USD/small_8_cyl
+asset_path: /home/karl/dev/tg2-lab-internal/tg2_lab/assets/primitives/urdf/small_8_cyl/model.urdf
+usd_dir: /home/karl/dev/tg2-lab-internal/tg2_lab/assets/primitives/USD/small_8_cyl
 usd_file_name: small_8_cyl.usd
 force_usd_conversion: true
 make_instanceable: false

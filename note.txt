@@ -3,18 +3,18 @@ Date: 2026-06-16
 
 Current implementation progress
 
-- Root entrypoints are now `dextrah_lab/train_rl_games.py` and `dextrah_lab/play_rl_games.py`.
-- The vendored SAPO fork is kept locally under `dextrah_lab/rl_games`.
-- The active task is `dextrah_lab/tasks/simtoolreal_tg2`.
+- Root entrypoints are now `tg2_lab/train_rl_games.py` and `tg2_lab/play_rl_games.py`.
+- The vendored SAPO fork is kept locally under `tg2_lab/rl_games`.
+- The active task is `tg2_lab/tasks/simtoolreal_tg2`.
 - Gym ids:
   - `simtoolreal_tg2`
   - `simtoolreal_tg2_pretrain_like`
-- Task uses the TG2 InspireHand robot asset from `dextrah_lab/assets/tg2_inspirehand`.
+- Task uses the TG2 InspireHand robot asset from `tg2_lab/assets/tg2_inspirehand`.
 - Task currently supports:
   - default `cube`
   - checked-in USD object `1wdf56lx`
-- Logs and dumped configs go to `dextrah_lab/tasks/simtoolreal_tg2/logs`.
-- Hydra outputs go to `dextrah_lab/tasks/simtoolreal_tg2/outputs`.
+- Logs and dumped configs go to `tg2_lab/tasks/simtoolreal_tg2/logs`.
+- Hydra outputs go to `tg2_lab/tasks/simtoolreal_tg2/outputs`.
 - Older DexSafeDagger assets, deployment code, plotting, checkpoints, and local
   references are still kept in the repo; the active path is just the new TG2
   SimToolReal train/play flow.
@@ -25,7 +25,7 @@ Important implementation notes
 - `play_rl_games.py` restores policy weights from checkpoint and reloads saved
   `env.pkl` and `agent.yaml` when available.
 - SAPO-style run directories use the `0_<timestamp>` naming convention.
-- The task-local YAML configs live in `dextrah_lab/tasks/simtoolreal_tg2/agents`.
+- The task-local YAML configs live in `tg2_lab/tasks/simtoolreal_tg2/agents`.
 - The Tiangong2Pro Isaac Lab asset config points at the fixed-head USD reimport
   with self-collision enabled, matching the KUKA-SHARPA reference task more
   closely while keeping the TG2 policy action space at 13.
@@ -45,4 +45,4 @@ Tiangong2Pro MuJoCo prep progress
   - `xml/tiangong2.0_pro_with_hands.xml`
 - removed the repo-side MuJoCo build script path for this asset
 - `setup.py` includes `mujoco` so `pip install -e .` brings in the viewer/compiler
-- added a minimal loader at `dextrah_lab/deployment_ros2/mujoco/scene_loader.py`
+- added a minimal loader at `tg2_lab/deployment/mujoco/scene_loader.py`

@@ -2,7 +2,7 @@
 
 This folder is the non-destructive asset-style view of the ROS2 package at:
 
-`dextrah_lab/assets/tiangong2pro_urdf_ros2/tiangong2pro_urdf`
+`tg2_lab/assets/tiangong2pro_urdf_ros2/tiangong2pro_urdf`
 
 Current layout:
 

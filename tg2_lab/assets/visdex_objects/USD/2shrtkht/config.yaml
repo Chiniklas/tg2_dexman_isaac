@@ -1,5 +1,5 @@
-asset_path: /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/urdf/2shrtkht/model.urdf
-usd_dir: /home/karl/dev/dextrah_lab/dextrah_lab/assets/visdex_objects/USD/2shrtkht
+asset_path: /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/urdf/2shrtkht/model.urdf
+usd_dir: /home/karl/dev/tg2_lab/tg2_lab/assets/visdex_objects/USD/2shrtkht
 usd_file_name: 2shrtkht.usd
 force_usd_conversion: true
 make_instanceable: false

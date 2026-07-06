@@ -35,12 +35,12 @@ from typing import Dict
 
 from failure_predictor import FailurePredictorCritic
 from failure_predictor_success_label import FailurePredictor
-from dextrah_lab.distillation_new.loss_utils import (
+from tg2_lab.distillation.loss_utils import (
     l2,
     weighted_l2,
 )
-from dextrah_lab.distillation_new.distill_warm_start import DistillWarmStart
-from dextrah_lab.distillation_new.eval_utils import (
+from tg2_lab.distillation.distill_warm_start import DistillWarmStart
+from tg2_lab.distillation.eval_utils import (
     UNSAFE_REASON_NAMES,
     classify_out_of_reach_reasons,
 )

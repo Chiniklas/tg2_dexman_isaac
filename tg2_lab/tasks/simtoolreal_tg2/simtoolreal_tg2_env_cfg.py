@@ -13,7 +13,7 @@ from isaaclab.sim import PhysxCfg, SimulationCfg
 from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMaterialCfg
 from isaaclab.utils import configclass
 
-from dextrah_lab.assets.tiangong2pro.robot import (
+from tg2_lab.assets.tiangong2pro.robot import (
     TIANGONG2PRO_ACTUATED_JOINT_NAMES,
     TIANGONG2PRO_CFG,
     TIANGONG2PRO_MIMIC_JOINT_MAP,
