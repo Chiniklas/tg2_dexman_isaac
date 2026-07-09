@@ -30,8 +30,8 @@ the physical and geometric checks below pass.
 | --- | --- | --- |
 | Policy actions | 29: 7 arm + 22 hand | 13: 7 arm + 6 hand |
 | Hand control | Mostly independent hand joints | Six commands expanded to twelve joints through fixed mimic ratios |
-| Actor observations | 140 | 92 |
-| Privileged critic states | 162 | 114 |
+| Actor observations | 140 | 110: full state of 7 arm + 12 hand joints |
+| Privileged critic states | 162 | 132 |
 | Palm reward offset | `(0.0, -0.02, 0.16)` | `(0.0, 0.0, 0.0)` |
 | Fingertip reward offsets | `(0.02, 0.002, 0.0)` for each fingertip | All zero |
 | Hand dynamics | SHARPA-specific calibrated values | SHARPA-like gains/limits copied onto InspireHand joints |
@@ -39,7 +39,7 @@ the physical and geometric checks below pass.
 | Robot reset | Joint position and velocity noise | Fixed joint state |
 | Table reset | +/-1 cm height | Fixed height |
 | Goal reset | Random 3D pose and rotation, then delta/coin-flip updates | Vertical goal 25--35 cm above the initial object, with unchanged rotation |
-| Sim-to-real corruption | Delays, state noise, and post-lift disturbances enabled | Temporarily disabled for deterministic grasp discovery |
+| Sim-to-real corruption | Delays, state noise, and post-lift disturbances enabled | Enabled to match the successful 2026-06-19 run |
 | Scene cloning | `replicate_physics=True`, spacing 1.2 | `replicate_physics=False`, spacing 2.0 |
 
 The hammer mass, hammer scale, simulation rate, episode duration, reward
@@ -59,16 +59,19 @@ and MLP sizes are otherwise aligned closely.
    stiffness, damping, effort/velocity limits, armature, and friction. Similar
    numbers do not guarantee similar behavior because the InspireHand link
    masses, transmissions, joint axes, limits, and collision geometry differ.
-4. **Weak grasp supervision.** The pre-lift reward pays for improved fingertip
-   distance and object height. It does not directly require opposing contacts,
-   handle containment, contact count, or stable grasp duration. SHARPA's richer
-   hand can discover a grasp under this shaping; the coupled TG2 hand may settle
-   on reaching, pushing, and occasional unstable lifting.
-5. **Noise before baseline competence.** The reference recipe enables
-   observation delay, action delay, object-state noise, and post-lift
-   disturbances. These effects are temporarily disabled in the active TG2
-   recipe to establish deterministic grasp feasibility first; restore them
-   incrementally only after grasp-and-lift is reliable.
+4. **Weak grasp supervision.** In addition to fingertip-distance and object-height
+   shaping, TG2 now gives each finger one 100-point bonus when its distal link
+   contacts the object while its fingertip is within 2 cm of the hammer's
+   oriented bounds. It also requires at least one hand-object contact when
+   crossing the lift threshold. These gates still do not require opposing
+   contacts, handle containment, or stable grasp duration. SHARPA's richer hand
+   can discover a grasp under weaker shaping; the coupled TG2 hand may still
+   settle on reaching, pushing, and occasional unstable lifting.
+5. **Noise sensitivity.** Both active recipes enable observation delay, action
+   delay, object-state noise, and post-lift disturbances. The successful
+   2026-06-19 TG2 run used these settings, while a later deterministic run did
+   not cross the grasp-and-lift threshold; multiple seeds are still needed to
+   distinguish a systematic noise benefit from exploration variance.
 
 The easier TG2 reset distribution and vertical goal should not make initial
 grasp discovery harder. Failure under these easier conditions is additional
@@ -114,8 +117,9 @@ out instead of opposing the fingers.
    collision pairs, and whether at least two opposing contacts occur.
 4. Tune InspireHand-specific stiffness, damping, effort limits, armature, and
    friction instead of assuming SHARPA values transfer.
-5. Keep the currently disabled observation/action delay, pose noise, and
-   external disturbances off until grasp-and-lift is reliable.
+5. Keep the restored observation/action delay, pose noise, and post-lift
+   disturbance settings fixed while comparing multiple seeds; ablate them
+   separately rather than changing all corruption sources at once.
 6. If the scripted grasp cannot achieve force closure, expose more independent
    finger joints or define a hammer-specific synergy before training again.
 7. If physics and control work but RL still pushes the hammer, add grasp-stage

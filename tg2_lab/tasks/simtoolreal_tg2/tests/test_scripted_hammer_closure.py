@@ -88,6 +88,16 @@ class HoldResult:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class ContactReport:
+    filtered_contact: bool
+    raw_contact: bool
+    filtered_force_sum: float
+    raw_force_sum: float
+    reward_gate_count: int
+    per_body_lines: tuple[str, ...]
+
+
 def _parse_floats(raw: str, count: int, option_name: str) -> tuple[float, ...]:
     try:
         values = tuple(float(item.strip()) for item in raw.split(","))
@@ -183,7 +193,6 @@ def _make_env_cfg(args_cli, total_steps: int):
     cfg.force_prob_range = (0.0, 0.0)
     cfg.torque_scale = 0.0
     cfg.torque_prob_range = (0.0, 0.0)
-
     cfg.debug_keypoints = args_cli.debug_keypoints
     cfg.debug_grasp_bounding_box = args_cli.debug_grasp_bounding_box
     cfg.debug_fingertips = args_cli.debug_fingertips
@@ -280,6 +289,83 @@ def _max_hand_tracking_error(env) -> float:
     return float(torch.max(torch.abs(desired - observed)).item())
 
 
+def _contact_report(env) -> ContactReport:
+    import torch
+
+    # Refresh kinematic/contact buffers without touching the reward bookkeeping.
+    env._compute_intermediate_values()
+
+    threshold = float(env.cfg.lift_contact_force_threshold)
+    body_names = tuple(getattr(env.cfg, "lift_contact_body_names", ()))
+    filtered_forces = getattr(env, "hand_object_contact_forces", None)
+    raw_forces = getattr(env, "hand_raw_contact_forces", None)
+
+    if filtered_forces is None or filtered_forces.numel() == 0:
+        return ContactReport(
+            filtered_contact=False,
+            raw_contact=False,
+            filtered_force_sum=0.0,
+            raw_force_sum=0.0,
+            reward_gate_count=0,
+            per_body_lines=("no hand-object contact sensors configured",),
+        )
+
+    filtered = filtered_forces[0].detach()
+    raw = raw_forces[0].detach() if raw_forces is not None and raw_forces.numel() > 0 else torch.zeros_like(filtered)
+    filtered_contact_mask = filtered > threshold
+    raw_contact_mask = raw > threshold
+    # Recompute the same non-mutating gate used by the per-finger bonus:
+    # each distal finger link gets credit when its filtered object-contact
+    # force exceeds the configured threshold.  The palm/contact body at index 0
+    # is for lift gating and is not counted as a per-finger bonus.
+    distal_contact_mask = filtered_contact_mask[1:]
+    reward_gate_count = int(distal_contact_mask.sum().item())
+
+    lines = []
+    for idx, body_name in enumerate(body_names):
+        gate_text = ""
+        if idx > 0:
+            gate_text = f" reward_gate={bool(filtered_contact_mask[idx].item())}"
+        lines.append(
+            f"{body_name}: raw={float(raw[idx].item()):.3f}N "
+            f"filtered={float(filtered[idx].item()):.3f}N "
+            f"raw_hit={bool(raw_contact_mask[idx].item())} "
+            f"object_hit={bool(filtered_contact_mask[idx].item())}{gate_text}"
+        )
+
+    return ContactReport(
+        filtered_contact=bool(filtered_contact_mask.any().item()),
+        raw_contact=bool(raw_contact_mask.any().item()),
+        filtered_force_sum=float(filtered.sum().item()),
+        raw_force_sum=float(raw.sum().item()),
+        reward_gate_count=reward_gate_count,
+        per_body_lines=tuple(lines),
+    )
+
+
+def _format_contact_summary(env) -> str:
+    report = _contact_report(env)
+    return (
+        f"contact_raw={report.raw_contact} raw_force={report.raw_force_sum:.3f}N "
+        f"contact_obj={report.filtered_contact} obj_force={report.filtered_force_sum:.3f}N "
+        f"reward_gate_count={report.reward_gate_count}"
+    )
+
+
+def _print_contact_report(env, label: str) -> None:
+    report = _contact_report(env)
+    print(
+        f"[CONTACT] {label}: raw_contact={report.raw_contact} "
+        f"raw_force_sum={report.raw_force_sum:.3f}N "
+        f"object_contact={report.filtered_contact} "
+        f"object_force_sum={report.filtered_force_sum:.3f}N "
+        f"reward_gate_count={report.reward_gate_count}",
+        flush=True,
+    )
+    for line in report.per_body_lines:
+        print(f"  {line}", flush=True)
+
+
 def _step(env, action):
     _obs, _reward, terminated, truncated, _extras = env.step(action)
     return bool(terminated[0].item()), bool(truncated[0].item())
@@ -289,15 +375,18 @@ def _run_phase(env, *, name: str, steps: int, action_fn, print_every: int) -> No
     if steps <= 0:
         return
     print(f"[PHASE] {name}: {steps} steps", flush=True)
+    _print_contact_report(env, f"{name}:start")
     for step in range(steps):
         terminated, truncated = _step(env, action_fn(step, steps))
         if terminated or truncated:
             raise RuntimeError(f"Environment terminated during phase '{name}' at step {step + 1}")
         if print_every > 0 and ((step + 1) % print_every == 0 or step + 1 == steps):
             print(
-                f"  step={step + 1}/{steps} hand_error={_max_hand_tracking_error(env):.4f} rad",
+                f"  step={step + 1}/{steps} hand_error={_max_hand_tracking_error(env):.4f} rad "
+                f"{_format_contact_summary(env)}",
                 flush=True,
             )
+    _print_contact_report(env, f"{name}:end")
 
 
 def _run_hold_and_wave_phase(env, args_cli, closed_actions, hold_steps: int, wave_steps: int) -> HoldResult:
@@ -305,6 +394,7 @@ def _run_hold_and_wave_phase(env, args_cli, closed_actions, hold_steps: int, wav
 
     requested_steps = hold_steps + wave_steps
     print(f"[PHASE] table-lowered-static-hold: {hold_steps} steps", flush=True)
+    _print_contact_report(env, "hold:start")
     baseline_relative_pos = _relative_object_position(env).clone()
     support_axis = torch.tensor(PALM_SUPPORT_AXIS, device=env.device, dtype=baseline_relative_pos.dtype)
     baseline_support_height = float(torch.dot(baseline_relative_pos, support_axis).item())
@@ -319,6 +409,7 @@ def _run_hold_and_wave_phase(env, args_cli, closed_actions, hold_steps: int, wav
     for step in range(requested_steps):
         if step == hold_steps and wave_steps > 0:
             print(f"[PHASE] wave-arm-while-holding: {wave_steps} steps", flush=True)
+            _print_contact_report(env, "wave:start")
         if step < hold_steps:
             action = _make_policy_action(env, closed_actions)
             phase_step = step + 1
@@ -353,10 +444,12 @@ def _run_hold_and_wave_phase(env, args_cli, closed_actions, hold_steps: int, wav
         ):
             print(
                 f"  {phase_name}_step={phase_step}/{phase_total} drift={drift:.4f}m "
-                f"drop={vertical_drop:.4f}m hand_error={hand_error:.4f}rad",
+                f"drop={vertical_drop:.4f}m hand_error={hand_error:.4f}rad "
+                f"{_format_contact_summary(env)}",
                 flush=True,
             )
 
+    _print_contact_report(env, "hold-wave:end")
     return _evaluate_hold(
         completed_steps=completed_steps,
         requested_steps=requested_steps,

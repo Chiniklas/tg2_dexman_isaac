@@ -167,10 +167,10 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
     decimation = 1
     episode_length_s = 10.0
     num_actions = 13
-    num_observations = 92
-    num_states = 114
-    observation_space = 92
-    state_space = 114
+    num_observations = 110
+    num_states = 132
+    observation_space = 110
+    state_space = 132
     action_space = 13
     asymmetric_obs = True
 
@@ -181,7 +181,7 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
         physics_material=RigidBodyMaterialCfg(static_friction=0.5, dynamic_friction=0.5),
         physx=PhysxCfg(
             bounce_threshold_velocity=0.2,
-            gpu_max_rigid_patch_count=4 * 5 * 2**15,
+            gpu_max_rigid_patch_count=2**20,  # 1,048,576 — needed for 1536 envs
             gpu_collision_stack_size=2**29,
         ),
     )
@@ -226,6 +226,16 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
         "ring_tip",
         "little_tip",
         "thumb_tip",
+    ]
+    # Collision-bearing hand bodies used to verify hand-object contact when
+    # the object first crosses the lift-height threshold.
+    lift_contact_body_names = [
+        "palm",
+        "index_link_1",
+        "middle_link_1",
+        "ring_link_1",
+        "little_link_1",
+        "thumb_link_3",
     ]
     palm_offset = (0.0, 0.0, 0.0)
     fingertip_offsets = (
@@ -307,8 +317,13 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
     lifting_rew_scale = 20.0
     lifting_bonus = 300.0
     lifting_bonus_threshold = 0.15
+    require_lift_contact = True
+    lift_contact_force_threshold = 0.5
+    lift_contact_required_body_count = 1
+    finger_contact_bonus = 100.0
     keypoint_rew_scale = 200.0
     distance_delta_rew_scale = 50.0
+    hand_delta_penalty_scale = 0.0
     reach_goal_bonus = 1000.0
     arm_actions_penalty_scale = 0.03
     hand_actions_penalty_scale = 0.003
@@ -316,6 +331,17 @@ class SimToolRealTg2EnvCfg(DirectRLEnvCfg):
     fall_penalty = 0.0
     object_lin_vel_penalty_scale = 0.0
     object_ang_vel_penalty_scale = 0.0
+    enable_fingertip_delta_reward = True
+    enable_hand_delta_penalty = True
+    enable_lifting_reward = True
+    enable_lift_bonus_reward = True
+    enable_finger_contact_bonus_reward = True
+    enable_keypoint_reward = True
+    enable_reach_bonus = True
+    enable_arm_action_penalty = True
+    enable_hand_action_penalty = True
+    enable_object_lin_vel_penalty = True
+    enable_object_ang_vel_penalty = True
     object_z_low_reset_threshold = 0.1
     hand_far_from_object_threshold = 1.5
     with_table_force_sensor = False

@@ -45,8 +45,13 @@ env_cfg:
   lifting_rew_scale: 20.0
   lifting_bonus: 300.0
   lifting_bonus_threshold: 0.15
+  require_lift_contact: True
+  lift_contact_force_threshold: 0.5
+  lift_contact_required_body_count: 1
+  finger_contact_bonus: 100.0
   keypoint_rew_scale: 200.0
   distance_delta_rew_scale: 50.0
+  hand_delta_penalty_scale: 0.0
   reach_goal_bonus: 1000.0
   arm_actions_penalty_scale: 0.03
   hand_actions_penalty_scale: 0.003
@@ -54,6 +59,17 @@ env_cfg:
   fall_penalty: 0.0
   object_lin_vel_penalty_scale: 0.0
   object_ang_vel_penalty_scale: 0.0
+  enable_fingertip_delta_reward: True
+  enable_hand_delta_penalty: True
+  enable_lifting_reward: True
+  enable_lift_bonus_reward: True
+  enable_finger_contact_bonus_reward: True
+  enable_keypoint_reward: True
+  enable_reach_bonus: True
+  enable_arm_action_penalty: True
+  enable_hand_action_penalty: True
+  enable_object_lin_vel_penalty: True
+  enable_object_ang_vel_penalty: True
   object_z_low_reset_threshold: 0.1
   hand_far_from_object_threshold: 1.5
   with_table_force_sensor: False
@@ -67,24 +83,23 @@ env_cfg:
   success_steps: 10
   max_consecutive_successes: 50
   force_consecutive_near_goal_steps: True
-  # Temporary deterministic grasp-discovery baseline. Restore these
-  # sim-to-real effects incrementally only after grasp-and-lift is reliable.
-  use_obs_delay: False
-  obs_delay_max: 1
-  use_action_delay: False
-  action_delay_max: 1
-  use_object_state_delay_noise: False
-  object_state_delay_max: 1
-  object_state_xyz_noise_std: 0.0
-  object_state_rotation_noise_degrees: 0.0
-  joint_velocity_obs_noise_std: 0.0
-  force_scale: 0.0
-  force_prob_range: [0.0, 0.0]
+  # Match the corruption settings used by the successful 2026-06-19 run.
+  use_obs_delay: True
+  obs_delay_max: 3
+  use_action_delay: True
+  action_delay_max: 3
+  use_object_state_delay_noise: True
+  object_state_delay_max: 10
+  object_state_xyz_noise_std: 0.01
+  object_state_rotation_noise_degrees: 5.0
+  joint_velocity_obs_noise_std: 0.01
+  force_scale: 20.0
+  force_prob_range: [0.001, 0.1]
   force_decay: 0.0
   force_decay_interval: 0.08
   force_only_when_lifted: True
-  torque_scale: 0.0
-  torque_prob_range: [0.0, 0.0]
+  torque_scale: 2.0
+  torque_prob_range: [0.001, 0.1]
   torque_decay: 0.0
   torque_decay_interval: 0.08
   torque_only_when_lifted: True

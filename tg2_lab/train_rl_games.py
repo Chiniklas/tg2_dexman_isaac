@@ -34,6 +34,14 @@ parser.add_argument("--sigma", type=str, default=None, help="Initial policy stan
 parser.add_argument("--max_iterations", type=int, default=None, help="Maximum RL-Games epochs.")
 parser.add_argument("--agent_cfg", type=str, default=None, help="Path or agents/ filename for an RL-Games YAML recipe.")
 parser.add_argument(
+    "--run_name",
+    "--run-name",
+    dest="run_name",
+    type=str,
+    default=None,
+    help="Name for the RL-Games log/checkpoint directory under tasks/simtoolreal_tg2/logs.",
+)
+parser.add_argument(
     "--visualize_keypoints",
     "--visualize-keypoints",
     dest="visualize_keypoints",
@@ -253,6 +261,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     env_cfg.seed = agent_cfg["params"]["seed"]
     log_root_path = str((TASK_ROOT / "logs").resolve())
+    if args_cli.run_name is not None:
+        agent_cfg["params"]["config"]["full_experiment_name"] = args_cli.run_name
     log_dir = agent_cfg["params"]["config"].get(
         "full_experiment_name", f"0_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     )

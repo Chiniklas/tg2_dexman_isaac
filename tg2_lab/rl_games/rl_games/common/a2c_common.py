@@ -57,6 +57,7 @@ def print_statistics(
         if reward_terms:
             ordered_keys = [
                 "fingertip_delta_reward",
+                "finger_contact_bonus_reward",
                 "hand_delta_penalty",
                 "lifting_reward",
                 "lift_bonus_reward",

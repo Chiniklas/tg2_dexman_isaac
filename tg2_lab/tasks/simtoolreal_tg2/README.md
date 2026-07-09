@@ -53,10 +53,15 @@ python tg2_lab/play_rl_games.py \
 The SAPO package used by these scripts is the local copy at
 `tg2_lab/rl_games`.
 
-The active `rl_games_sapo_cfg.yaml` is temporarily configured as a
-deterministic grasp-discovery baseline: observation/action delays, object-state
-noise, joint-velocity observation noise, and external object disturbances are
-disabled. Restore them incrementally only after grasp-and-lift is reliable.
+The active `rl_games_sapo_cfg.yaml` enables the observation/action delays,
+object-state noise, joint-velocity observation noise, and post-lift object
+disturbances used by the successful 2026-06-19 run.
+
+Every reward component has an `enable_<term_name>` switch under `env_cfg` in
+the agent YAML. Disabled terms are logged as zero and excluded from the total,
+while lift detection, success tracking, goal resets, and other task-state
+transitions continue to run. A switch can also be overridden at launch, for
+example `env.enable_lift_bonus_reward=False`.
 
 Current checked-in object support:
 

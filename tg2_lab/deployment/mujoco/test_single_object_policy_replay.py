@@ -71,6 +71,35 @@ POLICY_JOINT_NAMES = [
     "thumb_joint_0",
     "thumb_joint_1",
 ]
+FULL_STATE_JOINT_NAMES = [
+    "shoulder_pitch_r_joint",
+    "shoulder_roll_r_joint",
+    "shoulder_yaw_r_joint",
+    "elbow_pitch_r_joint",
+    "elbow_yaw_r_joint",
+    "wrist_pitch_r_joint",
+    "wrist_roll_r_joint",
+    "index_joint_0",
+    "index_joint_1",
+    "middle_joint_0",
+    "middle_joint_1",
+    "ring_joint_0",
+    "ring_joint_1",
+    "little_joint_0",
+    "little_joint_1",
+    "thumb_joint_0",
+    "thumb_joint_1",
+    "thumb_joint_2",
+    "thumb_joint_3",
+]
+MIMIC_JOINT_MAP = {
+    "index_joint_1": ("index_joint_0", 1.54545, 0.0),
+    "middle_joint_1": ("middle_joint_0", 1.54545, 0.0),
+    "ring_joint_1": ("ring_joint_0", 1.54545, 0.0),
+    "little_joint_1": ("little_joint_0", 1.54545, 0.0),
+    "thumb_joint_2": ("thumb_joint_1", 1.0, 0.0),
+    "thumb_joint_3": ("thumb_joint_2", 0.8, 0.0),
+}
 FINGERTIP_BODIES = [
     "index_link_1",
     "middle_link_1",
@@ -88,7 +117,8 @@ FINGERTIP_LOCAL_OFFSETS = {
 KEYPOINT_SITE_NAMES = [f"hammer_keypoint_{idx}" for idx in range(4)]
 GOAL_KEYPOINT_SITE_NAMES = [f"goal_keypoint_{idx}" for idx in range(4)]
 DEFAULT_OBJECT_SCALES = (2.5, 0.5625, 0.375)
-OBS_SIZE = 92
+LEGACY_OBS_SIZE = 92
+FULL_STATE_OBS_SIZE = 110
 ACTION_SIZE = 13
 DEFAULT_VIEWER_LOOKAT = (0.0, 0.55, 0.78)
 DEFAULT_VIEWER_DISTANCE = 1.75
@@ -134,8 +164,15 @@ def _torch_load(path: Path, device: str) -> Any:
 def _yaml_load(path: Path) -> dict:
     import yaml
 
+    class IsaacConfigLoader(yaml.SafeLoader):
+        pass
+
+    IsaacConfigLoader.add_constructor(
+        "tag:yaml.org,2002:python/tuple",
+        lambda loader, node: tuple(loader.construct_sequence(node)),
+    )
     with path.open(encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.load(f, Loader=IsaacConfigLoader)
 
 
 def _ensure_gym_module():
@@ -248,6 +285,14 @@ def _load_agent_cfg(checkpoint_path: Path) -> dict:
     return _yaml_load(cfg_path)
 
 
+def _checkpoint_env_dimensions(checkpoint_path: Path) -> tuple[int, int]:
+    params_dir = _checkpoint_params_dir(checkpoint_path)
+    if params_dir is not None and (params_dir / "env.yaml").is_file():
+        env_cfg = _yaml_load(params_dir / "env.yaml")
+        return int(env_cfg.get("num_observations", FULL_STATE_OBS_SIZE)), int(env_cfg.get("num_states", 132))
+    return FULL_STATE_OBS_SIZE, 132
+
+
 def _checkpoint_coef_id_count(checkpoint_path: Path, device: str) -> int | None:
     checkpoint = _torch_load(checkpoint_path, device)
     if isinstance(checkpoint, dict) and 0 in checkpoint:
@@ -268,6 +313,7 @@ def _make_policy_player(checkpoint_path: Path, device: str):
     from rl_games.torch_runner import Runner
 
     agent_cfg = _load_agent_cfg(checkpoint_path)
+    observation_size, state_size = _checkpoint_env_dimensions(checkpoint_path)
     agent_cfg = copy.deepcopy(agent_cfg)
     agent_cfg["params"]["load_checkpoint"] = True
     agent_cfg["params"]["load_path"] = str(checkpoint_path)
@@ -277,8 +323,10 @@ def _make_policy_player(checkpoint_path: Path, device: str):
     agent_cfg["params"]["config"]["vec_env"] = _DummyRlGamesEnv()
     agent_cfg["params"]["config"]["env_info"] = {
         "action_space": gym.spaces.Box(low=-1.0, high=1.0, shape=(ACTION_SIZE,), dtype=float),
-        "observation_space": gym.spaces.Box(low=-math.inf, high=math.inf, shape=(OBS_SIZE,), dtype=float),
-        "state_space": gym.spaces.Box(low=-math.inf, high=math.inf, shape=(114,), dtype=float),
+        "observation_space": gym.spaces.Box(
+            low=-math.inf, high=math.inf, shape=(observation_size,), dtype=float
+        ),
+        "state_space": gym.spaces.Box(low=-math.inf, high=math.inf, shape=(state_size,), dtype=float),
         "value_size": 1,
     }
     coef_id_count = _checkpoint_coef_id_count(checkpoint_path, device)
@@ -420,7 +468,16 @@ def _rotate_by_xmat(xmat, local_vec):
 
 
 class MujocoPolicyAdapter:
-    def __init__(self, mujoco, model, data, checkpoint_path: Path, device: str):
+    def __init__(
+        self,
+        mujoco,
+        model,
+        data,
+        checkpoint_path: Path,
+        device: str,
+        *,
+        enable_task_resets: bool = True,
+    ):
         import numpy as np
 
         self.mujoco = mujoco
@@ -429,8 +486,15 @@ class MujocoPolicyAdapter:
         self.player = _make_policy_player(checkpoint_path, device)
         self.device = device
         self.joint_limits = np.asarray([_joint_range(mujoco, model, name) for name in POLICY_JOINT_NAMES], dtype=float)
+        self.full_state_joint_limits = np.asarray(
+            [_joint_range(mujoco, model, name) for name in FULL_STATE_JOINT_NAMES], dtype=float
+        )
         self.prev_action_targets = np.asarray(
             [_get_joint_qpos(mujoco, model, data, name) for name in POLICY_JOINT_NAMES],
+            dtype=float,
+        )
+        self.prev_full_action_targets = np.asarray(
+            [_get_joint_qpos(mujoco, model, data, name) for name in FULL_STATE_JOINT_NAMES],
             dtype=float,
         )
         self.actuator_ids = [
@@ -440,6 +504,7 @@ class MujocoPolicyAdapter:
         self.palm_site_id = _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_SITE, "hand_tcp")
         self.object_body_id = _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_BODY, "claw_hammer")
         self.goal_body_id = _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_BODY, "goal_claw_hammer")
+        self.table_body_id = _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_BODY, "table")
         self.fingertip_body_ids = [
             _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_BODY, name)
             for name in FINGERTIP_BODIES
@@ -453,7 +518,14 @@ class MujocoPolicyAdapter:
             for name in GOAL_KEYPOINT_SITE_NAMES
         ]
         agent_cfg = _load_agent_cfg(checkpoint_path)
+        self.observation_size, _state_size = _checkpoint_env_dimensions(checkpoint_path)
+        if self.observation_size not in (LEGACY_OBS_SIZE, FULL_STATE_OBS_SIZE):
+            raise ValueError(
+                f"Unsupported policy observation size {self.observation_size}; "
+                f"expected {LEGACY_OBS_SIZE} or {FULL_STATE_OBS_SIZE}."
+            )
         env_cfg = agent_cfg.get("env_cfg", {})
+        self.enable_task_resets = enable_task_resets
         self.clip_observations = float(agent_cfg.get("params", {}).get("env", {}).get("clip_observations", 10.0))
         self.dof_speed_scale = float(env_cfg.get("dof_speed_scale", 1.5))
         self.hand_moving_average = float(env_cfg.get("hand_moving_average", 0.1))
@@ -461,22 +533,218 @@ class MujocoPolicyAdapter:
         self.dt = float(env_cfg.get("sim_dt", model.opt.timestep))
         self.next_policy_time = 0.0
         self.object_scales = np.asarray(DEFAULT_OBJECT_SCALES, dtype=float)
+        self.object_z_low_reset_threshold = float(env_cfg.get("object_z_low_reset_threshold", 0.1))
+        self.hand_far_from_object_threshold = float(env_cfg.get("hand_far_from_object_threshold", 1.5))
+        self.reset_when_dropped = bool(env_cfg.get("reset_when_dropped", True))
+        self.with_table_force_sensor = bool(env_cfg.get("with_table_force_sensor", False))
+        self.table_force_threshold = float(env_cfg.get("table_force_threshold", 100.0))
+        self.max_episode_steps = max(1, round(float(env_cfg.get("episode_length_s", 10.0)) / self.dt))
+        self.max_consecutive_successes = int(env_cfg.get("max_consecutive_successes", 50))
+        self.success_steps = int(env_cfg.get("success_steps", 10))
+        self.success_tolerance = float(env_cfg.get("success_tolerance", 0.075))
+        self.keypoint_scale = float(env_cfg.get("keypoint_scale", 1.5))
+        self.goal_height_range = tuple(float(value) for value in env_cfg.get("goal_height_above_object_range", (0.25, 0.35)))
+        self.object_spawn_center = tuple(float(value) for value in env_cfg.get("object_spawn_center", (0.0, 0.5, 0.56)))
+        self.object_spawn_xy_range = float(env_cfg.get("object_spawn_xy_range", 0.05))
+        self.object_spawn_z_range = float(env_cfg.get("object_spawn_z_range", 0.0))
+        self.lifting_bonus_threshold = float(env_cfg.get("lifting_bonus_threshold", 0.15))
+        self.require_lift_contact = bool(env_cfg.get("require_lift_contact", False))
+        self.lift_contact_force_threshold = float(env_cfg.get("lift_contact_force_threshold", 0.5))
+        self.lift_contact_required_body_count = int(env_cfg.get("lift_contact_required_body_count", 1))
+        self.rng = np.random.default_rng(int(agent_cfg.get("params", {}).get("seed", 42)))
+        palm_body_id = int(model.site_bodyid[self.palm_site_id])
+        self.lift_contact_body_ids = {palm_body_id, *self.fingertip_body_ids}
+        self.object_free_joint_id = _name_to_id(
+            mujoco, model, mujoco.mjtObj.mjOBJ_JOINT, "claw_hammer_freejoint"
+        )
+        self.reset_count = 0
+        self._randomize_task_objects()
+        self._reset_episode_tracking()
+
+    def _reset_episode_tracking(self) -> None:
+        import numpy as np
+
+        self.episode_step = 0
+        self.successes = 0
+        self.near_goal_steps = 0
+        self.lifted_object = False
+        self.max_table_contact_force_smoothed = 0.0
+        self.table_contact_force_smoothed = 0.0
+        self.object_init_pos = self.data.xpos[self.object_body_id].copy()
+        self.object_drop_height = float(self.object_init_pos[2])
+        self.prev_action_targets = np.asarray(
+            [_get_joint_qpos(self.mujoco, self.model, self.data, name) for name in POLICY_JOINT_NAMES],
+            dtype=float,
+        )
+        self.prev_full_action_targets = np.asarray(
+            [_get_joint_qpos(self.mujoco, self.model, self.data, name) for name in FULL_STATE_JOINT_NAMES],
+            dtype=float,
+        )
+        self.next_policy_time = float(self.data.time)
+
+    def _reset_episode(self, reason: str) -> str:
+        _reset_scene(self.mujoco, self.model, self.data)
+        self._randomize_task_objects()
+        self.player.reset()
+        self._reset_episode_tracking()
+        self.reset_count += 1
+        return reason
+
+    def _randomize_task_objects(self) -> None:
+        import numpy as np
+
+        object_pos = np.asarray(self.object_spawn_center, dtype=float).copy()
+        object_pos[:2] += self.rng.uniform(-self.object_spawn_xy_range, self.object_spawn_xy_range, size=2)
+        object_pos[2] += self.rng.uniform(-self.object_spawn_z_range, self.object_spawn_z_range)
+        qpos_addr = int(self.model.jnt_qposadr[self.object_free_joint_id])
+        dof_addr = int(self.model.jnt_dofadr[self.object_free_joint_id])
+        self.data.qpos[qpos_addr : qpos_addr + 3] = object_pos
+        self.data.qvel[dof_addr : dof_addr + 6] = 0.0
+        self.mujoco.mj_forward(self.model, self.data)
+
+        low, high = sorted(self.goal_height_range)
+        goal_pos = object_pos.copy()
+        goal_pos[2] += self.rng.uniform(low, high)
+        mocap_id = int(self.model.body_mocapid[self.goal_body_id])
+        if mocap_id >= 0:
+            self.data.mocap_pos[mocap_id] = goal_pos
+            self.data.mocap_quat[mocap_id] = self.data.xquat[self.object_body_id]
+            self.mujoco.mj_forward(self.model, self.data)
+
+    def _contact_forces(self) -> tuple[dict[int, float], float]:
+        import numpy as np
+
+        hand_forces: dict[int, float] = {}
+        table_object_force = 0.0
+        force = np.zeros(6, dtype=float)
+        for contact_idx in range(self.data.ncon):
+            contact = self.data.contact[contact_idx]
+            body_a = int(self.model.geom_bodyid[contact.geom1])
+            body_b = int(self.model.geom_bodyid[contact.geom2])
+            if self.object_body_id not in (body_a, body_b):
+                continue
+            other_body = body_b if body_a == self.object_body_id else body_a
+            force.fill(0.0)
+            self.mujoco.mj_contactForce(self.model, self.data, contact_idx, force)
+            force_norm = float(np.linalg.norm(force[:3]))
+            if other_body in self.lift_contact_body_ids:
+                hand_forces[other_body] = hand_forces.get(other_body, 0.0) + force_norm
+            if other_body == self.table_body_id:
+                table_object_force += force_norm
+        return hand_forces, table_object_force
+
+    def _fingertip_positions(self):
+        import numpy as np
+
+        positions = []
+        for body_name, body_id in zip(FINGERTIP_BODIES, self.fingertip_body_ids, strict=True):
+            position = np.asarray(self.data.xpos[body_id], dtype=float)
+            position = position + _rotate_by_xmat(self.data.xmat[body_id], FINGERTIP_LOCAL_OFFSETS[body_name])
+            positions.append(position)
+        return np.asarray(positions, dtype=float)
+
+    def _reset_goal_after_success(self) -> None:
+        low, high = sorted(self.goal_height_range)
+        goal_pos = self.object_init_pos.copy()
+        goal_pos[2] += self.rng.uniform(low, high)
+        mocap_id = int(self.model.body_mocapid[self.goal_body_id])
+        if mocap_id >= 0:
+            self.data.mocap_pos[mocap_id] = goal_pos
+            self.data.mocap_quat[mocap_id] = self.data.xquat[self.object_body_id]
+            self.mujoco.mj_forward(self.model, self.data)
+
+    def evaluate_task_and_maybe_reset(self) -> str | None:
+        import numpy as np
+
+        if not self.enable_task_resets:
+            return None
+
+        object_pos = np.asarray(self.data.xpos[self.object_body_id], dtype=float)
+        hand_forces, table_object_force = self._contact_forces()
+        contact_count = sum(
+            force > self.lift_contact_force_threshold for force in hand_forces.values()
+        )
+        contact_gate = contact_count >= max(1, self.lift_contact_required_body_count)
+        z_lift = 0.05 + float(object_pos[2] - self.object_init_pos[2])
+        height_gate = z_lift > self.lifting_bonus_threshold
+        if height_gate and (contact_gate or not self.require_lift_contact):
+            self.lifted_object = True
+
+        keypoint_distances = np.linalg.norm(
+            np.asarray([self.data.site_xpos[idx] for idx in self.keypoint_site_ids])
+            - np.asarray([self.data.site_xpos[idx] for idx in self.goal_keypoint_site_ids]),
+            axis=-1,
+        )
+        near_goal = float(keypoint_distances.max()) <= self.success_tolerance * self.keypoint_scale
+        self.near_goal_steps = self.near_goal_steps + 1 if near_goal else 0
+        if self.near_goal_steps >= self.success_steps:
+            self.successes += 1
+            self.near_goal_steps = 0
+            self.episode_step = 0
+            self._reset_goal_after_success()
+
+        self.table_contact_force_smoothed += 0.1 * (
+            table_object_force - self.table_contact_force_smoothed
+        )
+        self.max_table_contact_force_smoothed = max(
+            self.max_table_contact_force_smoothed, self.table_contact_force_smoothed
+        )
+
+        fingertip_distances = np.linalg.norm(self._fingertip_positions() - object_pos, axis=-1)
+        object_fell = float(object_pos[2]) < self.object_z_low_reset_threshold
+        hand_far = float(fingertip_distances.max()) > self.hand_far_from_object_threshold
+        dropped = self.reset_when_dropped and self.lifted_object and float(object_pos[2]) < self.object_drop_height
+        table_force_too_high = (
+            self.with_table_force_sensor
+            and self.max_table_contact_force_smoothed > self.table_force_threshold
+        )
+        too_many_successes = self.max_consecutive_successes > 0 and self.successes >= self.max_consecutive_successes
+        timed_out = self.episode_step >= self.max_episode_steps - 1
+        self.episode_step += 1
+
+        reasons = []
+        if object_fell:
+            reasons.append("object_fell")
+        if hand_far:
+            reasons.append("hand_far_from_object")
+        if dropped:
+            reasons.append("dropped_after_lift")
+        if table_force_too_high:
+            reasons.append("table_force_too_high")
+        if too_many_successes:
+            reasons.append("max_consecutive_successes")
+        if timed_out:
+            reasons.append("time_out")
+        return self._reset_episode("+".join(reasons)) if reasons else None
 
     def observation(self):
         import numpy as np
         import torch
 
+        observation_joint_names = (
+            FULL_STATE_JOINT_NAMES if self.observation_size == FULL_STATE_OBS_SIZE else POLICY_JOINT_NAMES
+        )
         joint_pos = np.asarray(
-            [_get_joint_qpos(self.mujoco, self.model, self.data, name) for name in POLICY_JOINT_NAMES],
+            [_get_joint_qpos(self.mujoco, self.model, self.data, name) for name in observation_joint_names],
             dtype=float,
         )
         joint_vel = np.asarray(
-            [_get_joint_qvel(self.mujoco, self.model, self.data, name) for name in POLICY_JOINT_NAMES],
+            [_get_joint_qvel(self.mujoco, self.model, self.data, name) for name in observation_joint_names],
             dtype=float,
         )
-        lower = self.joint_limits[:, 0]
-        upper = self.joint_limits[:, 1]
+        observation_joint_limits = (
+            self.full_state_joint_limits
+            if self.observation_size == FULL_STATE_OBS_SIZE
+            else self.joint_limits
+        )
+        lower = observation_joint_limits[:, 0]
+        upper = observation_joint_limits[:, 1]
         joint_pos_obs = _unscale(joint_pos, lower, upper)
+        previous_targets = (
+            self.prev_full_action_targets
+            if self.observation_size == FULL_STATE_OBS_SIZE
+            else self.prev_action_targets
+        )
         palm_pos = np.asarray(self.data.site_xpos[self.palm_site_id], dtype=float)
         palm_rot_xyzw = _quat_wxyz_to_xyzw(self.data.xquat[self.model.site_bodyid[self.palm_site_id]])
         object_rot_xyzw = _quat_wxyz_to_xyzw(self.data.xquat[self.object_body_id])
@@ -497,7 +765,7 @@ class MujocoPolicyAdapter:
             (
                 joint_pos_obs,
                 joint_vel,
-                self.prev_action_targets,
+                previous_targets,
                 palm_pos,
                 np.asarray(palm_rot_xyzw, dtype=float),
                 np.asarray(object_rot_xyzw, dtype=float),
@@ -507,8 +775,8 @@ class MujocoPolicyAdapter:
                 self.object_scales,
             )
         )
-        if obs.shape[0] != OBS_SIZE:
-            raise RuntimeError(f"Expected {OBS_SIZE} observations, got {obs.shape[0]}.")
+        if obs.shape[0] != self.observation_size:
+            raise RuntimeError(f"Expected {self.observation_size} observations, got {obs.shape[0]}.")
         obs = np.clip(obs, -self.clip_observations, self.clip_observations)
         tensor = torch.as_tensor(obs, dtype=torch.float32, device=self.player.device).unsqueeze(0)
         intr_reward_coef_embd = getattr(self.player, "intr_reward_coef_embd", None)
@@ -537,6 +805,15 @@ class MujocoPolicyAdapter:
         )
         return targets
 
+    def expand_policy_targets(self, policy_targets):
+        import numpy as np
+
+        target_by_name = dict(zip(POLICY_JOINT_NAMES, policy_targets, strict=True))
+        for joint_name, (source_name, multiplier, offset) in MIMIC_JOINT_MAP.items():
+            target_by_name[joint_name] = target_by_name[source_name] * multiplier + offset
+        targets = np.asarray([target_by_name[name] for name in FULL_STATE_JOINT_NAMES], dtype=float)
+        return np.clip(targets, self.full_state_joint_limits[:, 0], self.full_state_joint_limits[:, 1])
+
     def step_policy(self) -> tuple[float, float]:
         import torch
 
@@ -548,6 +825,7 @@ class MujocoPolicyAdapter:
             lo, hi = self.model.actuator_ctrlrange[actuator_id]
             self.data.ctrl[actuator_id] = min(max(float(target), float(lo)), float(hi))
         self.prev_action_targets = targets
+        self.prev_full_action_targets = self.expand_policy_targets(targets)
         return float(action_np.min()), float(action_np.max())
 
     def maybe_step_policy(self) -> tuple[float, float] | None:
@@ -579,9 +857,14 @@ def _print_model_summary(mujoco, model, scene_xml: Path, print_names: bool) -> N
 
 def _step_headless(mujoco, model, data, steps: int, policy: MujocoPolicyAdapter | None) -> None:
     for _ in range(steps):
+        policy_stepped = False
         if policy is not None:
-            policy.maybe_step_policy()
+            policy_stepped = policy.maybe_step_policy() is not None
         mujoco.mj_step(model, data)
+        if policy is not None and policy_stepped:
+            reset_reason = policy.evaluate_task_and_maybe_reset()
+            if reset_reason is not None:
+                print(f"[MuJoCo] Episode reset: {reset_reason}", flush=True)
 
 
 def _configure_viewer_camera(mujoco, viewer) -> None:
@@ -617,6 +900,10 @@ def _step_viewer_until_closed(
                         action_min, action_max = action_range
                         print(f"  policy action min/max: {action_min:.4f} / {action_max:.4f}", flush=True)
                 mujoco.mj_step(model, data)
+                if policy is not None and action_range is not None:
+                    reset_reason = policy.evaluate_task_and_maybe_reset()
+                    if reset_reason is not None:
+                        print(f"[MuJoCo] Episode reset: {reset_reason}", flush=True)
                 viewer.sync()
                 total_steps += 1
                 time.sleep(model.opt.timestep)
@@ -663,6 +950,11 @@ def main() -> None:
         action="store_true",
         help="Use MuJoCo's default free camera instead of the front-facing TG2 replay camera.",
     )
+    parser.add_argument(
+        "--no-task-resets",
+        action="store_true",
+        help="Disable Isaac-style termination, timeout, success tracking, and episode resets.",
+    )
     args = parser.parse_args()
 
     scene_xml = args.scene_xml.expanduser().resolve()
@@ -683,7 +975,14 @@ def main() -> None:
     _print_model_summary(mujoco, model, scene_xml, args.print_names)
     policy = None
     if checkpoint_paths and not args.no_policy_control:
-        policy = MujocoPolicyAdapter(mujoco, model, data, checkpoint_paths[0], args.device)
+        policy = MujocoPolicyAdapter(
+            mujoco,
+            model,
+            data,
+            checkpoint_paths[0],
+            args.device,
+            enable_task_resets=not args.no_task_resets,
+        )
         print(f"Policy control enabled from checkpoint: {checkpoint_paths[0]}")
 
     if args.headless:

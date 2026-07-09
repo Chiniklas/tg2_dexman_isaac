@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import torch
 
-from tg2_lab.assets.tiangong2pro.robot import TIANGONG2PRO_POLICY_JOINT_NAMES
+from tg2_lab.assets.tiangong2pro.robot import (
+    TIANGONG2PRO_ACTUATED_JOINT_NAMES,
+    TIANGONG2PRO_POLICY_JOINT_NAMES,
+)
 
 
 TG2_INSPIREHAND_JOINT_NAMES = TIANGONG2PRO_POLICY_JOINT_NAMES
+TG2_FULL_STATE_JOINT_NAMES = TIANGONG2PRO_ACTUATED_JOINT_NAMES
 
 FINGERTIP_NAMES = ["index", "middle", "ring", "little", "thumb"]
 
 OBS_NAME_TO_NAMES = {
-    "joint_pos": [f"{name}_q" for name in TG2_INSPIREHAND_JOINT_NAMES],
-    "joint_vel": [f"{name}_qd" for name in TG2_INSPIREHAND_JOINT_NAMES],
-    "prev_action_targets": [f"{name}_prev_action_target" for name in TG2_INSPIREHAND_JOINT_NAMES],
+    "joint_pos": [f"{name}_q" for name in TG2_FULL_STATE_JOINT_NAMES],
+    "joint_vel": [f"{name}_qd" for name in TG2_FULL_STATE_JOINT_NAMES],
+    "prev_action_targets": [f"{name}_prev_action_target" for name in TG2_FULL_STATE_JOINT_NAMES],
     "palm_pos": [f"palm_center_pos_{axis}" for axis in "xyz"],
     "palm_rot": [f"palm_rot_{axis}" for axis in "xyzw"],
     "object_rot": [f"object_rot_{axis}" for axis in "xyzw"],
@@ -40,7 +44,7 @@ OBS_LIST = [
     "object_scales",
 ]
 OBS_NAMES = sum((OBS_NAME_TO_NAMES[name] for name in OBS_LIST), [])
-N_OBS = 92
+N_OBS = 110
 assert len(OBS_NAMES) == N_OBS
 
 

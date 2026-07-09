@@ -141,6 +141,10 @@ class IsaacAlgoObserver(AlgoObserver):
             self.ep_infos.clear()
         # log scalars from env information
         for k, v in self.direct_info.items():
+            # reward_terms feeds the compact terminal decomposition. These
+            # values are already logged through extras["log"] as Episode/*.
+            if k.startswith("reward_terms/"):
+                continue
             self.writer.add_scalar(f"{k}/frame", v, frame)
             self.writer.add_scalar(f"{k}/iter", v, frame)
             self.writer.add_scalar(f"{k}/time", v, frame)
