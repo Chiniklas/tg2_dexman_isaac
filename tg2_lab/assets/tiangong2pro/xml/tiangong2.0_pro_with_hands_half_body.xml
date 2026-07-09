@@ -183,15 +183,6 @@
     </body>
   </worldbody>
 
-  <equality>
-    <joint name="index_joint_1_mimic" joint1="index_joint_1" joint2="index_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="middle_joint_1_mimic" joint1="middle_joint_1" joint2="middle_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="ring_joint_1_mimic" joint1="ring_joint_1" joint2="ring_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="little_joint_1_mimic" joint1="little_joint_1" joint2="little_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="thumb_joint_2_mimic" joint1="thumb_joint_2" joint2="thumb_joint_1" polycoef="0 1.0 0 0 0"/>
-    <joint name="thumb_joint_3_mimic" joint1="thumb_joint_3" joint2="thumb_joint_2" polycoef="0 0.8 0 0 0"/>
-  </equality>
-
   <actuator>
     <position name="head_yaw_joint" joint="head_yaw_joint" ctrlrange="-1.57079633 1.57079633" kp="10" kv="2" ctrllimited="true"/>
     <position name="head_pitch_joint" joint="head_pitch_joint" ctrlrange="-0.436332313 0.436332313" kp="10" kv="2" ctrllimited="true"/>
@@ -204,10 +195,16 @@
     <position name="wrist_pitch_r_joint" joint="wrist_pitch_r_joint" ctrlrange="-0.5 0.6" kp="25" kv="5" ctrllimited="true"/>
     <position name="wrist_roll_r_joint" joint="wrist_roll_r_joint" ctrlrange="-0.5 0.5" kp="25" kv="5" ctrllimited="true"/>
     <position name="index_joint_0" joint="index_joint_0" ctrlrange="0 1.1" kp="10" kv="2" ctrllimited="true"/>
+    <position name="index_joint_1" joint="index_joint_1" ctrlrange="0 1.7" kp="10" kv="2" ctrllimited="true"/>
     <position name="middle_joint_0" joint="middle_joint_0" ctrlrange="0 1.1" kp="10" kv="2" ctrllimited="true"/>
+    <position name="middle_joint_1" joint="middle_joint_1" ctrlrange="0 1.7" kp="10" kv="2" ctrllimited="true"/>
     <position name="ring_joint_0" joint="ring_joint_0" ctrlrange="0 1.1" kp="10" kv="2" ctrllimited="true"/>
+    <position name="ring_joint_1" joint="ring_joint_1" ctrlrange="0 1.7" kp="10" kv="2" ctrllimited="true"/>
     <position name="little_joint_0" joint="little_joint_0" ctrlrange="0 1.1" kp="10" kv="2" ctrllimited="true"/>
+    <position name="little_joint_1" joint="little_joint_1" ctrlrange="0 1.7" kp="10" kv="2" ctrllimited="true"/>
     <position name="thumb_joint_0" joint="thumb_joint_0" ctrlrange="0.3 1.2" kp="10" kv="2" ctrllimited="true"/>
     <position name="thumb_joint_1" joint="thumb_joint_1" ctrlrange="0 0.5" kp="10" kv="2" ctrllimited="true"/>
+    <position name="thumb_joint_2" joint="thumb_joint_2" ctrlrange="0 0.5" kp="10" kv="2" ctrllimited="true"/>
+    <position name="thumb_joint_3" joint="thumb_joint_3" ctrlrange="0 0.4" kp="10" kv="2" ctrllimited="true"/>
   </actuator>
 </mujoco>

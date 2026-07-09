@@ -12,7 +12,7 @@ from pxr import UsdPhysics
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
-from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.sensors import ContactSensor
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_mul, sample_uniform, saturate
 
@@ -93,9 +93,6 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.frame_since_restart = 0
         num_fingertips = len(self.fingertip_body_indices)
         self.finger_rew_coeffs = torch.ones((self.num_envs, num_fingertips), device=self.device)
-        self.finger_contact_bonus_awarded = torch.zeros(
-            (self.num_envs, num_fingertips), dtype=torch.bool, device=self.device
-        )
         self.closest_fingertip_dist = -torch.ones((self.num_envs, num_fingertips), device=self.device)
         self.furthest_hand_dist = -torch.ones(self.num_envs, device=self.device)
         self.closest_keypoint_max_dist = -torch.ones(self.num_envs, device=self.device)
@@ -122,23 +119,6 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.table_contact_sensor = None
         if self.cfg.with_table_force_sensor:
             self.table_contact_sensor = ContactSensor(self.cfg.table_contact_sensor)
-        self.hand_object_contact_sensors = {}
-        if self.cfg.require_lift_contact or (
-            self.cfg.finger_contact_bonus > 0.0 and bool(self.cfg.enable_finger_contact_bonus_reward)
-        ):
-            object_contact_filter_paths = [
-                f"{self.cfg.object_cfg.prim_path}/{self.cfg.object_name}",
-            ]
-            for body_name in self.cfg.lift_contact_body_names:
-                sensor = ContactSensor(
-                    ContactSensorCfg(
-                        prim_path=f"/World/envs/env_.*/Robot/{body_name}",
-                        update_period=0.0,
-                        filter_prim_paths_expr=object_contact_filter_paths,
-                        debug_vis=False,
-                    )
-                )
-                self.hand_object_contact_sensors[body_name] = sensor
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         self.scene.clone_environments(copy_from_source=not self.scene.cfg.replicate_physics)
         if not self.scene.cfg.replicate_physics or self.device == "cpu":
@@ -150,8 +130,6 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.scene.rigid_objects["goal_object"] = self.goal_object
         if self.table_contact_sensor is not None:
             self.scene.sensors["table_contact_sensor"] = self.table_contact_sensor
-        for body_name, sensor in self.hand_object_contact_sensors.items():
-            self.scene.sensors[f"{body_name}_object_contact_sensor"] = sensor
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
@@ -240,7 +218,6 @@ class SimToolRealTg2Env(DirectRLEnv):
 
         lifting_reward, lift_bonus_reward, lifted_object = self._lifting_reward()
         fingertip_delta_reward, hand_delta_penalty = self._distance_delta_rewards(lifted_object)
-        finger_contact_bonus_reward = self._finger_contact_bonus_reward()
         keypoint_reward = self._keypoint_reward(lifted_object)
 
         keypoints_max_dist = self._reward_keypoints_max_dist()
@@ -266,25 +243,18 @@ class SimToolRealTg2Env(DirectRLEnv):
         if self.cfg.force_consecutive_near_goal_steps:
             reach_bonus = reached_goal.float() * self.cfg.reach_goal_bonus
 
-        reward_term_values = {
-            "fingertip_delta_reward": fingertip_delta_reward,
-            "hand_delta_penalty": hand_delta_penalty,
-            "lifting_reward": lifting_reward,
-            "lift_bonus_reward": lift_bonus_reward,
-            "finger_contact_bonus_reward": finger_contact_bonus_reward,
-            "keypoint_reward": keypoint_reward,
-            "reach_bonus": reach_bonus,
-            "arm_action_penalty": arm_action_penalty,
-            "hand_action_penalty": hand_action_penalty,
-            "object_lin_vel_penalty": object_lin_vel_penalty,
-            "object_ang_vel_penalty": object_ang_vel_penalty,
-        }
-        for term_name, term_value in reward_term_values.items():
-            if not bool(getattr(self.cfg, f"enable_{term_name}")):
-                reward_term_values[term_name] = torch.zeros_like(term_value)
-        reward = torch.zeros_like(lifting_reward)
-        for term_value in reward_term_values.values():
-            reward += term_value
+        reward = (
+            fingertip_delta_reward
+            + hand_delta_penalty
+            + lifting_reward
+            + lift_bonus_reward
+            + keypoint_reward
+            + reach_bonus
+            + arm_action_penalty
+            + hand_action_penalty
+            + object_lin_vel_penalty
+            + object_ang_vel_penalty
+        )
         self.object_last_pos.copy_(self.object_pos)
 
         success_env_ids = reached_goal.nonzero(as_tuple=False).squeeze(-1)
@@ -296,27 +266,13 @@ class SimToolRealTg2Env(DirectRLEnv):
             if self.cfg.max_consecutive_successes > 0:
                 self.episode_length_buf[success_env_ids] = 0
 
-        reward_terms = {term_name: term_value.mean() for term_name, term_value in reward_term_values.items()}
-        reward_terms["total_reward"] = reward.mean()
         self.extras["log"] = {
+            "total_reward": reward.mean(),
             "success_rate": reached_goal.float().mean(),
             "success_tolerance": self.success_tolerance,
             "keypoints_max_dist": self._reward_keypoints_max_dist().mean(),
             "object_lift": (0.05 + self.object_pos[:, 2] - self.object_init_pos[:, 2]).mean(),
-            "hand_object_contact_rate": self.hand_object_contact.float().mean(),
-            "hand_object_contact_force": self.hand_object_contact_forces.sum(dim=-1).mean(),
-            "hand_raw_contact_rate": (
-                self.hand_raw_contact_forces > float(self.cfg.lift_contact_force_threshold)
-            ).any(dim=-1).float().mean(),
-            "hand_raw_contact_force": self.hand_raw_contact_forces.sum(dim=-1).mean(),
-            "contact_gated_lift_rate": self.just_lifted.float().mean(),
-            "new_finger_contact_bonus_count": self.new_finger_contact_bonus.sum(dim=-1).float().mean(),
-            **reward_terms,
         }
-        # Keep a separate copy for the compact terminal report. The algorithm
-        # observer excludes this namespace from TensorBoard because the same
-        # values are already emitted above as canonical Episode/* scalars.
-        self.extras["reward_terms"] = reward_terms
         return reward
 
     def _update_success_tolerance_curriculum(self) -> None:
@@ -448,8 +404,6 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.prev_actions[env_ids] = 0.0
         self.near_goal_steps[env_ids] = 0
         self.lifted_object[env_ids] = False
-        if hasattr(self, "finger_contact_bonus_awarded"):
-            self.finger_contact_bonus_awarded[env_ids] = False
         self._reset_object_scale_noise(env_ids)
         self._reset_object_disturbances(env_ids)
         self.closest_fingertip_dist[env_ids] = -1.0
@@ -662,12 +616,8 @@ class SimToolRealTg2Env(DirectRLEnv):
         self.object.set_external_force_and_torque(self.object_forces, self.object_torques, is_global=False)
 
     def _compute_intermediate_values(self) -> None:
-        # Observe all 19 arm/hand joints after mimic expansion, while the
-        # policy still emits only the 13 independent command dimensions.
-        self.robot_dof_pos = self.robot.data.joint_pos[:, self.target_dof_indices]
-        self.robot_dof_vel = self.robot.data.joint_vel[:, self.target_dof_indices]
-        self.policy_dof_vel = self.robot.data.joint_vel[:, self.actuated_dof_indices]
-        self._update_hand_object_contact_buffers()
+        self.robot_dof_pos = self.robot.data.joint_pos[:, self.actuated_dof_indices]
+        self.robot_dof_vel = self.robot.data.joint_vel[:, self.actuated_dof_indices]
         self.palm_rot = self.robot.data.body_quat_w[:, self.palm_body_idx]
         palm_offset_w = quat_apply(self.palm_rot, self.palm_offset.unsqueeze(0).expand(self.num_envs, -1))
         self.palm_pos = self.robot.data.body_pos_w[:, self.palm_body_idx] + palm_offset_w - self.scene.env_origins
@@ -725,73 +675,6 @@ class SimToolRealTg2Env(DirectRLEnv):
             self.table_contact_force_smoothed = torch.zeros_like(self.table_contact_force)
             self.max_table_contact_force_norm_smoothed = torch.zeros(self.num_envs, device=self.device)
 
-    def _update_hand_object_contact_buffers(self) -> None:
-        if not self.hand_object_contact_sensors:
-            self.hand_object_contact_forces = torch.zeros((self.num_envs, 0), device=self.device)
-            self.hand_raw_contact_forces = torch.zeros((self.num_envs, 0), device=self.device)
-            self.hand_object_contact_force_by_body = {}
-            self.hand_object_contact_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-            self.hand_object_contact = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-            return
-
-        forces = []
-        raw_forces = []
-        for sensor in self.hand_object_contact_sensors.values():
-            net_forces = sensor.data.net_forces_w
-            if net_forces is None:
-                raw_force = torch.zeros(self.num_envs, device=self.device)
-            else:
-                raw_force = net_forces.norm(dim=-1).reshape(self.num_envs, -1).sum(dim=-1)
-            raw_forces.append(raw_force)
-
-            force_matrix = sensor.data.force_matrix_w
-            if force_matrix is None:
-                force = torch.zeros(self.num_envs, device=self.device)
-            else:
-                force = force_matrix.norm(dim=-1).reshape(self.num_envs, -1).sum(dim=-1)
-            forces.append(force)
-
-        self.hand_object_contact_forces = torch.stack(forces, dim=-1)
-        self.hand_raw_contact_forces = torch.stack(raw_forces, dim=-1)
-        self.hand_object_contact_force_by_body = dict(
-            zip(self.hand_object_contact_sensors, self.hand_object_contact_forces.unbind(dim=-1), strict=True)
-        )
-        contacts = self.hand_object_contact_forces > float(self.cfg.lift_contact_force_threshold)
-        self.hand_object_contact_count = contacts.sum(dim=-1)
-        required_count = max(1, min(int(self.cfg.lift_contact_required_body_count), contacts.shape[-1]))
-        self.hand_object_contact = self.hand_object_contact_count >= required_count
-
-    def _finger_contact_bonus_reward(self) -> torch.Tensor:
-        num_fingertips = len(self.fingertip_body_indices)
-        if (
-            self.cfg.finger_contact_bonus <= 0.0
-            or not bool(self.cfg.enable_finger_contact_bonus_reward)
-            or not self.hand_object_contact_force_by_body
-        ):
-            self.new_finger_contact_bonus = torch.zeros(
-                (self.num_envs, num_fingertips), dtype=torch.bool, device=self.device
-            )
-            return torch.zeros(self.num_envs, device=self.device)
-
-        # The one-time per-finger contact bonus is now gated only by filtered
-        # distal-link object contact force.  We intentionally do not request
-        # ContactSensor contact-point tracking here because PhysX/Fabric can
-        # device-assert on that path.
-        distal_body_names = self.cfg.lift_contact_body_names[1:]
-        if len(distal_body_names) != num_fingertips:
-            raise RuntimeError(
-                f"Expected one distal contact body per fingertip, got {len(distal_body_names)} "
-                f"contact bodies and {num_fingertips} fingertips."
-            )
-        contact_forces = torch.stack(
-            [self.hand_object_contact_force_by_body[name] for name in distal_body_names], dim=-1
-        )
-        distal_contacts = contact_forces > float(self.cfg.lift_contact_force_threshold)
-
-        self.new_finger_contact_bonus = distal_contacts & (~self.finger_contact_bonus_awarded)
-        self.finger_contact_bonus_awarded |= distal_contacts
-        return self.new_finger_contact_bonus.sum(dim=-1).float() * float(self.cfg.finger_contact_bonus)
-
     def _update_table_contact_force_buffers(self, net_forces_w: torch.Tensor) -> None:
         self.table_contact_force = net_forces_w.sum(dim=1)
         smoothing_alpha = 0.1
@@ -815,9 +698,9 @@ class SimToolRealTg2Env(DirectRLEnv):
             joint_vel = joint_vel + torch.randn_like(joint_vel) * joint_velocity_obs_noise_std
         obs = torch.cat(
             (
-                unscale(self.robot_dof_pos, self.target_dof_lower_limits, self.target_dof_upper_limits),
+                unscale(self.robot_dof_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits),
                 joint_vel,
-                self.dof_pos_targets[:, self.target_dof_indices],
+                self.prev_action_targets,
                 self.palm_pos,
                 quat_wxyz_to_xyzw(self.palm_rot),
                 quat_wxyz_to_xyzw(observed_object_rot),
@@ -871,9 +754,9 @@ class SimToolRealTg2Env(DirectRLEnv):
         reward = getattr(self, "reward_buf", torch.zeros(self.num_envs, device=self.device))
         state = torch.cat(
             (
-                unscale(self.robot_dof_pos, self.target_dof_lower_limits, self.target_dof_upper_limits),
+                unscale(self.robot_dof_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits),
                 self.robot_dof_vel,
-                self.dof_pos_targets[:, self.target_dof_indices],
+                self.prev_action_targets,
                 self.palm_pos,
                 quat_wxyz_to_xyzw(self.palm_rot),
                 palm_vel,
@@ -1125,27 +1008,16 @@ class SimToolRealTg2Env(DirectRLEnv):
         hand_delta_penalty = hand_delta_penalty * self.fingertip_offsets.shape[0]
 
         fingertip_delta_reward = fingertip_delta_reward * self.cfg.distance_delta_rew_scale
-        hand_delta_penalty = hand_delta_penalty * self.cfg.hand_delta_penalty_scale
+        hand_delta_penalty = hand_delta_penalty * 0.0
         return fingertip_delta_reward, hand_delta_penalty
 
     def _lifting_reward(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         z_lift = 0.05 + self.object_pos[:, 2] - self.object_init_pos[:, 2]
         lifting_reward = torch.clamp(z_lift, 0.0, 0.5)
 
-        crossed_lift_height = z_lift > self.cfg.lifting_bonus_threshold
-
-        # Contact-gated latch: the dense lift reward runs until the contact-gated
-        # "lifted" label fires, so there is no gap between the dense reward and
-        # the one-shot bonus.  The reward *value* is a pure function of height —
-        # contact is only required for the shutoff + bonus.
-        contact_gate = self.hand_object_contact if self.cfg.require_lift_contact else torch.ones_like(crossed_lift_height)
-        self.contact_gated_lift = crossed_lift_height & contact_gate
-        lifted_object = self.contact_gated_lift | self.lifted_object
+        lifted_object = (z_lift > self.cfg.lifting_bonus_threshold) | self.lifted_object
         just_lifted = lifted_object & (~self.lifted_object)
-        self.just_lifted = just_lifted
         lift_bonus_reward = self.cfg.lifting_bonus * just_lifted.float()
-
-        # Dense reward shuts off when lifted_object fires (same moment as bonus).
         lifting_reward = lifting_reward * (~lifted_object)
 
         self.lifted_object = lifted_object
@@ -1174,9 +1046,9 @@ class SimToolRealTg2Env(DirectRLEnv):
 
     def _action_penalties(self) -> tuple[torch.Tensor, torch.Tensor]:
         arm_actions_penalty = (
-            torch.sum(torch.abs(self.policy_dof_vel[:, :7]), dim=-1) * self.cfg.arm_actions_penalty_scale
+            torch.sum(torch.abs(self.robot_dof_vel[:, :7]), dim=-1) * self.cfg.arm_actions_penalty_scale
         )
         hand_actions_penalty = (
-            torch.sum(torch.abs(self.policy_dof_vel[:, 7:]), dim=-1) * self.cfg.hand_actions_penalty_scale
+            torch.sum(torch.abs(self.robot_dof_vel[:, 7:]), dim=-1) * self.cfg.hand_actions_penalty_scale
         )
         return -arm_actions_penalty, -hand_actions_penalty

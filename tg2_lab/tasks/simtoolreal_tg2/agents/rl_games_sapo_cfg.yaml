@@ -45,13 +45,8 @@ env_cfg:
   lifting_rew_scale: 20.0
   lifting_bonus: 300.0
   lifting_bonus_threshold: 0.15
-  require_lift_contact: True
-  lift_contact_force_threshold: 0.5
-  lift_contact_required_body_count: 1
-  finger_contact_bonus: 100.0
   keypoint_rew_scale: 200.0
   distance_delta_rew_scale: 50.0
-  hand_delta_penalty_scale: 0.0
   reach_goal_bonus: 1000.0
   arm_actions_penalty_scale: 0.03
   hand_actions_penalty_scale: 0.003
@@ -59,17 +54,6 @@ env_cfg:
   fall_penalty: 0.0
   object_lin_vel_penalty_scale: 0.0
   object_ang_vel_penalty_scale: 0.0
-  enable_fingertip_delta_reward: True
-  enable_hand_delta_penalty: True
-  enable_lifting_reward: True
-  enable_lift_bonus_reward: True
-  enable_finger_contact_bonus_reward: True
-  enable_keypoint_reward: True
-  enable_reach_bonus: True
-  enable_arm_action_penalty: True
-  enable_hand_action_penalty: True
-  enable_object_lin_vel_penalty: True
-  enable_object_ang_vel_penalty: True
   object_z_low_reset_threshold: 0.1
   hand_far_from_object_threshold: 1.5
   with_table_force_sensor: False

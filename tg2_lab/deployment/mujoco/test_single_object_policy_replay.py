@@ -53,8 +53,8 @@ INIT_QPOS = {
     "little_joint_1": 0.0,
     "thumb_joint_0": 0.4,
     "thumb_joint_1": 0.1,
-    "thumb_joint_2": 0.2,
-    "thumb_joint_3": 0.4,
+    "thumb_joint_2": 0.1,
+    "thumb_joint_3": 0.08,
 }
 POLICY_JOINT_NAMES = [
     "shoulder_pitch_r_joint",
@@ -497,9 +497,9 @@ class MujocoPolicyAdapter:
             [_get_joint_qpos(mujoco, model, data, name) for name in FULL_STATE_JOINT_NAMES],
             dtype=float,
         )
-        self.actuator_ids = [
+        self.full_state_actuator_ids = [
             _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
-            for name in POLICY_JOINT_NAMES
+            for name in FULL_STATE_JOINT_NAMES
         ]
         self.palm_site_id = _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_SITE, "hand_tcp")
         self.object_body_id = _name_to_id(mujoco, model, mujoco.mjtObj.mjOBJ_BODY, "claw_hammer")
@@ -821,11 +821,12 @@ class MujocoPolicyAdapter:
             action = self.player.get_action(self.observation(), is_deterministic=True)
         action_np = action.detach().cpu().numpy().reshape(-1)
         targets = self.compute_targets(action_np)
-        for actuator_id, target in zip(self.actuator_ids, targets, strict=True):
+        full_targets = self.expand_policy_targets(targets)
+        for actuator_id, target in zip(self.full_state_actuator_ids, full_targets, strict=True):
             lo, hi = self.model.actuator_ctrlrange[actuator_id]
             self.data.ctrl[actuator_id] = min(max(float(target), float(lo)), float(hi))
         self.prev_action_targets = targets
-        self.prev_full_action_targets = self.expand_policy_targets(targets)
+        self.prev_full_action_targets = full_targets
         return float(action_np.min()), float(action_np.max())
 
     def maybe_step_policy(self) -> tuple[float, float] | None:
