@@ -24,7 +24,12 @@
 
     <body name="claw_hammer" pos="0.00 0.50 0.56">
       <freejoint name="claw_hammer_freejoint"/>
-      <geom name="hammer_mesh_geom" type="mesh" mesh="claw_hammer_mesh" mass="0.050" material="claw_hammer_mat" friction="0.8 0.01 0.01" solref="0.002 1" solimp="0.99 0.995 0.001" margin="0.001" condim="4" priority="2" contype="1" conaffinity="1"/>
+      <!-- Match the reference MuJoCo sim2sim proxy shape: detailed OBJ is
+           visual-only, while contact uses a stable box handle plus capsule
+           head shifted into the DexToolBench OBJ frame. -->
+      <geom name="hammer_visual_mesh_geom" type="mesh" mesh="claw_hammer_mesh" material="claw_hammer_mat" density="0" group="1" contype="0" conaffinity="0"/>
+      <geom name="hammer_handle_collision_proxy" type="box" pos="0.0261 -0.0008 0.0003" size="0.10 0.015 0.01" rgba="0.5 0.5 0.5 0.35" density="400" condim="6" friction="1 0.005 0.0001" group="3" contype="1" conaffinity="1"/>
+      <geom name="hammer_head_collision_proxy" type="capsule" fromto="0.1242 -0.0254 -0.0004 0.1242 0.0346 -0.0004" size="0.02" rgba="0.4 0.4 0.4 0.35" density="300" condim="6" friction="1 0.005 0.0001" group="3" contype="1" conaffinity="1"/>
       <site name="hammer_keypoint_0" type="sphere" pos="0.075 0.016875 0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
       <site name="hammer_keypoint_1" type="sphere" pos="0.075 0.016875 -0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
       <site name="hammer_keypoint_2" type="sphere" pos="-0.075 -0.016875 0.01125" size="0.008" rgba="0.1 0.45 1.0 1"/>
